@@ -1,11 +1,10 @@
 import time, urllib.request, json, os
 
-# قراءة التوكن من خزنة GitHub التي أعددناها
 TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
-usd_balance = 1000.0
 
-coins = ["bitcoin", "ethereum", "cardano", "solana", "polkadot", "polygon-ecosystem-token", "avalanche-2", "binancecoin"]
+# قائمة العملات الأكثر تذبذباً ومشاريع تقنية
+coins = ["chainlink", "near", "arbitrum", "optimism", "render", "solana", "cardano", "polygon-ecosystem-token"]
 history = {c: [] for c in coins}
 portfolio = {c: {"held": 0.0, "buy_price": 0.0, "is_holding": False} for c in coins}
 
@@ -30,6 +29,7 @@ def run_bot():
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as response:
             data = json.loads(response.read().decode())
         
+        status_msg = "📊 فحص السوق (كل 20 دقيقة):\n"
         for c in data:
             coin_id = c['id']
             price = c['current_price']
@@ -38,22 +38,20 @@ def run_bot():
             
             lower, upper = get_bollinger(history[coin_id])
             
-            # الشراء
             if lower and not portfolio[coin_id]['is_holding'] and price <= lower:
                 portfolio[coin_id].update({'held': (150 * 0.98) / price, 'buy_price': price, 'is_holding': True})
-                send_telegram(f"🎯 شراء تلقائي: {c['symbol'].upper()} بسعر {price}")
+                send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}")
             
-            # البيع
             elif portfolio[coin_id]['is_holding']:
                 if price >= portfolio[coin_id]['buy_price'] * 1.02 or (upper and price >= upper):
-                    send_telegram(f"💰 بيع تلقائي: {c['symbol'].upper()} | الربح: {((price/portfolio[coin_id]['buy_price'])-1)*100:.2f}%")
+                    send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح: {((price/portfolio[coin_id]['buy_price'])-1)*100:.2f}%")
                     portfolio[coin_id].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
+            
+            status_msg += f"{c['symbol'].upper()}: {price}$\n"
         
-        # إشعار للتأكيد أن البوت فحص السوق بنجاح
-        send_telegram("✅ تم فحص السوق بنجاح من السحابة.")
-        
+        send_telegram(status_msg)
     except Exception as e:
-        send_telegram(f"⚠️ حدث خطأ في البوت: {str(e)}")
+        send_telegram(f"⚠️ خطأ: {str(e)}")
 
 if __name__ == "__main__":
     run_bot()
