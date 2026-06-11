@@ -1,8 +1,10 @@
 name: Trading Bot
+
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/20 * * * *' # يعمل كل 20 دقيقة
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
