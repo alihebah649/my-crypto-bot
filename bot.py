@@ -4,6 +4,7 @@ TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
 DATA_FILE = "data.json"
 
+# قائمة العملات
 coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana"]
 
 def load_data():
@@ -25,32 +26,32 @@ def send_telegram(text):
 def run_bot():
     data = load_data()
     try:
+        # جلب أسعار العملات
         url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}&order=market_cap_desc"
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
             market = json.loads(f.read().decode())
         
-        status = "📈 تقرير البوت:\n"
         for c in market:
             cid = c['id']
             price = c['current_price']
+            # تحديث الذاكرة
             h = data[cid]["history"]
             h.append(price)
             if len(h) > 20: h.pop(0)
             
+            # منطق البيع والشراء
             sma = sum(h) / len(h)
             std = (sum((x - sma)**2 for x in h) / len(h))**0.5
             lower, upper = sma - (1.5 * std), sma + (1.5 * std)
             
             if not data[cid]["is_holding"] and price <= lower:
-                data[cid].update({'held': (150 * 0.98) / price, 'buy_price': price, 'is_holding': True})
+                data[cid].update({'held': 150 / price, 'buy_price': price, 'is_holding': True})
                 send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}")
-            elif data[cid]["is_holding"] and (price >= data[cid]["buy_price"] * 1.015 or price >= upper):
-                send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح: {((price/data[cid]['buy_price'])-1)*100:.2f}%")
+            elif data[cid]["is_holding"] and (price >= data[cid]['buy_price'] * 1.015):
+                send_telegram(f"💰 بيع: {c['symbol'].upper()} بربح 1.5%")
                 data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
-            status += f"{c['symbol'].upper()}: {price}$\n"
         
         save_data(data)
-        send_telegram(status)
     except Exception as e: send_telegram(f"⚠️ خطأ: {str(e)}")
 
 if __name__ == "__main__": run_bot()
