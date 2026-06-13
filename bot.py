@@ -3,9 +3,7 @@ import json, os, urllib.request
 TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
 DATA_FILE = "data.json"
-
-# قائمة العملات
-coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana"]
+coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana", "cardano"]
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -15,7 +13,7 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w') as f: json.dump(data, f)
 
-def send_telegram(text): 
+def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         data = json.dumps({"chat_id": CHAT_ID, "text": text}).encode("utf-8")
@@ -36,10 +34,9 @@ def run_bot():
             h = data[cid]["history"]
             h.append(price)
             if len(h) > 20: h.pop(0)
-            
             sma = sum(h) / len(h)
             std = (sum((x - sma)**2 for x in h) / len(h))**0.5
-            lower, upper = sma - (1.5 * std), sma + (1.5 * std)
+            lower = sma - (1.5 * std)
             
             if not data[cid]["is_holding"] and price <= lower:
                 data[cid].update({'held': 150 / price, 'buy_price': price, 'is_holding': True})
