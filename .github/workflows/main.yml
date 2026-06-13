@@ -2,8 +2,11 @@ name: Trading Bot
 
 on:
   schedule:
-    - cron: '*/20 * * * *' # يعمل كل 20 دقيقة
+    - cron: '*/20 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write  # هذا السطر مهم جداً للسماح للبوت بحفظ الملفات
 
 jobs:
   build:
@@ -20,3 +23,10 @@ jobs:
         env:
           TOKEN: ${{ secrets.TOKEN }}
         run: python bot.py
+      - name: Commit data
+        run: |
+          git config --global user.name "bot"
+          git config --global user.email "bot@bot.com"
+          git add data.json
+          git commit -m "Update data" || echo "No changes"
+          git push
