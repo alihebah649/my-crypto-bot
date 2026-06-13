@@ -1,4 +1,4 @@
-import json, os, urllib.request, time
+import json, os, urllib.request
 
 TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
@@ -28,7 +28,6 @@ def run_bot():
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
             market = json.loads(f.read().decode())
         
-        daily_pnl = 0.0
         for c in market:
             cid = c['id']
             price = c['current_price']
@@ -43,19 +42,20 @@ def run_bot():
             # الشراء
             if not data[cid]["is_holding"] and price <= lower:
                 data[cid].update({'held': 150 / price, 'buy_price': price, 'is_holding': True})
-                send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}")
+                send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}$")
             
-            # البيع وحساب الربح
+            # البيع وحساب النتيجة
             elif data[cid]["is_holding"] and (price >= data[cid]['buy_price'] * 1.015):
-                profit = (price - data[cid]['buy_price']) * data[cid]['held']
-                data[cid]['total_profit'] += profit
-                daily_pnl += profit
-                send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح الصفقة: {profit:.2f}$")
+                diff = (price - data[cid]['buy_price']) * data[cid]['held']
+                status = "✅ ربح" if diff >= 0 else "❌ خسارة"
+                data[cid]['total_profit'] += diff
+                
+                msg = (f"{status}: {c['symbol'].upper()}\n"
+                       f"النتيجة: {diff:.2f}$\n"
+                       f"الربح التراكمي للعملة: {data[cid]['total_profit']:.2f}$")
+                send_telegram(msg)
+                
                 data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
-        
-        # إرسال تقرير الأرباح اليومي إذا تم بيع شيء
-        if daily_pnl != 0:
-            send_telegram(f"📊 إجمالي أرباح الصفقات المغلقة الآن: {daily_pnl:.2f}$")
         
         save_data(data)
     except Exception as e: send_telegram(f"⚠️ خطأ: {str(e)}")
