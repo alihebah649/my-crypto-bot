@@ -15,7 +15,7 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w') as f: json.dump(data, f)
 
-def send_telegram(text):
+def send_telegram(text): 
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         data = json.dumps({"chat_id": CHAT_ID, "text": text}).encode("utf-8")
