@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # هذا السطر مهم جداً للسماح للبوت بحفظ الملفات
+  contents: write
 
 jobs:
   build:
