@@ -26,7 +26,6 @@ def send_telegram(text):
 def run_bot():
     data = load_data()
     try:
-        # جلب أسعار العملات
         url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}&order=market_cap_desc"
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
             market = json.loads(f.read().decode())
@@ -34,12 +33,10 @@ def run_bot():
         for c in market:
             cid = c['id']
             price = c['current_price']
-            # تحديث الذاكرة
             h = data[cid]["history"]
             h.append(price)
             if len(h) > 20: h.pop(0)
             
-            # منطق البيع والشراء
             sma = sum(h) / len(h)
             std = (sum((x - sma)**2 for x in h) / len(h))**0.5
             lower, upper = sma - (1.5 * std), sma + (1.5 * std)
