@@ -1,14 +1,14 @@
-import json, os, urllib.request
+import json, os, urllib.request, time
 
 TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
 DATA_FILE = "data.json"
-coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana", "cardano"]
+coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana"]
 
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f: return json.load(f)
-    return {c: {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False} for c in coins}
+    return {c: {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False, "total_profit": 0.0} for c in coins}
 
 def save_data(data):
     with open(DATA_FILE, 'w') as f: json.dump(data, f)
@@ -24,26 +24,38 @@ def send_telegram(text):
 def run_bot():
     data = load_data()
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}&order=market_cap_desc"
+        url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}"
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
             market = json.loads(f.read().decode())
         
+        daily_pnl = 0.0
         for c in market:
             cid = c['id']
             price = c['current_price']
             h = data[cid]["history"]
             h.append(price)
             if len(h) > 20: h.pop(0)
+            
             sma = sum(h) / len(h)
             std = (sum((x - sma)**2 for x in h) / len(h))**0.5
             lower = sma - (1.5 * std)
             
+            # الشراء
             if not data[cid]["is_holding"] and price <= lower:
                 data[cid].update({'held': 150 / price, 'buy_price': price, 'is_holding': True})
                 send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}")
+            
+            # البيع وحساب الربح
             elif data[cid]["is_holding"] and (price >= data[cid]['buy_price'] * 1.015):
-                send_telegram(f"💰 بيع: {c['symbol'].upper()} بربح 1.5%")
+                profit = (price - data[cid]['buy_price']) * data[cid]['held']
+                data[cid]['total_profit'] += profit
+                daily_pnl += profit
+                send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح الصفقة: {profit:.2f}$")
                 data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
+        
+        # إرسال تقرير الأرباح اليومي إذا تم بيع شيء
+        if daily_pnl != 0:
+            send_telegram(f"📊 إجمالي أرباح الصفقات المغلقة الآن: {daily_pnl:.2f}$")
         
         save_data(data)
     except Exception as e: send_telegram(f"⚠️ خطأ: {str(e)}")
