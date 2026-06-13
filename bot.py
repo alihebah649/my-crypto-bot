@@ -1,12 +1,18 @@
-import time, urllib.request, json, os
+import json, os, urllib.request
 
 TOKEN = os.environ['TOKEN']
 CHAT_ID = "199325566"
+DATA_FILE = "data.json"
 
-# قائمة العملات الأكثر تذبذباً ومشاريع تقنية
-coins = ["chainlink", "near", "arbitrum", "optimism", "render", "solana", "cardano", "polygon-ecosystem-token"]
-history = {c: [] for c in coins}
-portfolio = {c: {"held": 0.0, "buy_price": 0.0, "is_holding": False} for c in coins}
+coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana"]
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f: return json.load(f)
+    return {c: {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False} for c in coins}
+
+def save_data(data):
+    with open(DATA_FILE, 'w') as f: json.dump(data, f)
 
 def send_telegram(text):
     try:
@@ -16,42 +22,35 @@ def send_telegram(text):
         urllib.request.urlopen(req, timeout=10)
     except: pass
 
-def get_bollinger(prices):
-    if len(prices) < 20: return None, None
-    sma = sum(prices) / 20
-    variance = sum((x - sma) ** 2 for x in prices) / 20
-    std_dev = (variance ** 0.5)
-    return sma - (2 * std_dev), sma + (2 * std_dev)
-
 def run_bot():
+    data = load_data()
     try:
         url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}&order=market_cap_desc"
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as response:
-            data = json.loads(response.read().decode())
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
+            market = json.loads(f.read().decode())
         
-        status_msg = "📊 فحص السوق (كل 20 دقيقة):\n"
-        for c in data:
-            coin_id = c['id']
+        status = "📈 تقرير البوت:\n"
+        for c in market:
+            cid = c['id']
             price = c['current_price']
-            history[coin_id].append(price)
-            if len(history[coin_id]) > 20: history[coin_id].pop(0)
+            h = data[cid]["history"]
+            h.append(price)
+            if len(h) > 20: h.pop(0)
             
-            lower, upper = get_bollinger(history[coin_id])
+            sma = sum(h) / len(h)
+            std = (sum((x - sma)**2 for x in h) / len(h))**0.5
+            lower, upper = sma - (1.5 * std), sma + (1.5 * std)
             
-            if lower and not portfolio[coin_id]['is_holding'] and price <= lower:
-                portfolio[coin_id].update({'held': (150 * 0.98) / price, 'buy_price': price, 'is_holding': True})
+            if not data[cid]["is_holding"] and price <= lower:
+                data[cid].update({'held': (150 * 0.98) / price, 'buy_price': price, 'is_holding': True})
                 send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}")
-            
-            elif portfolio[coin_id]['is_holding']:
-                if price >= portfolio[coin_id]['buy_price'] * 1.02 or (upper and price >= upper):
-                    send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح: {((price/portfolio[coin_id]['buy_price'])-1)*100:.2f}%")
-                    portfolio[coin_id].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
-            
-            status_msg += f"{c['symbol'].upper()}: {price}$\n"
+            elif data[cid]["is_holding"] and (price >= data[cid]["buy_price"] * 1.015 or price >= upper):
+                send_telegram(f"💰 بيع: {c['symbol'].upper()} | ربح: {((price/data[cid]['buy_price'])-1)*100:.2f}%")
+                data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
+            status += f"{c['symbol'].upper()}: {price}$\n"
         
-        send_telegram(status_msg)
-    except Exception as e:
-        send_telegram(f"⚠️ خطأ: {str(e)}")
+        save_data(data)
+        send_telegram(status)
+    except Exception as e: send_telegram(f"⚠️ خطأ: {str(e)}")
 
-if __name__ == "__main__":
-    run_bot()
+if __name__ == "__main__": run_bot()
