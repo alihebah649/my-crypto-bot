@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write # هذا ضروري جداً ليعطيك صلاحية الحفظ
 
 jobs:
   build:
@@ -23,10 +23,11 @@ jobs:
         env:
           TOKEN: ${{ secrets.TOKEN }}
         run: python bot.py
+      # --- هنا يبدأ كود الـ Commit الذي سألت عنه ---
       - name: Commit data
         run: |
           git config --global user.name "bot"
           git config --global user.email "bot@bot.com"
           git add data.json
-          git commit -m "Update data" || echo "No changes"
+          git commit -m "Update data.json" || echo "No changes"
           git push
