@@ -44,6 +44,8 @@ def run_trading_bot():
             else:
                 data = {c: {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False, "total_profit": 0.0} for c in coins}
 
+            # طلب البيانات من CoinGecko مع تأخير بسيط
+            time.sleep(2) 
             url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}"
             with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
                 market = json.loads(f.read().decode())
@@ -70,14 +72,19 @@ def run_trading_bot():
                     data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
             
             with open(DATA_FILE, 'w') as f: json.dump(data, f)
-            time.sleep(60) # فحص كل دقيقة
+            
+            # انتظار 300 ثانية (5 دقائق) قبل الفحص القادم لتقليل الضغط على API
+            time.sleep(300) 
+            
         except Exception as e: 
-            send_telegram(f"⚠️ خطأ: {str(e)}")
-            time.sleep(300)
+            error_msg = str(e)
+            if "429" in error_msg:
+                time.sleep(600) # في حال الحظر، انتظر 10 دقائق
+            else:
+                send_telegram(f"⚠️ خطأ: {error_msg}")
+                time.sleep(300)
 
 if __name__ == "__main__":
-    # تشغيل البوت في مسار منفصل
     threading.Thread(target=run_trading_bot, daemon=True).start()
-    # تشغيل خادم Flask الأساسي
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
