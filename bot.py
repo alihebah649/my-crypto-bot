@@ -17,7 +17,12 @@ def run_trading_bot():
     TOKEN = os.environ['TOKEN']
     CHAT_ID = "199325566"
     DATA_FILE = "data.json"
-    coins = ["bitcoin", "ethereum", "chainlink", "near", "arbitrum", "optimism", "render", "solana"]
+    
+    # قائمة العملات المُنقاة والمتوافقة مع المشاريع الحقيقية النافعة
+    coins = [
+        "bitcoin", "ethereum", "solana", "chainlink", "cardano", 
+        "polkadot", "near", "arbitrum", "optimism", "render"
+    ]
 
     def send_telegram(text):
         try:
@@ -34,17 +39,17 @@ def run_trading_bot():
             # --- ميزة التقرير اليومي ---
             current_time = time.time()
             if current_time - last_heartbeat >= 86400: # 86400 ثانية = 24 ساعة
-                send_telegram("🤖 البوت يعمل بكفاءة - تقرير الحالة اليومي.")
+                send_telegram("🤖 البوت يعمل بكفاءة - تقرير الحالة اليومي.\nالاستراتيجية: نشطة وموافقة للشريعة الإسلامية 100%.")
                 last_heartbeat = current_time
 
-            # --- تحميل البيانات ومنطق التداول ---
+            # --- تحميل البيانات ---
             data = {}
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, 'r') as f: data = json.load(f)
             else:
                 data = {c: {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False, "total_profit": 0.0} for c in coins}
 
-            # طلب البيانات من CoinGecko مع تأخير بسيط
+            # طلب البيانات من CoinGecko مع تأخير لتجنب الحظر
             time.sleep(2) 
             url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={','.join(coins)}"
             with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=15) as f:
@@ -53,27 +58,41 @@ def run_trading_bot():
             for c in market:
                 cid = c['id']
                 price = c['current_price']
+                
+                # تحديث التاريخ للعملة
+                if cid not in data:
+                    data[cid] = {"history": [], "held": 0.0, "buy_price": 0.0, "is_holding": False, "total_profit": 0.0}
+                    
                 h = data[cid]["history"]
                 h.append(price)
                 if len(h) > 20: h.pop(0)
                 
+                # إذا لم يكن لدينا 20 قراءة بعد، ننتظر ولا نتخذ قراراً
+                if len(h) < 20:
+                    continue
+                
+                # حساب المتوسط والانحراف المعياري
                 sma = sum(h) / len(h)
                 std = (sum((x - sma)**2 for x in h) / len(h))**0.5
-                lower = sma - (1.5 * std)
+                
+                # --- الاستراتيجية النشطة ---
+                lower = sma - (1.0 * std)
                 
                 if not data[cid]["is_holding"] and price <= lower:
                     data[cid].update({'held': 150 / price, 'buy_price': price, 'is_holding': True})
-                    send_telegram(f"🎯 شراء: {c['symbol'].upper()} بسعر {price}$")
+                    send_telegram(f"🎯 شراء سريع: {c['symbol'].upper()} بسعر {price}$")
                 
-                elif data[cid]["is_holding"] and (price >= data[cid]['buy_price'] * 1.015):
+                # البيع عند ربح 1% لأخذ الأرباح بسرعة
+                elif data[cid]["is_holding"] and (price >= data[cid]['buy_price'] * 1.01):
                     diff = (price - data[cid]['buy_price']) * data[cid]['held']
                     data[cid]['total_profit'] += diff
                     send_telegram(f"✅ بيع: {c['symbol'].upper()}\nالربح: {diff:.2f}$\nالإجمالي: {data[cid]['total_profit']:.2f}$")
                     data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
             
+            # حفظ البيانات
             with open(DATA_FILE, 'w') as f: json.dump(data, f)
             
-            # انتظار 300 ثانية (5 دقائق) قبل الفحص القادم لتقليل الضغط على API
+            # فحص كل 5 دقائق لتقليل الضغط وتجنب الحظر
             time.sleep(300) 
             
         except Exception as e: 
