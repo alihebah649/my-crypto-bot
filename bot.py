@@ -24,7 +24,7 @@ BINANCE_SECRET_KEY = os.environ.get('BINANCE_SECRET_KEY', 'YOUR_SECRET_KEY_HERE'
 def home():
     with data_lock:
         return jsonify({
-            "status": "Halal Trading Bot is Running perfectly with OCO Protection Architecture!",
+            "status": "Halal Trading Bot is Running perfectly with Double-Table Reports!",
             "monitored_coins_count": len(set(global_data.get("daily_stats", {}).keys())) - 4 if "daily_stats" in global_data else 20,
             "daily_stats": global_data.get("daily_stats", {}),
             "monthly_stats": global_data.get("monthly_stats", {}),
@@ -36,9 +36,7 @@ def binance_signature(query_string, secret_key):
     return hmac.new(secret_key.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
 
 def send_binance_signed_request(endpoint, method="POST", params={}):
-    """دالة احترافية لإرسال الأوامر الموقعة رقمياً إلى بينانس مباشرة"""
     if BINANCE_API_KEY == 'YOUR_API_KEY_HERE':
-        # وضع التجريب والمحاكاة الافتراضية إذا لم تكن المفاتيح مضافة
         return {"mock_success": True, "orderId": 123456}
         
     base_url = "https://api.binance.com"
@@ -76,12 +74,48 @@ def run_trading_bot():
     def send_telegram(text):
         try:
             url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-            data = json.dumps({"chat_id": CHAT_ID, "text": text}).encode("utf-8")
+            data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=10)
         except Exception as e: print(f"Telegram Error: {e}")
 
-    send_telegram("🚀 تم تشغيل البوت المطور بنظام التشفير الرقمي وجدار حماية صفقات الـ OCO الذكي!")
+    # 📊 دالة مبتكرة وموحدة لتوليد الجداول النصية لليوم والشهر بدقة متناهية
+    def generate_report_table(stats_key, title, period_value):
+        table_lines = []
+        table_lines.append(f"📊 *{title}*")
+        table_lines.append(f"📅 التاريخ/الفترة: {period_value}\n")
+        table_lines.append("```")
+        table_lines.append("COIN     | WIN | LOSS | NET PROFIT")
+        table_lines.append("----------------------------------")
+        
+        coin_stats = global_data.get(stats_key, {}).get("coins", {})
+        total_wins = 0
+        total_losses = 0
+        total_profit = 0.0
+        
+        for c_id, stats in coin_stats.items():
+            ticker = c_id.upper()
+            for k, v in coin_mapping.items():
+                if v == c_id:
+                    ticker = k.replace("USDT", "")
+                    break
+            
+            wins = stats.get("wins", 0)
+            losses = stats.get("losses", 0)
+            profit = stats.get("net_profit", 0.0)
+            
+            total_wins += wins
+            total_losses += losses
+            total_profit += profit
+            
+            table_lines.append(f"{ticker:<8} | {wins:<3} | {losses:<4} | {profit:+.2f}$")
+        
+        table_lines.append("----------------------------------")
+        table_lines.append(f"TOTAL    | {total_wins:<3} | {total_losses:<4} | {total_profit:+.2f}$")
+        table_lines.append("```")
+        return "\n".join(table_lines)
+
+    send_telegram("🚀 تم تشغيل البوت المطور بنظام تقارير الجداول المزدوجة (اليومية والشهرية)!")
     
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f: 
@@ -95,25 +129,36 @@ def run_trading_bot():
             save_needed = False 
 
             with data_lock:
+                # تهيئة الهياكل الأساسية للإحصائيات والتأكد من دعمها للجداول
                 if "global_stats" not in global_data:
                     global_data["global_stats"] = {"wins": 0, "losses": 0, "net_profit": 0.0}
                     save_needed = True
-                if "monthly_stats" not in global_data:
-                    global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0}
+                if "monthly_stats" not in global_data or "coins" not in global_data["monthly_stats"]:
+                    global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
                     save_needed = True
-                if "daily_stats" not in global_data:
-                    global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0}
+                if "daily_stats" not in global_data or "coins" not in global_data["daily_stats"]:
+                    global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
                     save_needed = True
 
-                # (منطق تصفير التقارير اليومية والشهرية يظل مستقراً كما هو بكودك لضمان دقة حساباتك...)
+                # 1. طباعة وتصفير التقرير الشهري الشامل (عند نهاية الشهر)
                 if global_data["monthly_stats"].get("month") != current_month:
-                    global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0}
-                    save_needed = True
-                if global_data["daily_stats"].get("date") != current_date:
-                    global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0}
+                    old_month = global_data["monthly_stats"].get("month", "غير معروف")
+                    monthly_table = generate_report_table("monthly_stats", "التقرير الشهري لحصاد المحفظة", old_month)
+                    send_telegram(monthly_table)
+                    
+                    global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
                     save_needed = True
 
-            # جلب الأسعار اللحظية (تجميعة واحدة آمنة لـ 20 عملة)
+                # 2. طباعة وتصفير التقرير اليومي الشامل (عند نهاية الـ 24 ساعة)
+                if global_data["daily_stats"].get("date") != current_date:
+                    old_date = global_data["daily_stats"].get("date", "غير معروف")
+                    daily_table = generate_report_table("daily_stats", "التقرير اليومي للحصاد كل 24 ساعة", old_date)
+                    send_telegram(daily_table)
+                    
+                    global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
+                    save_needed = True
+
+            # جلب الأسعار اللحظية
             url = "https://api.binance.com/api/v3/ticker/price"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=15) as f:
@@ -124,7 +169,6 @@ def run_trading_bot():
 
             with data_lock:
                 for cid, price in market_prices.items():
-                    # تهيئة المتغيرات الأساسية للعملات الجديدة
                     if cid not in global_data: global_data[cid] = {}
                     if "history" not in global_data[cid]: global_data[cid]["history"] = []
                     if "held" not in global_data[cid]: global_data[cid]["held"] = 0.0
@@ -134,14 +178,14 @@ def run_trading_bot():
                     if "highest_price" not in global_data[cid]: global_data[cid]["highest_price"] = 0.0
                     if "last_history_time" not in global_data[cid]: global_data[cid]["last_history_time"] = 0.0
 
-                    # تحديث السجل التاريخي الرياضي (كل 5 دقائق) لعمق 20 قراءة آمنة
+                    # تحديث السجل التاريخي الرياضي للبوت (كل 5 دقائق)
                     if current_time_seconds - global_data[cid]["last_history_time"] >= 300:
                         global_data[cid]["history"].append(price)
                         if len(global_data[cid]["history"]) > 20: global_data[cid]["history"].pop(0)
                         global_data[cid]["last_history_time"] = current_time_seconds
                         save_needed = True
 
-                    # --- إدارة صفقات البيع والمطاردة الفوقية ---
+                    # --- إدارة صفقات البيع ---
                     if global_data[cid]["is_holding"]:
                         buy_price = global_data[cid]['buy_price']
                         stop_loss_price = buy_price * 0.95   
@@ -150,7 +194,7 @@ def run_trading_bot():
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
                             global_data[cid]["trailing_active"] = True
                             global_data[cid]["highest_price"] = price
-                            send_telegram(f"🔥 {cid.upper()} اقتنصت هدف +1%! تم تنشيط المطاردة البرمجية. السعر اللحظي: {price}$")
+                            send_telegram(f"🔥 {cid.upper()} تجاوزت +1%! تم تنشيط المطاردة البرمجية. السعر اللحظي: {price}$")
                             save_needed = True
 
                         if global_data[cid]["trailing_active"]:
@@ -161,15 +205,24 @@ def run_trading_bot():
                             drop_threshold = global_data[cid]["highest_price"] * 0.996
                             if price <= drop_threshold:
                                 diff = (price - buy_price) * global_data[cid]['held']
-                                # إلغاء أمر الـ OCO القديم من المنصة لأن البوت سيبيع بنفسه الآن بسعر أعلى ومربح
-                                # (تنبيه: يتم تفعيل دالة إلغاء الأمر عند الانتقال للتداول الحقيقي)
                                 
+                                # تسجيل الأرباح في الإحصائيات العامة واليومية والشهرية لكل عملة على حدة
                                 global_data["global_stats"]["wins"] += 1
                                 global_data["global_stats"]["net_profit"] += diff
-                                global_data["monthly_stats"]["wins"] += 1
-                                global_data["monthly_stats"]["net_profit"] += diff
+                                
+                                # اليومي
+                                if cid not in global_data["daily_stats"]["coins"]: global_data["daily_stats"]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
                                 global_data["daily_stats"]["wins"] += 1
                                 global_data["daily_stats"]["net_profit"] += diff
+                                global_data["daily_stats"]["coins"][cid]["wins"] += 1
+                                global_data["daily_stats"]["coins"][cid]["net_profit"] += diff
+                                
+                                # الشهري
+                                if cid not in global_data["monthly_stats"]["coins"]: global_data["monthly_stats"]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
+                                global_data["monthly_stats"]["wins"] += 1
+                                global_data["monthly_stats"]["net_profit"] += diff
+                                global_data["monthly_stats"]["coins"][cid]["wins"] += 1
+                                global_data["monthly_stats"]["coins"][cid]["net_profit"] += diff
                                 
                                 send_telegram(f"🚀 بيع ذكي بمطاردة الأرباح: {cid.upper()}\nسعر الشراء: {buy_price:.2f}$\nسعر البيع: {price:.2f}$\n💰 صافي الربح: {diff:.2f}$")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
@@ -177,18 +230,29 @@ def run_trading_bot():
 
                         elif price <= stop_loss_price:
                             diff = (price - buy_price) * global_data[cid]['held']
+                            
                             global_data["global_stats"]["losses"] += 1
                             global_data["global_stats"]["net_profit"] += diff
-                            global_data["monthly_stats"]["losses"] += 1
-                            global_data["monthly_stats"]["net_profit"] += diff
+                            
+                            # اليومي
+                            if cid not in global_data["daily_stats"]["coins"]: global_data["daily_stats"]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
                             global_data["daily_stats"]["losses"] += 1
                             global_data["daily_stats"]["net_profit"] += diff
+                            global_data["daily_stats"]["coins"][cid]["losses"] += 1
+                            global_data["daily_stats"]["coins"][cid]["net_profit"] += diff
                             
-                            send_telegram(f"🛑 بيع اضطراري بوقف الخسارة الثابت (5%): {cid.upper()}\nالخسارة: {diff:.2f}$")
+                            # الشهري
+                            if cid not in global_data["monthly_stats"]["coins"]: global_data["monthly_stats"]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
+                            global_data["monthly_stats"]["losses"] += 1
+                            global_data["monthly_stats"]["net_profit"] += diff
+                            global_data["monthly_stats"]["coins"][cid]["losses"] += 1
+                            global_data["monthly_stats"]["coins"][cid]["net_profit"] += diff
+                            
+                            send_telegram(f"🛑 بيع بوقف الخسارة الثابت (5%): {cid.upper()}\nالخسارة: {diff:.2f}$")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
-                    # --- قناص فرص الشراء + زرع أمر OCO الدفاعي فوراً ---
+                    # --- قناص فرص الشراء ---
                     else:
                         h = global_data[cid]["history"]
                         if len(h) < 20: continue 
@@ -198,23 +262,19 @@ def run_trading_bot():
                         lower = sma - (1.0 * std)
                         
                         if price <= lower:
-                            # 1. تحديث البيانات محلياً (شراء بقيمة 50 دولار)
                             global_data[cid].update({'held': 50 / price, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': 0.0})
-                            send_telegram(f"🎯 شراء استراتيجي: {cid.upper()} بسعر {price}$. جاري تأمين الصفقة على بينانس...")
+                            send_telegram(f"🎯 شراء استراتيجي: {cid.upper()} بسعر {price}$. جاري تأمين الصفقة بـ OCO...")
                             
-                            # 2. خط الدفاع الاحترافي: إرسال أمر OCO فوري وسري لـ بينانس لحمايتك لو نمت أو حُظرت
                             symbol_binance = [k for k, v in coin_mapping.items() if v == cid][0]
                             oco_params = {
                                 "symbol": symbol_binance,
                                 "side": "SELL",
                                 "quantity": round(50 / price, 4),
-                                "price": round(price * 1.02, 2),        # هدف جني الأرباح الثابت الآمن (مثال: +2%)
-                                "stopPrice": round(price * 0.955, 2),    # نقطة تفعيل وقف الخسارة على سيرفر بينانس (-4.5%)
-                                "stopLimitPrice": round(price * 0.95, 2) # سعر تنفيذ وقف الخسارة الفعلي بالمنصة (-5%)
+                                "price": round(price * 1.02, 2),        
+                                "stopPrice": round(price * 0.955, 2),    
+                                "stopLimitPrice": round(price * 0.95, 2) 
                             }
-                            # تنفيذ إرسال الأمر المشروط فوراً للسيرفر الخارجي
-                            binance_order = send_binance_signed_request("/api/v3/order/oco", method="POST", params=oco_params)
-                            
+                            send_binance_signed_request("/api/v3/order/oco", method="POST", params=oco_params)
                             save_needed = True
             
             if save_needed:
@@ -224,9 +284,8 @@ def run_trading_bot():
             time.sleep(30)
             
         except urllib.error.HTTPError as e:
-            # [تحديث الأمان الذكي للفحص]: إذا واجهنا الحظر المشترك من ريندر (429 أو 418) انسحب تكتيكياً
             if e.code in [429, 418]:
-                send_telegram(f"⚠️ تقييد مؤقت من جدار حماية بينانس (كود {e.code}). سأدخل في وضع النوم لـ 15 دقيقة. صفقاتك المفتوحة مؤمنة بالكامل بأوامر OCO على المنصة.")
+                send_telegram(f"⚠️ تقييد مؤقت من جدار حماية بينانس (كود {e.code}). سأدخل في وضع النوم لـ 15 دقيقة للحماية.")
                 time.sleep(900)
             else:
                 send_telegram(f"⚠️ خطأ شبكة كود ({e.code}): {str(e)}")
