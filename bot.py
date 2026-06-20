@@ -17,9 +17,9 @@ DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
 # --- إعدادات إدارة المخاطر الصارمة ---
-RISK_STOP_LOSS_PCT = 0.02       # وقف الخسارة الحديدي عند 2% كحد أقصى
-REWARD_ACTIVATION_PCT = 0.02    # تفعيل مطاردة الأرباح عند صعود 2%
-TRAILING_DROP_PCT = 0.005       # نسبة التراجع للمطاردة 0.5%
+RISK_STOP_LOSS_PCT = 0.02       
+REWARD_ACTIVATION_PCT = 0.02    
+TRAILING_DROP_PCT = 0.005       
 
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 BINANCE_SECRET_KEY = os.environ.get('BINANCE_SECRET_KEY', 'YOUR_SECRET_KEY_HERE')
@@ -28,7 +28,7 @@ BINANCE_SECRET_KEY = os.environ.get('BINANCE_SECRET_KEY', 'YOUR_SECRET_KEY_HERE'
 def home():
     with data_lock:
         return jsonify({
-            "status": "Halal Bot - Stable Fixed Version is Running",
+            "status": "Halal Bot - Fixed Safe Version",
             "daily_stats": global_data.get("daily_stats", {}),
             "monthly_stats": global_data.get("monthly_stats", {})
         })
@@ -91,23 +91,37 @@ def run_trading_bot():
             data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=10)
-        except Exception as e: print(f"Telegram Error: {e}")
+        except Exception as e: 
+            print(f"Telegram Error: {e}")
 
     def generate_report_table(stats_key, title, period_value):
-        table_lines = [f"📊 *{title}*", f"📅 الفترة: {period_value}\n", "```", "COIN     | WIN | LOSS | NET PROFIT", "----------------------------------"]
+        table_lines = [
+            f"📊 *{title}*", 
+            f"📅 الفترة: {period_value}\n", 
+            "```", 
+            "COIN     | WIN | LOSS | NET PROFIT", 
+            "----------------------------------"
+        ]
         coin_stats = global_data.get(stats_key, {}).get("coins", {})
         total_wins, total_losses, total_profit = 0, 0, 0.0
         
         for c_id, stats in coin_stats.items():
             ticker = c_id.upper()
             for k, v in coin_mapping.items():
-                if v == c_id: ticker = k.replace("USDT", ""); break
-            wins, losses, profit = stats.get("wins", 0), stats.get("losses", 0), stats.get("net_profit", 0.0)
-            total_wins += wins; total_losses += losses; total_profit += profit
+                if v == c_id: 
+                    ticker = k.replace("USDT", "")
+                    break
+            wins = stats.get("wins", 0)
+            losses = stats.get("losses", 0)
+            profit = stats.get("net_profit", 0.0)
+            total_wins += wins
+            total_losses += losses
+            total_profit += profit
             table_lines.append(f"{ticker:<8} | {wins:<3} | {losses:<4} | {profit:+.2f}$")
         
-        table_lines.extend(["----------------------------------", f"TOTAL    | {total_wins:<3} | {total_losses:<4} | {total_profit:+.2f}$", "
-```"])
+        table_lines.append("----------------------------------")
+        table_lines.append(f"TOTAL    | {total_wins:<3} | {total_losses:<4} | {total_profit:+.2f}$")
+        table_lines.append("```")
         return "\n".join(table_lines)
 
     def record_transaction_stats(cid, is_win, amount):
@@ -117,7 +131,8 @@ def run_trading_bot():
                 else: global_data[key]["losses"] += 1
                 global_data[key]["net_profit"] += amount
             else:
-                if cid not in global_data[key]["coins"]: global_data[key]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
+                if cid not in global_data[key]["coins"]: 
+                    global_data[key]["coins"][cid] = {"wins": 0, "losses": 0, "net_profit": 0.0}
                 if is_win:
                     global_data[key]["wins"] += 1
                     global_data[key]["coins"][cid]["wins"] += 1
@@ -127,12 +142,15 @@ def run_trading_bot():
                 global_data[key]["net_profit"] += amount
                 global_data[key]["coins"][cid]["net_profit"] += amount
 
-    send_telegram("🔄 تم رفع التحديث المستقر وتصحيح معادلات وقف الخسارة الصارمة بنجاح!")
+    # سطر التفعيل الاختباري المفكك لضمان عدم الانكسار
+    send_telegram("🔄 تم رفع التحديث المستقر بنجاح والبوت جاهز للعمل الآمن!")
     
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f:
-            try: global_data = json.load(f)
-            except: global_data = {}
+            try: 
+                global_data = json.load(f)
+            except: 
+                global_data = {}
 
     while True:
         try:
@@ -141,9 +159,12 @@ def run_trading_bot():
             save_needed = False 
 
             with data_lock:
-                if "global_stats" not in global_data: global_data["global_stats"] = {"wins": 0, "losses": 0, "net_profit": 0.0}
-                if "monthly_stats" not in global_data or "coins" not in global_data["monthly_stats"]: global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
-                if "daily_stats" not in global_data or "coins" not in global_data["daily_stats"]: global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
+                if "global_stats" not in global_data: 
+                    global_data["global_stats"] = {"wins": 0, "losses": 0, "net_profit": 0.0}
+                if "monthly_stats" not in global_data or "coins" not in global_data["monthly_stats"]: 
+                    global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
+                if "daily_stats" not in global_data or "coins" not in global_data["daily_stats"]: 
+                    global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
 
                 if global_data["monthly_stats"].get("month") != current_month:
                     send_telegram(generate_report_table("monthly_stats", "التقرير الشهري المصحح", global_data["monthly_stats"].get("month", "غير معروف")))
@@ -157,7 +178,8 @@ def run_trading_bot():
 
             url = "https://api.binance.com/api/v3/ticker/price"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=15) as f: ticker_data = json.loads(f.read().decode())
+            with urllib.request.urlopen(req, timeout=15) as f: 
+                ticker_data = json.loads(f.read().decode())
             
             market_prices = {coin_mapping[item['symbol']]: float(item['price']) for item in ticker_data if item['symbol'] in coin_mapping}
             current_time_seconds = time.time()
@@ -194,7 +216,7 @@ def run_trading_bot():
                             half_qty = round(held_qty * 0.5, 4)
                             diff_half = (price - buy_price) * half_qty
                             record_transaction_stats(cid, is_win=True, amount=diff_half)
-                            send_telegram(f"💰 جني أرباح جزئي آمن لـ {cid.upper()}: تم تأمين {diff_half:.2f}$ في المحفظة.")
+                            send_telegram(f"💰 جني أرباح جزئي آمن لـ {cid.upper()}: تم تأمين {diff_half:.2f}$")
                             global_data[cid]["held"] -= half_qty
                             global_data[cid]["partial_profit_taken"] = True
                             save_needed = True
@@ -213,14 +235,13 @@ def run_trading_bot():
                             if price <= drop_line:
                                 diff_remain = (price - buy_price) * global_data[cid]['held']
                                 record_transaction_stats(cid, is_win=True, amount=diff_remain)
-                                send_telegram(f"🚀 إغلاق المطاردة بنجاح لـ {cid.upper()}: صافي الربح المحقق {diff_remain:.2f}$")
+                                send_telegram(f"🚀 إغلاق المطاردة لـ {cid.upper()}: صافي الربح المحقق {diff_remain:.2f}$")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'partial_profit_taken': False, 'break_even_active': False})
                                 save_needed = True
                         else:
                             effective_stop_price = buy_price * 1.001 if global_data[cid]["break_even_active"] else buy_price * (1.0 - RISK_STOP_LOSS_PCT)
 
                             if price <= effective_stop_price:
-                                # التعديل الجوهري: حساب الخسارة بناءً على سعر الوقف الصارم المحدد منعاً للفجوات الرقمية المتأخرة
                                 diff_final = (effective_stop_price - buy_price) * global_data[cid]['held']
                                 
                                 if global_data[cid]["break_even_active"]:
@@ -228,7 +249,7 @@ def run_trading_bot():
                                     send_telegram(f"🛡️ خروج برأس المال (Break-Even) لعملة {cid.upper()}.")
                                 else:
                                     record_transaction_stats(cid, is_win=False, amount=diff_final)
-                                    send_telegram(f"🛑 خروج حتمي بوقف الخسارة الصارم (2%): {cid.upper()}\nالخسارة الفعلية المحدودة: {diff_final:.2f}$")
+                                    send_telegram(f"🛑 وقف الخسارة الصارم (2%): {cid.upper()}\nالخسارة الفعلية: {diff_final:.2f}$")
                                 
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'partial_profit_taken': False, 'break_even_active': False})
                                 save_needed = True
@@ -242,7 +263,7 @@ def run_trading_bot():
                         if price <= lower_band:
                             symbol_binance = [k for k, v in coin_mapping.items() if v == cid][0]
                             ema200 = get_binance_ema200(symbol_binance)
-                            if ema200 and price < ema200: continue # تخطي الأسواق الهابطة
+                            if ema200 and price < ema200: continue 
                             
                             volatility_ratio = std / sma if sma > 0 else 0.01
                             if volatility_ratio > 0.015: entry_allocation = 25.0
