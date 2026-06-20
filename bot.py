@@ -18,11 +18,11 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# إعدادات التداول
+# إعدادات التداول (مرنة)
 RISK_STOP_LOSS_PCT = 0.015       
 REWARD_ACTIVATION_PCT = 0.03    
 TRAILING_DROP_PCT = 0.005       
-MAX_OPEN_POSITIONS = 3          
+EMA_TOLERANCE = 0.995           # هامش سماح 0.5% تحت خط الـ EMA
 
 # المتغيرات البيئية
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
@@ -43,7 +43,7 @@ COIN_MAPPING = {
 
 # الذاكرة المؤقتة
 exchange_filters = {}
-ema_200_cache = {}
+ema_cache = {}
 
 # --- الدوال المساعدة ---
 
@@ -95,19 +95,20 @@ def format_step_size(symbol, quantity):
     step = exchange_filters[symbol]['stepSize']
     return math.floor(quantity / step) * step
 
-def get_binance_ema200(symbol):
+def get_binance_ema(symbol, period=100):
     current_time = time.time()
-    if symbol in ema_200_cache and (current_time - ema_200_cache[symbol]["timestamp"] < 1800):
-        return ema_200_cache[symbol]["value"]
+    cache_key = f"{symbol}_{period}"
+    if cache_key in ema_cache and (current_time - ema_cache[cache_key]["timestamp"] < 1800):
+        return ema_cache[cache_key]["value"]
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={period}"
         with urllib.request.urlopen(url, timeout=10) as response:
             klines = json.loads(response.read().decode())
             closes = [float(k[4]) for k in klines]
-            k = 2 / (200 + 1)
+            k = 2 / (period + 1)
             ema = closes[0]
             for price in closes[1:]: ema = (price * k) + (ema * (1 - k))
-            ema_200_cache[symbol] = {"value": ema, "timestamp": current_time}
+            ema_cache[cache_key] = {"value": ema, "timestamp": current_time}
             return ema
     except: return None
 
@@ -155,7 +156,7 @@ def run_trading_bot():
     else:
         global_data = {"global_stats":{"wins":0,"losses":0,"net_profit":0.0}, "daily_stats":{"date":"none","wins":0,"losses":0,"net_profit":0.0,"coins":{}}, "monthly_stats":{"month":"none","wins":0,"losses":0,"net_profit":0.0,"coins":{}}}
 
-    send_telegram("🚀 البوت بدأ العمل بنظام الأمان الكامل!")
+    send_telegram("🚀 تم تحديث البوت بوضع 'المرونة': EMA100 + هامش سماح 0.5%")
 
     while True:
         try:
@@ -164,7 +165,6 @@ def run_trading_bot():
             save_needed = False
             
             with data_lock:
-                # تحديث التواريخ
                 if global_data["monthly_stats"]["month"] != curr_m:
                     send_telegram(generate_report_table("monthly_stats", "التقرير الشهري", global_data["monthly_stats"]["month"]))
                     global_data["monthly_stats"] = {"month": curr_m, "wins":0, "losses":0, "net_profit":0.0, "coins":{}}
@@ -174,7 +174,6 @@ def run_trading_bot():
                     global_data["daily_stats"] = {"date": curr_d, "wins":0, "losses":0, "net_profit":0.0, "coins":{}}
                     save_needed = True
 
-            # جلب الأسعار
             url = "https://api.binance.com/api/v3/ticker/price"
             with urllib.request.urlopen(url, timeout=15) as f: ticker_data = json.loads(f.read().decode())
             prices = {COIN_MAPPING[item['symbol']]: float(item['price']) for item in ticker_data if item['symbol'] in COIN_MAPPING}
@@ -183,7 +182,6 @@ def run_trading_bot():
                 for cid, price in prices.items():
                     if cid not in global_data: global_data[cid] = {"history":[], "held":0.0, "buy_price":0.0, "is_holding":False, "trailing":False, "highest":0.0, "break_even":False, "partial":False, "last_t":0}
                     
-                    # تحديث التاريخ
                     if time.time() - global_data[cid]["last_t"] >= 300:
                         global_data[cid]["history"] = (global_data[cid]["history"] + [price])[-20:]
                         global_data[cid]["last_t"] = time.time()
@@ -192,16 +190,13 @@ def run_trading_bot():
                     symbol_binance = [k for k, v in COIN_MAPPING.items() if v == cid][0]
                     
                     if global_data[cid]["is_holding"]:
-                        # منطق البيع (الوقف، الربح، المطاردة)
                         buy_p = global_data[cid]['buy_price']
                         profit = (price - buy_p) / buy_p
                         
-                        # Break Even
                         if not global_data[cid]["break_even"] and profit >= 0.01:
                             global_data[cid]["break_even"] = True
                             save_needed = True
                             
-                        # Partial Profit
                         if not global_data[cid]["partial"] and profit >= 0.015:
                             half = format_step_size(symbol_binance, global_data[cid]['held'] * 0.5)
                             res = send_binance_signed_request("/api/v3/order", "POST", {"symbol":symbol_binance, "side":"SELL", "type":"MARKET", "quantity":half})
@@ -211,7 +206,6 @@ def run_trading_bot():
                                 global_data[cid]["partial"] = True
                                 save_needed = True
                         
-                        # Trailing Stop
                         if not global_data[cid]["trailing"] and profit >= REWARD_ACTIVATION_PCT:
                             global_data[cid]["trailing"] = True
                             global_data[cid]["highest"] = price
@@ -219,7 +213,6 @@ def run_trading_bot():
                         if global_data[cid]["trailing"]:
                             if price > global_data[cid]["highest"]: global_data[cid]["highest"] = price
                             if price <= global_data[cid]["highest"] * (1 - TRAILING_DROP_PCT):
-                                # Sell All
                                 qty = format_step_size(symbol_binance, global_data[cid]['held'])
                                 res = send_binance_signed_request("/api/v3/order", "POST", {"symbol":symbol_binance, "side":"SELL", "type":"MARKET", "quantity":qty})
                                 if "error" not in res:
@@ -227,7 +220,6 @@ def run_trading_bot():
                                     global_data[cid].update({'held':0.0, 'is_holding':False, 'trailing':False, 'partial':False, 'break_even':False})
                                     save_needed = True
                         
-                        # Stop Loss
                         elif price <= buy_p * (1.001 if global_data[cid]["break_even"] else (1 - RISK_STOP_LOSS_PCT)):
                             qty = format_step_size(symbol_binance, global_data[cid]['held'])
                             res = send_binance_signed_request("/api/v3/order", "POST", {"symbol":symbol_binance, "side":"SELL", "type":"MARKET", "quantity":qty})
@@ -237,14 +229,15 @@ def run_trading_bot():
                                 save_needed = True
 
                     else:
-                        # منطق الشراء
                         h = global_data[cid]["history"]
                         if len(h) < 20: continue
                         sma = sum(h)/len(h)
                         std = (sum((x-sma)**2 for x in h)/len(h))**0.5
+                        
                         if price <= sma - std:
-                            ema200 = get_binance_ema200(symbol_binance)
-                            if ema200 and price >= ema200:
+                            ema_val = get_binance_ema(symbol_binance, period=100) # EMA100
+                            # شرط مرن: السعر فوق الـ EMA أو أقل منه بـ 0.5% فقط
+                            if ema_val and price >= (ema_val * EMA_TOLERANCE):
                                 amt = 25.0 if (std/sma)>0.015 else 50.0
                                 res = send_binance_signed_request("/api/v3/order", "POST", {"symbol":symbol_binance, "side":"BUY", "type":"MARKET", "quoteOrderQty":amt})
                                 if "error" not in res:
