@@ -16,10 +16,11 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# --- إعدادات إدارة المخاطر الصارمة ---
-RISK_STOP_LOSS_PCT = 0.02       
-REWARD_ACTIVATION_PCT = 0.02    
+# --- إعدادات إدارة المخاطر المطورة والصارمة ---
+RISK_STOP_LOSS_PCT = 0.015       # تقليل وقف الخسارة إلى 1.5% لحماية الحساب
+REWARD_ACTIVATION_PCT = 0.03    # رفع هدف تفعيل المطاردة إلى 3% لزيادة حجم الأرباح
 TRAILING_DROP_PCT = 0.005       
+MAX_OPEN_POSITIONS = 3          # 🛡️ كابح الأمان: الحد الأقصى للصفقات المفتوحة معاً في نفس الوقت
 
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', 'YOUR_API_KEY_HERE')
 BINANCE_SECRET_KEY = os.environ.get('BINANCE_SECRET_KEY', 'YOUR_SECRET_KEY_HERE')
@@ -28,7 +29,8 @@ BINANCE_SECRET_KEY = os.environ.get('BINANCE_SECRET_KEY', 'YOUR_SECRET_KEY_HERE'
 def home():
     with data_lock:
         return jsonify({
-            "status": "Halal Bot - Fixed Safe Version",
+            "status": "Halal Bot - Anti-Loss Enterprise Version",
+            "open_positions_count": sum(1 for c in global_data if isinstance(global_data[c], dict) and global_data[c].get("is_holding", False)),
             "daily_stats": global_data.get("daily_stats", {}),
             "monthly_stats": global_data.get("monthly_stats", {})
         })
@@ -142,8 +144,7 @@ def run_trading_bot():
                 global_data[key]["net_profit"] += amount
                 global_data[key]["coins"][cid]["net_profit"] += amount
 
-    # سطر التفعيل الاختباري المفكك لضمان عدم الانكسار
-    send_telegram("🔄 تم رفع التحديث المستقر بنجاح والبوت جاهز للعمل الآمن!")
+    send_telegram("🛡️ تم تفعيل درع الحماية الذكي وكوابح الأمان بنجاح!")
     
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r') as f:
@@ -167,12 +168,12 @@ def run_trading_bot():
                     global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
 
                 if global_data["monthly_stats"].get("month") != current_month:
-                    send_telegram(generate_report_table("monthly_stats", "التقرير الشهري المصحح", global_data["monthly_stats"].get("month", "غير معروف")))
+                    send_telegram(generate_report_table("monthly_stats", "التقرير الشهري المحمي", global_data["monthly_stats"].get("month", "غير معروف")))
                     global_data["monthly_stats"] = {"month": current_month, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
                     save_needed = True
 
                 if global_data["daily_stats"].get("date") != current_date:
-                    send_telegram(generate_report_table("daily_stats", "التقرير اليومي الحقيقي الفعلي", global_data["daily_stats"].get("date", "غير معروف")))
+                    send_telegram(generate_report_table("daily_stats", "التقرير اليومي المحمي", global_data["daily_stats"].get("date", "غير معروف")))
                     global_data["daily_stats"] = {"date": current_date, "wins": 0, "losses": 0, "net_profit": 0.0, "coins": {}}
                     save_needed = True
 
@@ -185,6 +186,9 @@ def run_trading_bot():
             current_time_seconds = time.time()
 
             with data_lock:
+                # حساب عدد الصفقات المفتوحة حالياً قبل فحص أي دخول جديد
+                current_open_positions = sum(1 for c in coin_mapping.values() if global_data.get(c, {}).get("is_holding", False))
+
                 for cid, price in market_prices.items():
                     if cid not in global_data: global_data[cid] = {}
                     if "history" not in global_data[cid]: global_data[cid]["history"] = []
@@ -216,7 +220,7 @@ def run_trading_bot():
                             half_qty = round(held_qty * 0.5, 4)
                             diff_half = (price - buy_price) * half_qty
                             record_transaction_stats(cid, is_win=True, amount=diff_half)
-                            send_telegram(f"💰 جني أرباح جزئي آمن لـ {cid.upper()}: تم تأمين {diff_half:.2f}$")
+                            send_telegram(f"💰 جني أرباح جزئي لـ {cid.upper()}: تأمين {diff_half:.2f}$")
                             global_data[cid]["held"] -= half_qty
                             global_data[cid]["partial_profit_taken"] = True
                             save_needed = True
@@ -235,7 +239,7 @@ def run_trading_bot():
                             if price <= drop_line:
                                 diff_remain = (price - buy_price) * global_data[cid]['held']
                                 record_transaction_stats(cid, is_win=True, amount=diff_remain)
-                                send_telegram(f"🚀 إغلاق المطاردة لـ {cid.upper()}: صافي الربح المحقق {diff_remain:.2f}$")
+                                send_telegram(f"🚀 إغلاق المطاردة لـ {cid.upper()}: صافي ربح المتبقي {diff_remain:.2f}$")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'partial_profit_taken': False, 'break_even_active': False})
                                 save_needed = True
                         else:
@@ -246,14 +250,18 @@ def run_trading_bot():
                                 
                                 if global_data[cid]["break_even_active"]:
                                     record_transaction_stats(cid, is_win=True, amount=diff_final)
-                                    send_telegram(f"🛡️ خروج برأس المال (Break-Even) لعملة {cid.upper()}.")
+                                    send_telegram(f"🛡️ خروج آمن برأس المال (Break-Even) لـ {cid.upper()}.")
                                 else:
                                     record_transaction_stats(cid, is_win=False, amount=diff_final)
-                                    send_telegram(f"🛑 وقف الخسارة الصارم (2%): {cid.upper()}\nالخسارة الفعلية: {diff_final:.2f}$")
+                                    send_telegram(f"🛑 وقف خسارة محمي (1.5%): {cid.upper()}\nالخسارة الفعلية: {diff_final:.2f}$")
                                 
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'partial_profit_taken': False, 'break_even_active': False})
                                 save_needed = True
                     else:
+                        # إذا وصلنا للحد الأقصى للمحفظة، لا تبحث عن فرص شراء جديدة
+                        if current_open_positions >= MAX_OPEN_POSITIONS:
+                            continue
+
                         h = global_data[cid]["history"]
                         if len(h) < 20: continue 
                         sma = sum(h) / len(h)
@@ -263,7 +271,10 @@ def run_trading_bot():
                         if price <= lower_band:
                             symbol_binance = [k for k, v in coin_mapping.items() if v == cid][0]
                             ema200 = get_binance_ema200(symbol_binance)
-                            if ema200 and price < ema200: continue 
+                            
+                            # 🛡️ تصحيح الثغرة: إذا كان المؤشر غير متاح أو السعر أدناه، تجاوز الشراء فوراً لحمايتك من السقوط الحاد
+                            if ema200 is None or price < ema200: 
+                                continue 
                             
                             volatility_ratio = std / sma if sma > 0 else 0.01
                             if volatility_ratio > 0.015: entry_allocation = 25.0
@@ -271,13 +282,14 @@ def run_trading_bot():
                             else: entry_allocation = 50.0
                                 
                             global_data[cid].update({'held': entry_allocation / price, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': 0.0, 'partial_profit_taken': False, 'break_even_active': False})
+                            current_open_positions += 1 # تحديث العداد اللحظي للعملات المفتوحة
                             
                             oco_params = {
                                 "symbol": symbol_binance,
                                 "side": "SELL",
                                 "quantity": round(entry_allocation / price, 4),
-                                "price": round(price * 1.03, 2),        
-                                "stopPrice": round(price * 0.985, 2),    
+                                "price": round(price * 1.04, 2),        
+                                "stopPrice": round(price * 0.988, 2),    
                                 "stopLimitPrice": round(price * (1.0 - RISK_STOP_LOSS_PCT), 2) 
                             }
                             send_binance_signed_request("/api/v3/order/oco", method="POST", params=oco_params)
