@@ -31,7 +31,6 @@ RISK_CONFIG = {
     'initial_capital': 1000.0      # رأس المال الافتراضي الأولي
 }
 
-# --- دالة بناء الجداول النصية لـ Telegram ---
 def build_telegram_table(stats_dict, title, period_label, period_value):
     coins = stats_dict.get("coins", {})
     if not coins:
@@ -184,10 +183,9 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("🚀 تم تشغيل البوت بنجاح وحقن فلاتر الأمان لتقصي البيانات القديمة.")
+    send_telegram("🚀 تم تشغيل البوت بنجاح وحقن فلاتر حماية الإحصائيات عند الإقلاع.")
 
-    consecutive_failures = 0
-    is_first_loop = True  # متغير لتحديد أول دورة تشغيلية للبوت فور إقلاعه
+    is_first_loop = True  # تفعيل راية الدورة الأولى البرمجية
     
     while True:
         try:
@@ -217,9 +215,7 @@ def run_trading_bot():
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=15) as f:
                     ticker_data = json.loads(f.read().decode())
-                consecutive_failures = 0
             except Exception as e:
-                consecutive_failures += 1
                 time.sleep(60)
                 continue
             
@@ -253,17 +249,18 @@ def run_trading_bot():
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
                         
-                        # حساب النسبة المئوية الفعلية والحالية لحركة السعر مقارنة بالدخول
                         actual_change_percent = ((price - buy_price) / buy_price) * 100
+                        stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         
-                        # [فلتر الأمان]: إذا أشرق البوت على صفقة خاسرة بأكثر من 5% في أول دقيقة تشغيل، يتم تصفيرها فوراً دون تصفية
-                        if is_first_loop and actual_change_percent <= -5.0:
-                            print(f"🛡️ Safety Guard: Dropped ghost/stale position for {cid.upper()}", flush=True)
+                        # [فلتر أمان متطور]: إذا أشرق البوت على هبوط تجاوز الوقف بسبب فترة التحديث صيانة الخدمة
+                        # يتم تصفير تعقب العملة فوراً بشكل نظيف ودون تلويث سجل الأرباح الفعلي
+                        if is_first_loop and price <= stop_loss_price:
+                            print(f"🛡️ Safety Guard: Dropped stale position for {cid.upper()} to avoid update slippage.", flush=True)
+                            send_telegram(f"🛡️ *تنبيه أمان التحديث:* تم تصفير تعقب صفقة {cid.upper()} القديمة تلقائياً دون احتساب خسارة، نظراً لأن الهبوط تم أثناء إغلاق البوت للتحديث.")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
                             continue
 
-                        stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         activation_price = buy_price * (1 + RISK_CONFIG['trailing_activation'])
                         
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
@@ -287,11 +284,11 @@ def run_trading_bot():
                                 save_needed = True
                                 continue
 
-                        # سحب وقف الخسارة الثابت الحقيقي بناءً على الحساب الفعلي المحدث
+                        # الخروج العادي بوقف خسارة حي مستقر أثناء عمل البوت
                         if price <= stop_loss_price and not global_data[cid]["trailing_active"]:
                             diff = (price - buy_price) * global_data[cid]['held']
                             update_all_stats(cid, diff)
-                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة الثابت*\n📉 الخسارة: `{diff:.2f}$` (`{actual_change_percent:.2f}%`) ")
+                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة الثابت*\n📉 الخسارة الحقيقية: `{diff:.2f}$` (`{actual_change_percent:.2f}%`) ")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
@@ -316,7 +313,7 @@ def run_trading_bot():
             if save_needed:
                 with data_lock: save_global_data()
             
-            is_first_loop = False  # تنتهي الدورة الأولى ويتحول البوت للرصد الحي المستقر
+            is_first_loop = False  # إغلاق نمط الإقلاع ليعود الرصد حياً ومباشراً ومحكماً
             time.sleep(30)
             
         except Exception as e:
