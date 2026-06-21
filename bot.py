@@ -24,14 +24,14 @@ data_lock = threading.Lock()
 
 # --- إعدادات إدارة المخاطر المحسنة والمثبتة ---
 RISK_CONFIG = {
-    'entry_amount_usd': 50.0,      # تم تثبيت مبلغ الدخول للصفقة الواحدة إلى 50 دولار بناءً على رغبتك
-    'stop_loss': 0.025,            # 2.5% وقف خسارة لحماية رأس المال
-    'trailing_activation': 0.015,  # 1.5% تفعيل التتبع الحركي لبدء حجز الأرباح
-    'trailing_stop': 0.005,        # 0.5% حماية الأرباح عند الارتداد من القمة
-    'initial_capital': 1000.0      # رأس المال الافتراضي الأولي لحساب النمو
+    'entry_amount_usd': 50.0,      # مبلغ الدخول الثابت لكل صفقة
+    'stop_loss': 0.025,            # 2.5% وقف خسارة مستهدف
+    'trailing_activation': 0.015,  # 1.5% تفعيل التتبع الحركي
+    'trailing_stop': 0.005,        # 0.5% حماية الأرباح
+    'initial_capital': 1000.0      # رأس المال الافتراضي الأولي
 }
 
-# --- دالة مساعدة لإنشاء جداول التقارير النصية لـ Telegram ---
+# --- دالة بناء الجداول النصية لـ Telegram ---
 def build_telegram_table(stats_dict, title, period_label, period_value):
     coins = stats_dict.get("coins", {})
     if not coins:
@@ -62,23 +62,16 @@ def build_telegram_table(stats_dict, title, period_label, period_value):
     table += "```"
     return table
 
-# --- دالة تحديث الإحصائيات المتقدمة لـ Flask ---
 @app.route('/')
 def home():
     with data_lock:
         stats = global_data.get("global_stats", {})
         total_trades = stats.get('wins', 0) + stats.get('losses', 0)
         win_rate = (stats.get('wins', 0) / total_trades * 100) if total_trades > 0 else 0
-        
-        avg_win = stats.get('total_win_amount', 0) / stats.get('wins', 1) if stats.get('wins', 0) > 0 else 0
-        avg_loss = stats.get('total_loss_amount', 0) / stats.get('losses', 1) if stats.get('losses', 0) > 0 else 0
-        profit_factor = (stats.get('total_win_amount', 0) / stats.get('total_loss_amount', 1)) if stats.get('total_loss_amount', 0) > 0 else 0
-        
         current_capital = RISK_CONFIG['initial_capital'] + stats.get('net_profit', 0.0)
         
         return jsonify({
-            "status": "🚀 Halal Trading Bot with Advanced Risk Management Running Live",
-            "risk_config": RISK_CONFIG,
+            "status": "🚀 Halal Trading Bot Running Smoothly",
             "account_summary": {
                 "initial_capital": f"${RISK_CONFIG['initial_capital']:.2f}",
                 "current_capital": f"${current_capital:.2f}",
@@ -86,16 +79,11 @@ def home():
             },
             "performance": {
                 "total_trades": total_trades,
-                "win_rate": f"{win_rate:.1f}%",
-                "avg_win": f"${avg_win:.2f}",
-                "avg_loss": f"${avg_loss:.2f}",
-                "profit_factor": f"{profit_factor:.2f}",
-                "expected_value_per_trade": f"${(avg_win * (win_rate/100)) - (avg_loss * ((100-win_rate)/100)):.2f}"
+                "win_rate": f"{win_rate:.1f}%"
             },
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }), 200
 
-# --- دوال الحفظ والتحميل السحابي والمحلي ---
 def load_global_data():
     global global_data
     if BIN_ID and JSONBIN_KEY:
@@ -141,12 +129,10 @@ def save_global_data():
         except Exception as e:
             print(f"⚠️ Cloud backup failed: {e}", flush=True)
 
-# --- دالة تحديث الإحصائيات المشتركة تفصيلياً لجميع التقارير ---
 def update_all_stats(cid, diff):
     cid_upper = cid.upper()
     is_win = diff > 0
 
-    # 1. تحديث الإحصائيات العامة التراكمية
     if is_win:
         global_data["global_stats"]["wins"] += 1
         global_data["global_stats"]["total_win_amount"] += diff
@@ -155,28 +141,15 @@ def update_all_stats(cid, diff):
         global_data["global_stats"]["total_loss_amount"] += abs(diff)
     global_data["global_stats"]["net_profit"] += diff
 
-    # 2. تحديث الإحصائيات اليومية
-    if "coins" not in global_data["daily_stats"]: global_data["daily_stats"]["coins"] = {}
-    if cid_upper not in global_data["daily_stats"]["coins"]: global_data["daily_stats"]["coins"][cid_upper] = {"wins": 0, "losses": 0, "net_profit": 0.0}
-    if is_win: global_data["daily_stats"]["coins"][cid_upper]["wins"] += 1
-    else: global_data["daily_stats"]["coins"][cid_upper]["losses"] += 1
-    global_data["daily_stats"]["coins"][cid_upper]["net_profit"] += diff
+    for report_type in ["daily_stats", "weekly_stats", "monthly_stats"]:
+        if "coins" not in global_data[report_type]: global_data[report_type]["coins"] = {}
+        if cid_upper not in global_data[report_type]["coins"]: 
+            global_data[report_type]["coins"][cid_upper] = {"wins": 0, "losses": 0, "net_profit": 0.0}
+        
+        if is_win: global_data[report_type]["coins"][cid_upper]["wins"] += 1
+        else: global_data[report_type]["coins"][cid_upper]["losses"] += 1
+        global_data[report_type]["coins"][cid_upper]["net_profit"] += diff
 
-    # 3. تحديث الإحصائيات الأسبوعية المضافة حديثاً
-    if "coins" not in global_data["weekly_stats"]: global_data["weekly_stats"]["coins"] = {}
-    if cid_upper not in global_data["weekly_stats"]["coins"]: global_data["weekly_stats"]["coins"][cid_upper] = {"wins": 0, "losses": 0, "net_profit": 0.0}
-    if is_win: global_data["weekly_stats"]["coins"][cid_upper]["wins"] += 1
-    else: global_data["weekly_stats"]["coins"][cid_upper]["losses"] += 1
-    global_data["weekly_stats"]["coins"][cid_upper]["net_profit"] += diff
-
-    # 4. تحديث الإحصائيات الشهرية
-    if "coins" not in global_data["monthly_stats"]: global_data["monthly_stats"]["coins"] = {}
-    if cid_upper not in global_data["monthly_stats"]["coins"]: global_data["monthly_stats"]["coins"][cid_upper] = {"wins": 0, "losses": 0, "net_profit": 0.0}
-    if is_win: global_data["monthly_stats"]["coins"][cid_upper]["wins"] += 1
-    else: global_data["monthly_stats"]["coins"][cid_upper]["losses"] += 1
-    global_data["monthly_stats"]["coins"][cid_upper]["net_profit"] += diff
-
-# --- دالة البوت المحسنة والآمنة ---
 def run_trading_bot():
     global global_data
     print(">>> TRADING BOT WITH REPORT TABLES STARTED <<<", flush=True)
@@ -206,17 +179,15 @@ def run_trading_bot():
         load_global_data()
         if "global_stats" not in global_data:
             global_data["global_stats"] = {"wins": 0, "losses": 0, "net_profit": 0.0, "total_win_amount": 0.0, "total_loss_amount": 0.0}
-        if "monthly_stats" not in global_data or "coins" not in global_data["monthly_stats"]:
-            global_data["monthly_stats"] = {"month": datetime.now().strftime("%Y-%m"), "coins": {}}
-        if "weekly_stats" not in global_data or "coins" not in global_data["weekly_stats"]:
-            global_data["weekly_stats"] = {"week": datetime.now().strftime("%Y-W%W"), "coins": {}}
-        if "daily_stats" not in global_data or "coins" not in global_data["daily_stats"]:
-            global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
+        if "monthly_stats" not in global_data: global_data["monthly_stats"] = {"month": datetime.now().strftime("%Y-%m"), "coins": {}}
+        if "weekly_stats" not in global_data: global_data["weekly_stats"] = {"week": datetime.now().strftime("%Y-W%W"), "coins": {}}
+        if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("🚀 تم تشغيل البوت بنجاح! نظام توليد الجداول (اليومية / الأسبوعية / الشهرية) يعمل بكفاءة.")
+    send_telegram("🚀 تم تشغيل البوت بنجاح وحقن فلاتر الأمان لتقصي البيانات القديمة.")
 
     consecutive_failures = 0
+    is_first_loop = True  # متغير لتحديد أول دورة تشغيلية للبوت فور إقلاعه
     
     while True:
         try:
@@ -226,28 +197,21 @@ def run_trading_bot():
             save_needed = False
 
             with data_lock:
-                # 1. إرسال الجدول الشهري عند انتهاء الشهر
                 if global_data["monthly_stats"].get("month") != current_month:
-                    report_text = build_telegram_table(global_data["monthly_stats"], "التقرير الشهري الختامي للحصاد", "الشهر المنتهي", global_data["monthly_stats"].get("month"))
-                    send_telegram(report_text)
+                    send_telegram(build_telegram_table(global_data["monthly_stats"], "التقرير الشهري الختامي للنتائج", "الشهر المنتهي", global_data["monthly_stats"].get("month")))
                     global_data["monthly_stats"] = {"month": current_month, "coins": {}}
                     save_needed = True
 
-                # 2. إرسال الجدول الأسبوعي عند انتهاء الأسبوع (مضاف حديثاً)
                 if global_data["weekly_stats"].get("week") != current_week:
-                    report_text = build_telegram_table(global_data["weekly_stats"], "التقرير الأسبوعي الختامي للحصاد", "الأسبوع المنتهي", global_data["weekly_stats"].get("week"))
-                    send_telegram(report_text)
+                    send_telegram(build_telegram_table(global_data["weekly_stats"], "التقرير الأسبوعي الختامي للنتائج", "الأسبوع المنتهي", global_data["weekly_stats"].get("week")))
                     global_data["weekly_stats"] = {"week": current_week, "coins": {}}
                     save_needed = True
 
-                # 3. إرسال الجدول اليومي التفصيلي عند انتهاء اليوم
                 if global_data["daily_stats"].get("date") != current_date:
-                    report_text = build_telegram_table(global_data["daily_stats"], "التقرير اليومي للحصاد كل 24 ساعة", "التاريخ المنتهي", global_data["daily_stats"].get("date"))
-                    send_telegram(report_text)
+                    send_telegram(build_telegram_table(global_data["daily_stats"], "التقرير اليومي للحصاد (كل 24 ساعة)", "التاريخ المنتهي", global_data["daily_stats"].get("date")))
                     global_data["daily_stats"] = {"date": current_date, "coins": {}}
                     save_needed = True
 
-            # جلب الأسعار من بينانس
             try:
                 url = "https://api.binance.com/api/v3/ticker/price"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -256,8 +220,7 @@ def run_trading_bot():
                 consecutive_failures = 0
             except Exception as e:
                 consecutive_failures += 1
-                print(f"⚠️ Binance API error ({consecutive_failures}): {e}", flush=True)
-                time.sleep(60 if consecutive_failures < 5 else 300)
+                time.sleep(60)
                 continue
             
             market_prices = {}
@@ -279,30 +242,36 @@ def run_trading_bot():
                             elif key in ["is_holding", "trailing_active"]: global_data[cid][key] = False
                             elif key == "last_history_time": global_data[cid][key] = 0.0
 
-                    # تحديث السجل الرياضي (كل 5 دقائق)
                     if current_time_seconds - global_data[cid]["last_history_time"] >= 300:
                         global_data[cid]["history"].append(price)
-                        if len(global_data[cid]["history"]) > 20:
-                            global_data[cid]["history"].pop(0)
+                        if len(global_data[cid]["history"]) > 20: global_data[cid]["history"].pop(0)
                         global_data[cid]["last_history_time"] = current_time_seconds
                         save_needed = True
 
-                    # --- إدارة الصفقة المفتوحة ---
+                    # --- إدارة وتدقيق الصفقات المفتوحة ---
                     if global_data[cid]["is_holding"]:
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
                         
+                        # حساب النسبة المئوية الفعلية والحالية لحركة السعر مقارنة بالدخول
+                        actual_change_percent = ((price - buy_price) / buy_price) * 100
+                        
+                        # [فلتر الأمان]: إذا أشرق البوت على صفقة خاسرة بأكثر من 5% في أول دقيقة تشغيل، يتم تصفيرها فوراً دون تصفية
+                        if is_first_loop and actual_change_percent <= -5.0:
+                            print(f"🛡️ Safety Guard: Dropped ghost/stale position for {cid.upper()}", flush=True)
+                            global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
+                            save_needed = True
+                            continue
+
                         stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         activation_price = buy_price * (1 + RISK_CONFIG['trailing_activation'])
                         
-                        # تفقد تفعيل التتبع الحركي
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
                             global_data[cid]["trailing_active"] = True
                             global_data[cid]["highest_price"] = price
-                            send_telegram(f"🔥 {cid.upper()} - تجاوزت الـ +{RISK_CONFIG['trailing_activation']*100}% وبدأ التتبع الحركي! السعر اللحظي: {price}$")
+                            send_telegram(f"🔥 *{cid.upper()}* - تجاوزت الـ +{RISK_CONFIG['trailing_activation']*100}% وبدأ التتبع الحركي السعر: {price}$")
                             save_needed = True
 
-                        # منطق ملاحقة السعر وحجز الأرباح
                         if global_data[cid]["trailing_active"]:
                             if price > global_data[cid]["highest_price"]:
                                 global_data[cid]["highest_price"] = price
@@ -312,16 +281,17 @@ def run_trading_bot():
                             if price <= trailing_stop_price:
                                 diff = (price - buy_price) * global_data[cid]['held']
                                 update_all_stats(cid, diff)
-                                send_telegram(f"🚀 *بيع ذكي بمطاردة الأرباح:* {cid.upper()}\nسعر الشراء: `{buy_price:.4f}$`\nسعر البيع: `{price:.4f}$`\n💰 صافي الربح: `+{diff:.2f}$`")
+                                actual_win_percent = ((price - buy_price) / buy_price) * 100
+                                send_telegram(f"🚀 *بيع ذكي بمطاردة الأرباح:* {cid.upper()}\n💰 صافي الربح: `+{diff:.2f}$` (`+{actual_win_percent:.2f}%`) ")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                                 save_needed = True
                                 continue
 
-                        # وقف الخسارة الثابت
+                        # سحب وقف الخسارة الثابت الحقيقي بناءً على الحساب الفعلي المحدث
                         if price <= stop_loss_price and not global_data[cid]["trailing_active"]:
                             diff = (price - buy_price) * global_data[cid]['held']
                             update_all_stats(cid, diff)
-                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة الثابت*\nالخسارة: `{diff:.2f}$` (-{RISK_CONFIG['stop_loss']*100}%)")
+                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة الثابت*\n📉 الخسارة: `{diff:.2f}$` (`{actual_change_percent:.2f}%`) ")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
@@ -344,9 +314,9 @@ def run_trading_bot():
                             save_needed = True
 
             if save_needed:
-                with data_lock:
-                    save_global_data()
+                with data_lock: save_global_data()
             
+            is_first_loop = False  # تنتهي الدورة الأولى ويتحول البوت للرصد الحي المستقر
             time.sleep(30)
             
         except Exception as e:
@@ -356,7 +326,5 @@ def run_trading_bot():
 if __name__ == "__main__":
     t = threading.Thread(target=run_trading_bot, daemon=True)
     t.start()
-    print(">>> MAIN FLASK APP RUNNING <<<", flush=True)
-    
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)
