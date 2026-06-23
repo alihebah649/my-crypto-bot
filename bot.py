@@ -22,13 +22,16 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# --- إعدادات إدارة المخاطر المحسنة والمثبتة ---
+# --- إعدادات إدارة المخاطر والدروع ---
 RISK_CONFIG = {
-    'entry_amount_usd': 50.0,      # مبلغ الدخول الثابت لكل صفقة
-    'stop_loss': 0.025,            # 2.5% وقف خسارة مستهدف
-    'trailing_activation': 0.015,  # 1.5% تفعيل التتبع الحركي
-    'trailing_stop': 0.005,        # 0.5% حماية الأرباح
-    'initial_capital': 1000.0      # رأس المال الافتراضي الأولي
+    'entry_amount_usd': 50.0,
+    'stop_loss': 0.015,            # 1.5% وقف خسارة
+    'trailing_activation': 0.015,
+    'trailing_stop': 0.005,
+    'initial_capital': 1000.0,
+    'max_open_trades': 3,          
+    'cooldown_hours': 2,
+    'btc_crash_threshold': -0.03   # تفعيل وضع الطوارئ إذا هبط البيتكوين بنسبة 3%
 }
 
 def build_telegram_table(stats_dict, title, period_label, period_value):
@@ -69,12 +72,23 @@ def home():
         win_rate = (stats.get('wins', 0) / total_trades * 100) if total_trades > 0 else 0
         current_capital = RISK_CONFIG['initial_capital'] + stats.get('net_profit', 0.0)
         
+        open_trades = []
+        if "global_stats" in global_data:
+            for k, v in global_data.items():
+                if isinstance(v, dict) and v.get("is_holding", False):
+                    open_trades.append(k.upper())
+
         return jsonify({
-            "status": "🚀 Halal Trading Bot Running Smoothly",
+            "status": "🚀 Halal Trading Bot (Pro K-lines & BTC Guard) Running",
             "account_summary": {
                 "initial_capital": f"${RISK_CONFIG['initial_capital']:.2f}",
                 "current_capital": f"${current_capital:.2f}",
                 "net_profit": f"${stats.get('net_profit', 0.0):.2f}"
+            },
+            "protection_status": {
+                "max_allowed_trades": RISK_CONFIG['max_open_trades'],
+                "currently_open_trades": len(open_trades),
+                "active_positions": open_trades
             },
             "performance": {
                 "total_trades": total_trades,
@@ -82,6 +96,25 @@ def home():
             },
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }), 200
+
+@app.route('/reset-my-stats')
+def reset_my_stats():
+    global global_data
+    with data_lock:
+        global_data["global_stats"] = {"wins": 0, "losses": 0, "net_profit": 0.0, "total_win_amount": 0.0, "total_loss_amount": 0.0}
+        global_data["monthly_stats"] = {"month": datetime.now().strftime("%Y-%m"), "coins": {}}
+        global_data["weekly_stats"] = {"week": datetime.now().strftime("%Y-W%W"), "coins": {}}
+        global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
+        
+        for key in list(global_data.keys()):
+            if key not in ["global_stats", "monthly_stats", "weekly_stats", "daily_stats"]:
+                if isinstance(global_data[key], dict):
+                    global_data[key].update({
+                        'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 
+                        'trailing_active': False, 'highest_price': 0.0, 'last_stop_loss_time': 0.0
+                    })
+        save_global_data()
+    return "⚡ Done! All stats, active positions, and cooldown filters reset to zero.", 200
 
 def load_global_data():
     global global_data
@@ -92,6 +125,10 @@ def load_global_data():
             with urllib.request.urlopen(req, timeout=15) as r:
                 response = json.loads(r.read().decode())
                 global_data = response.get('record', {})
+                # تنظيف البيانات القديمة التي لم نعد نحتاجها (history)
+                for k in list(global_data.keys()):
+                    if isinstance(global_data[k], dict) and "history" in global_data[k]:
+                        del global_data[k]["history"]
                 print("✅ Data loaded from JSONBin cloud!", flush=True)
                 return
         except Exception as e:
@@ -103,8 +140,7 @@ def load_global_data():
                 global_data = json.load(f)
                 print("✅ Data loaded from local file.", flush=True)
                 return
-        except:
-            pass
+        except: pass
     global_data = {}
 
 def save_global_data():
@@ -118,13 +154,11 @@ def save_global_data():
         try:
             url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
             req = urllib.request.Request(
-                url,
-                data=json.dumps(global_data).encode('utf-8'),
+                url, data=json.dumps(global_data).encode('utf-8'),
                 headers={"X-Master-Key": JSONBIN_KEY, "Content-Type": "application/json"},
                 method="PUT"
             )
             urllib.request.urlopen(req, timeout=15)
-            print("💾 Cloud backup synchronized!", flush=True)
         except Exception as e:
             print(f"⚠️ Cloud backup failed: {e}", flush=True)
 
@@ -149,9 +183,22 @@ def update_all_stats(cid, diff):
         else: global_data[report_type]["coins"][cid_upper]["losses"] += 1
         global_data[report_type]["coins"][cid_upper]["net_profit"] += diff
 
+# --- دالة سحب بيانات الشموع اليابانية المباشرة من بينانس ---
+def get_klines_closing_prices(symbol, interval='15m', limit=40):
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as f:
+            data = json.loads(f.read().decode())
+            # جلب سعر الإغلاق (مؤشر 4)
+            return [float(candle[4]) for candle in data]
+    except Exception as e:
+        print(f"⚠️ K-lines API Error for {symbol}: {e}")
+        return []
+
 def run_trading_bot():
     global global_data
-    print(">>> TRADING BOT WITH REPORT TABLES STARTED <<<", flush=True)
+    print(">>> PRO BOT WITH K-LINES & BTC GUARD STARTED <<<", flush=True)
     
     coin_mapping = {
         "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
@@ -183,9 +230,10 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("🚀 تم تشغيل البوت بنجاح وحقن فلاتر حماية الإحصائيات عند الإقلاع.")
+    send_telegram("🚀 *تم ترقية البوت وتحديثه بنجاح!*\n📊 تم تفعيل نظام K-lines المباشر.\n🛡️ حارس البيتكوين (BTC Guard) يعمل الآن لمراقبة الانهيارات.")
 
-    is_first_loop = True  # تفعيل راية الدورة الأولى البرمجية
+    is_first_loop = True  
+    btc_alert_sent = False
     
     while True:
         try:
@@ -196,55 +244,67 @@ def run_trading_bot():
 
             with data_lock:
                 if global_data["monthly_stats"].get("month") != current_month:
-                    send_telegram(build_telegram_table(global_data["monthly_stats"], "التقرير الشهري الختامي للنتائج", "الشهر المنتهي", global_data["monthly_stats"].get("month")))
+                    send_telegram(build_telegram_table(global_data["monthly_stats"], "التقرير الشهري", "الشهر المنتهي", global_data["monthly_stats"].get("month")))
                     global_data["monthly_stats"] = {"month": current_month, "coins": {}}
                     save_needed = True
 
                 if global_data["weekly_stats"].get("week") != current_week:
-                    send_telegram(build_telegram_table(global_data["weekly_stats"], "التقرير الأسبوعي الختامي للنتائج", "الأسبوع المنتهي", global_data["weekly_stats"].get("week")))
+                    send_telegram(build_telegram_table(global_data["weekly_stats"], "التقرير الأسبوعي", "الأسبوع المنتهي", global_data["weekly_stats"].get("week")))
                     global_data["weekly_stats"] = {"week": current_week, "coins": {}}
                     save_needed = True
 
                 if global_data["daily_stats"].get("date") != current_date:
-                    send_telegram(build_telegram_table(global_data["daily_stats"], "التقرير اليومي للحصاد (كل 24 ساعة)", "التاريخ المنتهي", global_data["daily_stats"].get("date")))
+                    send_telegram(build_telegram_table(global_data["daily_stats"], "حصاد اليوم", "التاريخ المنتهي", global_data["daily_stats"].get("date")))
                     global_data["daily_stats"] = {"date": current_date, "coins": {}}
                     save_needed = True
 
+            # جلب الأسعار اللحظية لجميع العملات (لإدارة الصفقات المفتوحة)
             try:
                 url = "https://api.binance.com/api/v3/ticker/price"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=15) as f:
                     ticker_data = json.loads(f.read().decode())
+                
+                market_prices = {}
+                for item in ticker_data:
+                    if item['symbol'] in coin_mapping:
+                        market_prices[item['symbol']] = float(item['price'])
             except Exception as e:
                 time.sleep(60)
                 continue
             
-            market_prices = {}
-            for item in ticker_data:
-                if item['symbol'] in coin_mapping:
-                    market_prices[coin_mapping[item['symbol']]] = float(item['price'])
-            
             current_time_seconds = time.time()
 
+            # --- فحص حارس البيتكوين (BTC Guard) ---
+            btc_is_crashing = False
+            btc_prices = get_klines_closing_prices("BTCUSDT", "1h", 6)
+            if len(btc_prices) >= 6:
+                highest_recent = max(btc_prices)
+                current_btc = btc_prices[-1]
+                drop_percent = (current_btc - highest_recent) / highest_recent
+                
+                if drop_percent <= RISK_CONFIG['btc_crash_threshold']:
+                    btc_is_crashing = True
+                    if not btc_alert_sent:
+                        send_telegram(f"🚨 *تحذير حارس البيتكوين (BTC Guard):*\nتم رصد هبوط حاد للبيتكوين بنسبة `{drop_percent*100:.2f}%`.\nتم إيقاف فتح أي صفقات جديدة مؤقتاً لحماية رأس المال حتى يستقر السوق.")
+                        btc_alert_sent = True
+                else:
+                    if btc_alert_sent:
+                        send_telegram("✅ *استقرار السوق:*\nتعافى البيتكوين وتجاوز مرحلة الخطر. البوت يستأنف عمليات البحث عن صفقات جديدة.")
+                        btc_alert_sent = False
+
             with data_lock:
-                for cid, price in market_prices.items():
+                for symbol, price in market_prices.items():
+                    cid = coin_mapping[symbol]
                     if cid not in global_data:
                         global_data[cid] = {}
                     
-                    for key in ["history", "held", "buy_price", "is_holding", "trailing_active", "highest_price", "last_history_time"]:
+                    for key in ["held", "buy_price", "is_holding", "trailing_active", "highest_price", "last_stop_loss_time"]:
                         if key not in global_data[cid]:
-                            if key == "history": global_data[cid][key] = []
-                            elif key in ["held", "buy_price", "highest_price"]: global_data[cid][key] = 0.0
+                            if key in ["held", "buy_price", "highest_price", "last_stop_loss_time"]: global_data[cid][key] = 0.0
                             elif key in ["is_holding", "trailing_active"]: global_data[cid][key] = False
-                            elif key == "last_history_time": global_data[cid][key] = 0.0
 
-                    if current_time_seconds - global_data[cid]["last_history_time"] >= 300:
-                        global_data[cid]["history"].append(price)
-                        if len(global_data[cid]["history"]) > 20: global_data[cid]["history"].pop(0)
-                        global_data[cid]["last_history_time"] = current_time_seconds
-                        save_needed = True
-
-                    # --- إدارة وتدقيق الصفقات المفتوحة ---
+                    # --- إدارة الصفقات المفتوحة بالأسعار اللحظية ---
                     if global_data[cid]["is_holding"]:
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
@@ -252,11 +312,7 @@ def run_trading_bot():
                         actual_change_percent = ((price - buy_price) / buy_price) * 100
                         stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         
-                        # [فلتر أمان متطور]: إذا أشرق البوت على هبوط تجاوز الوقف بسبب فترة التحديث صيانة الخدمة
-                        # يتم تصفير تعقب العملة فوراً بشكل نظيف ودون تلويث سجل الأرباح الفعلي
                         if is_first_loop and price <= stop_loss_price:
-                            print(f"🛡️ Safety Guard: Dropped stale position for {cid.upper()} to avoid update slippage.", flush=True)
-                            send_telegram(f"🛡️ *تنبيه أمان التحديث:* تم تصفير تعقب صفقة {cid.upper()} القديمة تلقائياً دون احتساب خسارة، نظراً لأن الهبوط تم أثناء إغلاق البوت للتحديث.")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
                             continue
@@ -266,7 +322,7 @@ def run_trading_bot():
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
                             global_data[cid]["trailing_active"] = True
                             global_data[cid]["highest_price"] = price
-                            send_telegram(f"🔥 *{cid.upper()}* - تجاوزت الـ +{RISK_CONFIG['trailing_activation']*100}% وبدأ التتبع الحركي السعر: {price}$")
+                            send_telegram(f"🔥 *{cid.upper()}* - بدأ التتبع السعر: {price}$")
                             save_needed = True
 
                         if global_data[cid]["trailing_active"]:
@@ -279,41 +335,60 @@ def run_trading_bot():
                                 diff = (price - buy_price) * global_data[cid]['held']
                                 update_all_stats(cid, diff)
                                 actual_win_percent = ((price - buy_price) / buy_price) * 100
-                                send_telegram(f"🚀 *بيع ذكي بمطاردة الأرباح:* {cid.upper()}\n💰 صافي الربح: `+{diff:.2f}$` (`+{actual_win_percent:.2f}%`) ")
+                                send_telegram(f"🚀 *بيع ذكي:* {cid.upper()}\n💰 الربح: `+{diff:.2f}$` (`+{actual_win_percent:.2f}%`) ")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                                 save_needed = True
                                 continue
 
-                        # الخروج العادي بوقف خسارة حي مستقر أثناء عمل البوت
                         if price <= stop_loss_price and not global_data[cid]["trailing_active"]:
                             diff = (price - buy_price) * global_data[cid]['held']
                             update_all_stats(cid, diff)
-                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة الثابت*\n📉 الخسارة الحقيقية: `{diff:.2f}$` (`{actual_change_percent:.2f}%`) ")
+                            global_data[cid]["last_stop_loss_time"] = current_time_seconds
+                            send_telegram(f"🛑 *{cid.upper()} - ضرب وقف الخسارة (1.5%)*\n📉 الخسارة: `{diff:.2f}$`\n⏳ تم حظر العملة لمدة {RISK_CONFIG['cooldown_hours']} ساعات.")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
-                    # --- منطق الشراء المستقر بقيمة 50$ ---
+                    # --- منطق الشراء الجديد المعتمد على K-lines المباشرة ---
                     else:
-                        h = global_data[cid]["history"]
-                        if len(h) < 5: continue
-                        
-                        sma = sum(h) / len(h)
-                        variance = sum((x - sma)**2 for x in h) / len(h)
+                        if btc_is_crashing:
+                            continue # تخطي البحث عن صفقات إذا كان البيتكوين ينهار
+                            
+                        current_open_trades = sum(1 for c_key in coin_mapping.values() if global_data.get(c_key, {}).get("is_holding", False))
+                        if current_open_trades >= RISK_CONFIG['max_open_trades']:
+                            continue
+                            
+                        cooldown_seconds = RISK_CONFIG['cooldown_hours'] * 3600
+                        if current_time_seconds - global_data[cid].get("last_stop_loss_time", 0.0) < cooldown_seconds:
+                            continue
+
+                        # سحب شموع الـ 15 دقيقة (آخر 40 شمعة للعملة الحالية)
+                        klines = get_klines_closing_prices(symbol, '15m', 40)
+                        if len(klines) < 40: continue
+
+                        # الفلتر الكلي (الاتجاه بناءً على الـ 40 شمعة)
+                        trend_ma = sum(klines) / len(klines)
+                        if price < trend_ma:
+                            continue # مسار العملة العام هابط، لا تقم بالشراء
+
+                        # الفلتر المحلي (اقتناص الارتداد الموضعي بناءً على آخر 20 شمعة)
+                        local_klines = klines[-20:]
+                        sma = sum(local_klines) / len(local_klines)
+                        variance = sum((x - sma)**2 for x in local_klines) / len(local_klines)
                         std = variance ** 0.5 if variance > 0 else 0.001
                         lower_band = sma - std
-                        
+
                         if price <= lower_band and price > 0:
                             position_size = RISK_CONFIG['entry_amount_usd'] / price
                             global_data[cid].update({
                                 'held': position_size, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': 0.0
                             })
-                            send_telegram(f"🎯 *قناص الشراء:* اقتناص {cid.upper()} بسعر `{price:.4f}$` بإجمالي استثمار 50$")
+                            send_telegram(f"🎯 *قناص الشراء K-lines:* {cid.upper()} بسعر `{price}$` [صفقة {current_open_trades + 1}/{RISK_CONFIG['max_open_trades']}]")
                             save_needed = True
 
             if save_needed:
                 with data_lock: save_global_data()
             
-            is_first_loop = False  # إغلاق نمط الإقلاع ليعود الرصد حياً ومباشراً ومحكماً
+            is_first_loop = False  
             time.sleep(30)
             
         except Exception as e:
