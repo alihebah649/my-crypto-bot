@@ -277,10 +277,11 @@ def run_trading_bot():
             
             current_time_seconds = time.time()
 
-            # --- فحص حارس البيتكوين ---
+            # --- [تحديث] فحص حارس البيتكوين المطور (منع التذبذب الحر وفخ النافذة الزمنية) ---
             btc_is_crashing = False
-            btc_prices = get_klines_closing_prices("BTCUSDT", "1h", 6)
-            if len(btc_prices) >= 6:
+            # تقليص النافذة إلى 3 ساعات لرصد الانهيارات المفاجئة الفعلية وتجنب حبس البوت لساعات بعد استقرار السوق
+            btc_prices = get_klines_closing_prices("BTCUSDT", "1h", 3)
+            if len(btc_prices) >= 3:
                 highest_recent = max(btc_prices)
                 current_btc = btc_prices[-1]
                 drop_percent = (current_btc - highest_recent) / highest_recent
@@ -288,19 +289,24 @@ def run_trading_bot():
                 if drop_percent <= RISK_CONFIG['btc_crash_threshold']:
                     btc_is_crashing = True
                     if not btc_alert_sent:
-                        send_telegram(f"🚨 *حارس البيتكوين: هبوط حاد!*\nتم رصد تراجع بنسبة `{drop_percent*100:.2f}%`.\nتجميد صفقات الشراء الجديدة مؤقتاً.")
+                        send_telegram(f"🚨 *حارس البيتكوين: هبوط حاد!*\nتم رصد تراجع بنسبة `{drop_percent*100:.2f}%`.\nتجميد صفقات الشراء التقليدية مؤقتاً.")
                         btc_alert_sent = True
                 else:
-                    if btc_alert_sent:
-                        send_telegram("✅ *استقرار البيتكوين:* عودة محرك البحث للعمل بشكل طبيعي.")
+                    # نظام المنطقة العازلة (Hysteresis): لا يتم فك التجميد إلا إذا تعافى السعر تماماً وتجاوز عتبة -2%
+                    if btc_alert_sent and drop_percent > -0.02:
+                        send_telegram("✅ *استقرار البيتكوين الحقيقي:* تعافي السعر وتجاوز منطقة الخطر، عودة المحرك للعمل طبيعياً.")
                         btc_alert_sent = False
+                    elif btc_alert_sent:
+                        # يستمر التجميد في المنطقة العازلة الصامتة بين (-3% و -2%) دون تكرار إرسال رسائل التليجرام
+                        btc_is_crashing = True
 
             # تجميع العملات الجاهزة للفحص بشكل متوازٍ
             symbols_to_fetch_klines = []
             with data_lock:
                 current_open_trades = sum(1 for c_key in coin_mapping.values() if global_data.get(c_key, {}).get("is_holding", False))
                 
-            if current_open_trades < RISK_CONFIG['max_open_trades'] and not btc_is_crashing:
+            # [تحديث تعديلي حرج]: أزلنا شرط حظر الجلب أثناء انهيار البيتكوين لتمكين البوت من قنص صفقات الـ Alpha المستقلة صعوداً
+            if current_open_trades < RISK_CONFIG['max_open_trades']:
                 for symbol in coin_mapping.keys():
                     cid = coin_mapping[symbol]
                     with data_lock:
@@ -360,7 +366,6 @@ def run_trading_bot():
                             
                             trailing_stop_price = global_data[cid]["highest_price"] * (1 - RISK_CONFIG['trailing_stop'])
                             if price <= trailing_stop_price:
-                                # احتساب الأرباح الإجمالية والخصم الدقيق للرسوم لتفادي الاختلافات
                                 total_volume = (buy_price * global_data[cid]['held']) + (price * global_data[cid]['held'])
                                 roundtrip_fees = total_volume * RISK_CONFIG['binance_fee_rate']
                                 gross_profit = (price - buy_price) * global_data[cid]['held']
@@ -378,18 +383,17 @@ def run_trading_bot():
                             total_volume = (buy_price * global_data[cid]['held']) + (price * global_data[cid]['held'])
                             roundtrip_fees = total_volume * RISK_CONFIG['binance_fee_rate']
                             gross_loss = (price - buy_price) * global_data[cid]['held']
-                            net_loss = gross_loss - roundtrip_fees # ستكون قيمة سالبة أعمق تشمل الرسوم
+                            net_loss = gross_loss - roundtrip_fees 
                             
                             update_all_stats(cid, net_loss)
                             global_data[cid]["last_stop_loss_time"] = current_time_seconds
                             
-                            send_telegram(f"🛑 *{cid.upper()} - حماية المحفظة (إغلاق سلبي)*\n📉 الخسارة الصافية بـالع عمولات: `{net_loss:.2f}$`\n⏳ حظر العملة مؤقتاً لمدة {RISK_CONFIG['cooldown_hours']} ساعة للراحة.")
+                            send_telegram(f"🛑 *{cid.upper()} - حماية المحفظة (إغلاق سلبي)*\n📉 الخسارة الصافية بالعمولات: `{net_loss:.2f}$`\n⏳ حظر العملة مؤقتاً لمدة {RISK_CONFIG['cooldown_hours']} ساعة للراحة.")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
-                    # --- فلتر الدخول المرن السريع ---
+                    # --- [تحديث مدمج] فلتر الدخول المرن السريع للعملات التقليدية والمستقلة (Alpha) ---
                     else:
-                        if btc_is_crashing: continue 
                         if current_open_trades >= RISK_CONFIG['max_open_trades']: continue
                             
                         cooldown_seconds = RISK_CONFIG['cooldown_hours'] * 3600
@@ -398,23 +402,38 @@ def run_trading_bot():
                         klines = all_fetched_klines.get(symbol, [])
                         if len(klines) < 40: continue
 
-                        # التعديل الاستراتيجي: تقليص النطاق لـ 15 شمعة لجعل البوت فائق المرونة والنشاط
+                        # قياس الاتجاه المرن لآخر 15 شمعة لجعل البوت فائق المرونة والنشاط
                         flexible_klines = klines[-15:]
                         trend_ma = sum(flexible_klines) / len(flexible_klines)
-                        if price < trend_ma: continue 
 
+                        # حساب مؤشرات نطاقات البولنجر لآخر 20 شمعة
                         local_klines = klines[-20:]
                         sma = sum(local_klines) / len(local_klines)
                         variance = sum((x - sma)**2 for x in local_klines) / len(local_klines)
                         std = variance ** 0.5 if variance > 0 else 0.001
                         lower_band = sma - std
+                        upper_band = sma + std
 
-                        if price <= lower_band and price > 0:
+                        can_buy = False
+                        log_msg = ""
+
+                        if btc_is_crashing:
+                            # [حالة انهيار السوق]: نقتنص فقط العملات المستقلة (Alpha) التي تخترق السقف السعري وتعاكس الهبوط بقوة
+                            if price >= upper_band and price > trend_ma:
+                                can_buy = True
+                                log_msg = f"🚀 *قنص اختراق مستقل (Alpha) يعاكس هبوط السوق:* {cid.upper()}"
+                        else:
+                            # [حالة السوق الطبيعي]: نعتمد الاستراتيجية القياسية وهي شراء الارتداد من الأسفل (بشرط تخطي الـ trend_ma لضمان التعافي الحقيقي)
+                            if price <= lower_band and price > trend_ma and price > 0:
+                                can_buy = True
+                                log_msg = f"🎯 *قنص سريع (مرونة 15 شمعة):* {cid.upper()}"
+
+                        if can_buy:
                             position_size = RISK_CONFIG['entry_amount_usd'] / price
                             global_data[cid].update({
                                 'held': position_size, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': 0.0
                             })
-                            send_telegram(f"🎯 *قنص سريع (مرونة 15 شمعة):* {cid.upper()} بسعر `{price}$` [صفقة {current_open_trades + 1}/{RISK_CONFIG['max_open_trades']}]")
+                            send_telegram(f"{log_msg} بسعر `{price}$` [صفقة {current_open_trades + 1}/{RISK_CONFIG['max_open_trades']}]")
                             current_open_trades += 1
                             save_needed = True
 
@@ -422,13 +441,13 @@ def run_trading_bot():
                 with data_lock: save_global_data()
             
             is_first_loop = False  
-            time.sleep(30) # فحص متكرر سريع كل 30 ثانية
+            time.sleep(30) # فحص متكرر سريع كل 30 ثانية كما هو محدد في هيكلك الأصلي
             
         except Exception as e:
             print(f"⚠️ Error in Loop: {str(e)}", flush=True)
             time.sleep(30)
 
-# --- نقطة التشغيل الاحترافية ---
+# --- نقطة التشغيل الاحترافية لخادم Flask والمحرك ---
 if __name__ == "__main__":
     with data_lock:
         load_global_data()
