@@ -5,7 +5,7 @@ import json
 import urllib.request
 import urllib.parse
 import urllib.error
-import concurrent.futures  # تفعيل جلب البيانات المتوازي الفائق
+import concurrent.futures  
 from datetime import datetime
 from flask import Flask, jsonify
 
@@ -23,15 +23,15 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# --- الإعدادات الذهبية المحدثة لزيادة النشاط وحساب الرسوم ---
+# --- الإعدادات الذهبية المحدثة (وقف خسارة 1.2%) ---
 RISK_CONFIG = {
     'entry_amount_usd': 50.0,
-    'stop_loss': 0.015,            # وقف خسارة حقيقي 1.5% من حركة السوق
+    'stop_loss': 0.012,            # تم التحديث: وقف خسارة محكم 1.2% لحماية السيولة سريعاً
     'trailing_activation': 0.013,  # تفعيل الأرباح عند 1.3% (هدف سريع ومرن يتجاوز رسوم المنصة بأريحية)
     'trailing_stop': 0.003,        # تتبع ذكي بفارق 0.3% لقنص القمم
     'initial_capital': 1000.0,
-    'max_open_trades': 5,          # رفع المحفظة إلى 5 صفقات متزامنة لمنع جمود البوت عند الحركة العرضية
-    'cooldown_hours': 1,           # تقليص مدة حظر العملة الخاسرة إلى ساعة واحدة فقط لسرعة اقتناص الارتداد
+    'max_open_trades': 5,          # رفع المحفظة إلى 5 صفقات متزامنة لمنع جمود البوت
+    'cooldown_hours': 1,           # مدة حظر العملة الخاسرة ساعة واحدة فقط لسرعة اقتناص الارتداد
     'btc_crash_threshold': -0.03,  # درع حماية البيتكوين
     'binance_fee_rate': 0.001      # احتساب رسوم بينانس بدقة (0.1% للشراء و 0.1% للبيع)
 }
@@ -232,7 +232,7 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("⚡ *تم إطلاق إصدار المضاربة المرنة المطور!*\n🎯 سعة المحفظة: 5 صفقات متزامنة.\n📊 نظام الخصم التلقائي لرسوم بينانس (0.2%) مفعّل لحساب صافي الأرباح الحقيقي الحرج.")
+    send_telegram("⚡ *تم تحديث إعدادات البوت بنجاح!*\n📉 تم ضبط وقف الخسارة المحكم عند: `1.2%`.\n🎯 سعة المحفظة: 5 صفقات متزامنة.")
 
     is_first_loop = True  
     btc_alert_sent = False
@@ -277,9 +277,8 @@ def run_trading_bot():
             
             current_time_seconds = time.time()
 
-            # --- [تحديث] فحص حارس البيتكوين المطور (منع التذبذب الحر وفخ النافذة الزمنية) ---
+            # --- حارس البيتكوين المطور ---
             btc_is_crashing = False
-            # تقليص النافذة إلى 3 ساعات لرصد الانهيارات المفاجئة الفعلية وتجنب حبس البوت لساعات بعد استقرار السوق
             btc_prices = get_klines_closing_prices("BTCUSDT", "1h", 3)
             if len(btc_prices) >= 3:
                 highest_recent = max(btc_prices)
@@ -292,20 +291,16 @@ def run_trading_bot():
                         send_telegram(f"🚨 *حارس البيتكوين: هبوط حاد!*\nتم رصد تراجع بنسبة `{drop_percent*100:.2f}%`.\nتجميد صفقات الشراء التقليدية مؤقتاً.")
                         btc_alert_sent = True
                 else:
-                    # نظام المنطقة العازلة (Hysteresis): لا يتم فك التجميد إلا إذا تعافى السعر تماماً وتجاوز عتبة -2%
                     if btc_alert_sent and drop_percent > -0.02:
                         send_telegram("✅ *استقرار البيتكوين الحقيقي:* تعافي السعر وتجاوز منطقة الخطر، عودة المحرك للعمل طبيعياً.")
                         btc_alert_sent = False
                     elif btc_alert_sent:
-                        # يستمر التجميد في المنطقة العازلة الصامتة بين (-3% و -2%) دون تكرار إرسال رسائل التليجرام
                         btc_is_crashing = True
 
-            # تجميع العملات الجاهزة للفحص بشكل متوازٍ
             symbols_to_fetch_klines = []
             with data_lock:
                 current_open_trades = sum(1 for c_key in coin_mapping.values() if global_data.get(c_key, {}).get("is_holding", False))
                 
-            # [تحديث تعديلي حرج]: أزلنا شرط حظر الجلب أثناء انهيار البيتكوين لتمكين البوت من قنص صفقات الـ Alpha المستقلة صعوداً
             if current_open_trades < RISK_CONFIG['max_open_trades']:
                 for symbol in coin_mapping.keys():
                     cid = coin_mapping[symbol]
@@ -344,6 +339,7 @@ def run_trading_bot():
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
                         
+                        # حساب مستوى وقف الخسارة ديناميكياً بناءً على الـ 1.2% الجديدة
                         stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         
                         if is_first_loop and price <= stop_loss_price:
@@ -392,7 +388,7 @@ def run_trading_bot():
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
-                    # --- [تحديث مدمج] فلتر الدخول المرن السريع للعملات التقليدية والمستقلة (Alpha) ---
+                    # --- فلتر الدخول المرن السريع المصحح ---
                     else:
                         if current_open_trades >= RISK_CONFIG['max_open_trades']: continue
                             
@@ -402,11 +398,9 @@ def run_trading_bot():
                         klines = all_fetched_klines.get(symbol, [])
                         if len(klines) < 40: continue
 
-                        # قياس الاتجاه المرن لآخر 15 شمعة لجعل البوت فائق المرونة والنشاط
                         flexible_klines = klines[-15:]
                         trend_ma = sum(flexible_klines) / len(flexible_klines)
 
-                        # حساب مؤشرات نطاقات البولنجر لآخر 20 شمعة
                         local_klines = klines[-20:]
                         sma = sum(local_klines) / len(local_klines)
                         variance = sum((x - sma)**2 for x in local_klines) / len(local_klines)
@@ -418,20 +412,18 @@ def run_trading_bot():
                         log_msg = ""
 
                         if btc_is_crashing:
-                            # [حالة انهيار السوق]: نقتنص فقط العملات المستقلة (Alpha) التي تخترق السقف السعري وتعاكس الهبوط بقوة
                             if price >= upper_band and price > trend_ma:
                                 can_buy = True
                                 log_msg = f"🚀 *قنص اختراق مستقل (Alpha) يعاكس هبوط السوق:* {cid.upper()}"
                         else:
-                            # [حالة السوق الطبيعي]: نعتمد الاستراتيجية القياسية وهي شراء الارتداد من الأسفل (بشرط تخطي الـ trend_ma لضمان التعافي الحقيقي)
-                            if price <= lower_band and price > trend_ma and price > 0:
+                            if price <= lower_band and price > 0:
                                 can_buy = True
-                                log_msg = f"🎯 *قنص سريع (مرونة 15 شمعة):* {cid.upper()}"
+                                log_msg = f"🎯 *قنص سريع من القاع (مرونة 15 شمعة):* {cid.upper()}"
 
                         if can_buy:
                             position_size = RISK_CONFIG['entry_amount_usd'] / price
                             global_data[cid].update({
-                                'held': position_size, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': 0.0
+                                'held': position_size, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': price
                             })
                             send_telegram(f"{log_msg} بسعر `{price}$` [صفقة {current_open_trades + 1}/{RISK_CONFIG['max_open_trades']}]")
                             current_open_trades += 1
@@ -441,13 +433,13 @@ def run_trading_bot():
                 with data_lock: save_global_data()
             
             is_first_loop = False  
-            time.sleep(30) # فحص متكرر سريع كل 30 ثانية كما هو محدد في هيكلك الأصلي
+            time.sleep(30) 
             
         except Exception as e:
             print(f"⚠️ Error in Loop: {str(e)}", flush=True)
             time.sleep(30)
 
-# --- نقطة التشغيل الاحترافية لخادم Flask والمحرك ---
+# --- تشغيل خادم Flask والمحرك ---
 if __name__ == "__main__":
     with data_lock:
         load_global_data()
