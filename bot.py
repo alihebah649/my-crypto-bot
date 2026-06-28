@@ -23,17 +23,17 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# --- الإعدادات الذهبية المحدثة (وقف خسارة 1.2%) ---
+# --- [تحديث استراتيجي] إعدادات قلب ميزان الأرباح وقمع الخسائر ---
 RISK_CONFIG = {
     'entry_amount_usd': 50.0,
-    'stop_loss': 0.012,            # تم التحديث: وقف خسارة محكم 1.2% لحماية السيولة سريعاً
-    'trailing_activation': 0.013,  # تفعيل الأرباح عند 1.3% (هدف سريع ومرن يتجاوز رسوم المنصة بأريحية)
-    'trailing_stop': 0.003,        # تتبع ذكي بفارق 0.3% لقنص القمم
+    'stop_loss': 0.012,            # وقف خسارة محكم وصغير جداً بنسبة 1.2% لحماية السيولة
+    'trailing_activation': 0.026,  # رفع التفعيل إلى 2.6% (لتجاوز ضوضاء السوق وفخ العملات المتذبذبة)
+    'trailing_stop': 0.004,        # تتبع ذكي بفارق 0.4% لإعطاء الصفقة مساحة لصناعة قمم حقيقية
     'initial_capital': 1000.0,
-    'max_open_trades': 5,          # رفع المحفظة إلى 5 صفقات متزامنة لمنع جمود البوت
-    'cooldown_hours': 1,           # مدة حظر العملة الخاسرة ساعة واحدة فقط لسرعة اقتناص الارتداد
-    'btc_crash_threshold': -0.03,  # درع حماية البيتكوين
-    'binance_fee_rate': 0.001      # احتساب رسوم بينانس بدقة (0.1% للشراء و 0.1% للبيع)
+    'max_open_trades': 5,          # سعة المحفظة: 5 صفقات متزامنة لتنويع المخاطر
+    'cooldown_hours': 2,           # رفع الحظر إلى ساعتين لمنع تكرار قنص نفس العملة في الموجة الهابطة
+    'btc_crash_threshold': -0.03,  # درع حماية البيتكوين الشامل
+    'binance_fee_rate': 0.001      # رسوم بينانس بدقة (0.1% للشراء و 0.1% للبيع)
 }
 
 def build_telegram_table(stats_dict, title, period_label, period_value):
@@ -81,7 +81,7 @@ def home():
                     open_trades.append(k.upper())
 
         return jsonify({
-            "status": "🚀 Halal Trading Bot (High-Activity Edition) Running",
+            "status": "🚀 Halal Trading Bot (Strategic Optimization Mode) Running",
             "account_summary": {
                 "initial_capital": f"${RISK_CONFIG['initial_capital']:.2f}",
                 "current_capital": f"${current_capital:.2f}",
@@ -232,7 +232,7 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("⚡ *تم تحديث إعدادات البوت بنجاح!*\n📉 تم ضبط وقف الخسارة المحكم عند: `1.2%`.\n🎯 سعة المحفظة: 5 صفقات متزامنة.")
+    send_telegram("🚀 *تم تفعيل إعدادات قلب ميزان الأرباح بنجاح!*\n🎯 تفعيل تتبع الأرباح المطور: `2.6%`\n🛑 وقف خسارة حماية المحفظة: `1.2%`\n⏳ فترة عزل العملة السلبية: `ساعتين`\n⚖️ *نسبة العائد إلى المخاطرة أصبحت إيجابية لصالحك تماماً الآن.*")
 
     is_first_loop = True  
     btc_alert_sent = False
@@ -339,7 +339,6 @@ def run_trading_bot():
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
                         
-                        # حساب مستوى وقف الخسارة ديناميكياً بناءً على الـ 1.2% الجديدة
                         stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         
                         if is_first_loop and price <= stop_loss_price:
@@ -370,7 +369,8 @@ def run_trading_bot():
                                 update_all_stats(cid, net_profit)
                                 actual_win_percent = (net_profit / (buy_price * global_data[cid]['held'])) * 100
                                 
-                                send_telegram(f"🚀 *بيع تتبعي ناجح:* {cid.upper()}\n💰 الصافي (بعد العمولات): `+{net_profit:.2f}$` (`+{actual_win_percent:.2f}%`)\n💼 الرسوم المستقطعة للمنصة: `{roundtrip_fees:.4f}$`")
+                                # [إصلاح برمي] تم تعديل التنسيق أدناه لمنع ظاهرة الإشارة المزدوجة المتضاربة (+-) نهائياً
+                                send_telegram(f"🚀 *بيع تتبعي ناجح:* {cid.upper()}\n💰 الصافي (بعد العمولات): `{net_profit:+.2f}$` (`{actual_win_percent:+.2f}%`)\n💼 الرسوم المستقطعة للمنصة: `{roundtrip_fees:.4f}$`")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                                 save_needed = True
                                 continue
@@ -384,7 +384,7 @@ def run_trading_bot():
                             update_all_stats(cid, net_loss)
                             global_data[cid]["last_stop_loss_time"] = current_time_seconds
                             
-                            send_telegram(f"🛑 *{cid.upper()} - حماية المحفظة (إغلاق سلبي)*\n📉 الخسارة الصافية بالعمولات: `{net_loss:.2f}$`\n⏳ حظر العملة مؤقتاً لمدة {RISK_CONFIG['cooldown_hours']} ساعة للراحة.")
+                            send_telegram(f"🛑 *{cid.upper()} - حماية المحفظة (إغلاق سلبي)*\n📉 الخسارة الصافية بالعمولات: `{net_loss:.2f}$`\n⏳ حظر العملة مؤقتاً لمدة {RISK_CONFIG['cooldown_hours']} ساعتين للراحة.")
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
