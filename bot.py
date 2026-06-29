@@ -368,8 +368,12 @@ def run_trading_bot():
                         activation_price = buy_price * (1 + RISK_CONFIG['trailing_activation'])
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
                             global_data[cid]["trailing_active"] = True
-                            global_data[cid]["highest_price"] = price
-                            send_telegram(f"🔥 *{cid.upper()}* - دخلت منطقة التتبع الذكي الرابح! السعر الحالي: `{price}$`")
+                            global_data[cid]["highest_price"] = max(price, global_data[cid].get("highest_price", price))
+                            
+                            # ✨ فلتر حظر السبام: يمنع إرسال الرسالة المكررة لـ Telegram إذا تمت إعادة تشغيل البوت والصفقة رابحة بالفعل
+                            if not is_first_loop:
+                                send_telegram(f"🔥 *{cid.upper()}* - دخلت منطقة التتبع الذكي الرابح! السعر الحالي: `{price}$`")
+                                
                             save_needed = True
 
                         # جيم: إدارة ملاحقة الأرباح (Anti-Shakeout) لتفادي الخروج المبكر من الموجات الكبرى
