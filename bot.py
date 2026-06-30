@@ -26,11 +26,12 @@ data_lock = threading.Lock()
 # --- إعدادات إدارة المخاطر الاستراتيجية ---
 RISK_CONFIG = {
     'entry_amount_usd': 50.0,
-    'stop_loss': 0.012,            # وقف خسارة محكم لحماية رأس المال
+    'stop_loss': 0.012,            # وقف خسارة محكم لحماية رأس المال (1.2%)
+    'early_protect': 0.015,        # تفعيل الحماية المبكرة عند 1.5%
     'trailing_activation': 0.026,  # تفعيل تتبع الأرباح عند 2.6%
     'trailing_stop': 0.004,        # تتبع ذكي بفارق 0.4% لقنص القمم
     'initial_capital': 1000.0,
-    'max_open_trades': 5,          # الحد الأقصى للمراكز المفتوحة معاً
+    'max_open_trades': 999,        # ♾️ تم تعديلها لتصبح غير محدودة (ستفتح صفقات لجميع العملات المتاحة عند تحقق الشروط)
     'cooldown_hours': 2,           # حظر العملة الخاسرة لمدة ساعتين لمنع العناد مع السوق
     'btc_crash_threshold': -0.03,  # حارس البيتكوين في حال الانهيار بنسبة -3%
     'binance_fee_rate': 0.001      
@@ -54,13 +55,13 @@ def get_klines_ohlc(symbol, interval, limit=40):
         return []
 
 def analyze_candlestick_patterns(ohlc_data):
-    """محرك السلوك السعري الذكي: تحليل سلاسل الشموع اليابانية الانعكاسية الصاعدة على فريم 5m لتأكيد الدخول"""
+    """محرك السلوك السعري الذكي: تحليل سلاسل الشموع اليابانية الانعكاسية الصاعدة"""
     if len(ohlc_data) < 5:
         return "NEUTRAL", "بيانات غير كافية"
 
-    c1 = ohlc_data[-1]  # الشمعة الأخيرة المغلقة حديثاً
-    c2 = ohlc_data[-2]  # الشمعة قبل الأخيرة
-    c3 = ohlc_data[-3]  # الشمعة الثالثة للخلف
+    c1 = ohlc_data[-1]  # الشمعة المغلقة الأخيرة
+    c2 = ohlc_data[-2]  
+    c3 = ohlc_data[-3]  
 
     body1 = abs(c1['close'] - c1['open'])
     body2 = abs(c2['close'] - c2['open'])
@@ -75,36 +76,23 @@ def analyze_candlestick_patterns(ohlc_data):
     lower_shadow1 = min(c1['close'], c1['open']) - c1['low']
     upper_shadow1 = c1['high'] - max(c1['close'], c1['open'])
 
-    # 1. نمط الثلاثي الخارجي الصاعد (Three Outside Up) - الفلتر الأقوى للتأكيد
     if is_c3_bearish and is_c2_bullish and c2['close'] >= c3['open'] and c2['open'] <= c3['close'] and body2 > body3:
         if is_c1_bullish and c1['close'] > c2['close']:
             return "BULLISH", "🛡️ نمط الثلاثي الخارجي الصاعد (تأكيد ارتداد مضاعف وآمن)"
-
-    # 2. نمط سلسلة نجمة الصباح (Morning Star)
     if is_c3_bearish and body2 < (body3 * 0.3) and is_c1_bullish and c1['close'] > (c3['open'] + c3['close']) / 2:
         if c2['low'] < c3['low'] and c2['low'] < c1['low']:
             return "BULLISH", "🌌 نمط نجمة الصباح (سلسلة انعكاسية ثلاثية)"
-
-    # 3. نمط قاع الملقط (Tweezer Bottom)
     if abs(c1['low'] - c2['low']) / (c1['low'] or 1) < 0.0005:
         if is_c2_bearish and is_c1_bullish:
             return "BULLISH", "⚖️ نمط قاع الملقط (دعم ثنائي حديدي)"
-
-    # 4. نمط الابتلاع الشرائي (Bullish Engulfing) مع فلتر الذيل العلوي الكاذب
     if is_c2_bearish and is_c1_bullish and c1['close'] >= c2['open'] and c1['open'] <= c2['close'] and body1 > body2:
         if upper_shadow1 < (body1 * 0.5):  
             return "BULLISH", "🐋 نمط الابتلاع الشرائي (سيطرة المشترين الحالية)"
-
-    # 5. نمط الخط الثاقب (Piercing Line)
     if is_c2_bearish and is_c1_bullish:
         if c1['open'] <= c2['close'] and c1['close'] > (c2['open'] + c2['close']) / 2 and c1['close'] < c2['open']:
             return "BULLISH", "🎯 نمط الخط الثاقب (اختراق صاعد لنصف جسم شمعة الهبوط)"
-
-    # 6. شمعة المطرقة الانعكاسية الكلاسيكية (Hammer)
     if lower_shadow1 >= (2 * body1) and upper_shadow1 < (0.4 * body1) and body1 > 0:
         return "BULLISH", "🔨 شمعة المطرقة الانعكاسية (رفض هبوط وضغط شراء فوري)"
-
-    # 7. شمعة المطرقة المقلوبة (Inverted Hammer)
     if upper_shadow1 >= (2 * body1) and lower_shadow1 < (0.4 * body1) and body1 > 0:
         if c1['close'] > c2['close']:  
             return "BULLISH", "🏹 شمعة المطرقة المقلوبة (اختبار شرائي ناجح للمستويات العليا)"
@@ -112,7 +100,7 @@ def analyze_candlestick_patterns(ohlc_data):
     return "NEUTRAL", "حركة عرضية طبيعية"
 
 def analyze_bearish_patterns(ohlc_data):
-    """محرك السلوك السعري الذكي: رصد الإشارات الانعكاسية الهابطة على فريم 5m لإغلاق الصفقات وحماية الأرباح"""
+    """محرك السلوك السعري الذكي: رصد الإشارات الانعكاسية الهابطة"""
     if len(ohlc_data) < 4:
         return "NEUTRAL", ""
 
@@ -131,20 +119,13 @@ def analyze_bearish_patterns(ohlc_data):
     upper_shadow1 = c1['high'] - max(c1['close'], c1['open'])
     lower_shadow1 = min(c1['close'], c1['open']) - c1['low']
 
-    # 1. نمط الابتلاع البيعي (Bearish Engulfing)
     if is_c2_bullish and is_c1_bearish and c1['close'] <= c2['open'] and c1['open'] >= c2['close'] and body1 > body2:
         return "BEARISH", "🐋 نمط الابتلاع البيعي (خروج - سيطرة الدببة)"
-
-    # 2. شمعة الشهاب الانعكاسية (Shooting Star)
     if upper_shadow1 >= (2 * body1) and lower_shadow1 < (0.4 * body1) and body1 > 0:
         return "BEARISH", "💫 شمعة الشهاب الهابطة (رفض شديد للقمة العليا)"
-
-    # 3. نمط قمة الملقط (Tweezer Top)
     if abs(c1['high'] - c2['high']) / (c1['high'] or 1) < 0.0005:
         if is_c2_bullish and is_c1_bearish:
             return "BEARISH", "⚖️ قمة الملقط الهابطة (مقاومة مزدوجة تمنع الصعود)"
-
-    # 4. نمط نجمة المساء (Evening Star)
     if is_c3_bullish and body2 < (body3 * 0.3) and is_c1_bearish and c1['close'] < (c3['open'] + c3['close']) / 2:
         return "BEARISH", "🌆 نمط نجمة المساء (انعكاس اتجاه صاعد محقق)"
 
@@ -173,9 +154,9 @@ def home():
         current_capital = RISK_CONFIG['initial_capital'] + stats.get('net_profit', 0.0)
         open_trades = [k.upper() for k, v in global_data.items() if isinstance(v, dict) and v.get("is_holding", False)]
         return jsonify({
-            "status": "🚀 Halal Trading Bot (Advanced Candlestick Edition) Running",
+            "status": "🚀 Halal Trading Bot (Production Ready) Running",
             "account_summary": {"initial_capital": f"${RISK_CONFIG['initial_capital']:.2f}", "current_capital": f"${current_capital:.2f}", "net_profit": f"${stats.get('net_profit', 0.0):.2f}"},
-            "protection_status": {"max_allowed_trades": RISK_CONFIG['max_open_trades'], "currently_open_trades": len(open_trades), "active_positions": open_trades},
+            "protection_status": {"max_allowed_trades": "غير محدود", "currently_open_trades": len(open_trades), "active_positions": open_trades},
             "performance": {"total_trades": total_trades, "win_rate": f"{win_rate:.1f}%"},
             "strategy": "Macro Support (15m Bollinger) -> Micro Execution & Smart Exit (5m Candlestick)",
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -213,8 +194,13 @@ def load_global_data():
 
 def save_global_data():
     try:
-        with open(DATA_FILE, 'w') as f: json.dump(global_data, f, indent=2)
-    except: pass
+        temp_file = DATA_FILE + ".tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(global_data, f, indent=2)
+        os.replace(temp_file, DATA_FILE)
+    except Exception as e:
+        print(f"⚠️ Error saving data locally: {e}", flush=True)
+        
     if BIN_ID and JSONBIN_KEY:
         try:
             url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -265,7 +251,7 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("🔥 *تم ترقية وتفعيل النظام الاستراتيجي الكامل!* 🌌\n1. الدخول المزدوج (قاع بولنجر 15m -> تأكيد أنماط ثورية 5m).\n2. الخروج الذكي لربح الشموع اليابانية لـ 5m وحظر الاهتزاز الكاذب (Anti-Shakeout Filter).")
+    send_telegram("🔥 *تم ترقية النظام الاستراتيجي للبيئة الحية (Production-Ready)!* 🌌\n1. معالجة سريعة خارج الأقفال.\n2. فلتر الضوضاء: الشموع المغلقة بالكامل.\n3. حفظ ذري آمن.\n♾️ **الحد الأقصى للصفقات: غير محدود**.")
 
     is_first_loop = True  
     btc_alert_sent = False
@@ -274,23 +260,24 @@ def run_trading_bot():
         try:
             current_date, current_week, current_month = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-W%W"), datetime.now().strftime("%Y-%m")
             save_needed = False
-
+            
             with data_lock:
                 if global_data["daily_stats"].get("date") != current_date:
                     send_telegram(build_telegram_table(global_data["daily_stats"], "حصاد اليوم الشامل", "التاريخ المنتهي", global_data["daily_stats"].get("date")))
                     global_data["daily_stats"] = {"date": current_date, "coins": {}}
                     save_needed = True
-
                 if global_data["weekly_stats"].get("week") != current_week:
                     send_telegram(build_telegram_table(global_data["weekly_stats"], "التقرير الأسبوعي الشامل", "الأسبوع المنتهي", global_data["weekly_stats"].get("week")))
                     global_data["weekly_stats"] = {"week": current_week, "coins": {}}
                     save_needed = True
-
                 if global_data["monthly_stats"].get("month") != current_month:
                     send_telegram(build_telegram_table(global_data["monthly_stats"], "التقرير الشهري الشامل", "الشهر المنتهي", global_data["monthly_stats"].get("month")))
                     global_data["monthly_stats"] = {"month": current_month, "coins": {}}
                     save_needed = True
+                if save_needed:
+                    save_global_data()
 
+            # --- NETWORK I/O ---
             try:
                 url = "https://api.binance.com/api/v3/ticker/price"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -315,28 +302,54 @@ def run_trading_bot():
                 else:
                     if btc_alert_sent and drop_percent > -0.02: btc_alert_sent = False
 
-            symbols_to_fetch_klines = []
+            held_symbols = []
+            monitoring_symbols = []
+            
             with data_lock:
                 current_open_trades = sum(1 for c_key in coin_mapping.values() if global_data.get(c_key, {}).get("is_holding", False))
+                for symbol, cid in coin_mapping.items():
+                    is_holding = global_data.get(cid, {}).get("is_holding", False)
+                    last_cooldown = global_data.get(cid, {}).get("last_stop_loss_time", 0.0)
+                    if is_holding:
+                        held_symbols.append(symbol)
+                    elif current_time_seconds - last_cooldown >= RISK_CONFIG['cooldown_hours'] * 3600:
+                        if current_open_trades < RISK_CONFIG['max_open_trades']:
+                            monitoring_symbols.append(symbol)
+
+            fetched_exit_klines_5m = {}
+            fetched_entry_klines_15m = {}
+            fetched_entry_klines_5m = {} 
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                future_exits = {executor.submit(get_klines_ohlc, sym, '5m', 15): sym for sym in held_symbols}
+                future_entries_15m = {executor.submit(get_klines_ohlc, sym, '15m', 30): sym for sym in monitoring_symbols}
                 
-            if current_open_trades < RISK_CONFIG['max_open_trades']:
-                for symbol in coin_mapping.keys():
-                    cid = coin_mapping[symbol]
-                    with data_lock:
-                        is_holding = global_data.get(cid, {}).get("is_holding", False)
-                        last_cooldown = global_data.get(cid, {}).get("last_stop_loss_time", 0.0)
-                    if not is_holding and (current_time_seconds - last_cooldown >= RISK_CONFIG['cooldown_hours'] * 3600):
-                        symbols_to_fetch_klines.append(symbol)
+                for future in concurrent.futures.as_completed(future_exits):
+                    fetched_exit_klines_5m[future_exits[future]] = future.result()
+                for future in concurrent.futures.as_completed(future_entries_15m):
+                    fetched_entry_klines_15m[future_entries_15m[future]] = future.result()
 
-            all_fetched_klines_15m = {}
-            if symbols_to_fetch_klines:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols_to_fetch_klines), 15)) as executor:
-                    future_to_symbol = {executor.submit(get_klines_ohlc, sym, '15m', 30): sym for sym in symbols_to_fetch_klines}
-                    for future in concurrent.futures.as_completed(future_to_symbol):
-                        sym = future_to_symbol[future]
-                        try: all_fetched_klines_15m[sym] = future.result()
-                        except: all_fetched_klines_15m[sym] = []
+            potential_entries = []
+            for sym, klines_15m in fetched_entry_klines_15m.items():
+                if len(klines_15m) < 25: continue
+                close_prices_15m = [c['close'] for c in klines_15m[-20:]]
+                sma_15m = sum(close_prices_15m) / 20
+                variance_15m = sum((x - sma_15m)**2 for x in close_prices_15m) / 20
+                std_15m = variance_15m ** 0.5 if variance_15m > 0 else 0.001
+                lower_band_15m = sma_15m - std_15m
+                
+                if market_prices.get(sym, 0) <= lower_band_15m:
+                    potential_entries.append(sym)
+                    
+            if potential_entries and not btc_is_crashing:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(potential_entries)) as executor:
+                    future_entries_5m = {executor.submit(get_klines_ohlc, sym, '5m', 15): sym for sym in potential_entries}
+                    for future in concurrent.futures.as_completed(future_entries_5m):
+                        fetched_entry_klines_5m[future_entries_5m[future]] = future.result()
 
+
+            # --- INSIDE LOCK ---
+            save_needed = False
             with data_lock:
                 for symbol, price in market_prices.items():
                     cid = coin_mapping[symbol]
@@ -344,7 +357,6 @@ def run_trading_bot():
                     for key in ["held", "buy_price", "is_holding", "trailing_active", "highest_price", "last_stop_loss_time"]:
                         if key not in global_data[cid]: global_data[cid][key] = 0.0 if key != "is_holding" and key != "trailing_active" else False
 
-                    # --- [1] إدارة وحماية الصفقات المفتوحة بربطها بالشموع اليابانية وفلترة الاهتزاز ---
                     if global_data[cid]["is_holding"]:
                         buy_price = global_data[cid]['buy_price']
                         if buy_price == 0: continue
@@ -352,11 +364,11 @@ def run_trading_bot():
                         current_return = (price - buy_price) / buy_price
                         stop_loss_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
 
-                        klines_5m_exit = get_klines_ohlc(symbol, interval='5m', limit=10)
-                        bearish_signal, bearish_pattern_name = analyze_bearish_patterns(klines_5m_exit)
+                        klines_5m_raw = fetched_exit_klines_5m.get(symbol, [])
+                        closed_klines_exit = klines_5m_raw[:-1] if len(klines_5m_raw) > 1 else []
+                        bearish_signal, bearish_pattern_name = analyze_bearish_patterns(closed_klines_exit)
 
-                        # ألف: الخروج المبكر لحماية الأرباح عند تحقيق 1.5% أو أكثر ورصد شمعة انعكاسية هابطة
-                        if not global_data[cid]["trailing_active"] and current_return >= 0.015 and current_return < RISK_CONFIG['trailing_activation']:
+                        if not global_data[cid]["trailing_active"] and current_return >= RISK_CONFIG['early_protect'] and current_return < RISK_CONFIG['trailing_activation']:
                             if bearish_signal == "BEARISH":
                                 net_profit = ((price - buy_price) * global_data[cid]['held']) - ((buy_price + price) * global_data[cid]['held'] * RISK_CONFIG['binance_fee_rate'])
                                 update_all_stats(cid, net_profit)
@@ -364,19 +376,14 @@ def run_trading_bot():
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                                 save_needed = True; continue
 
-                        # باء: تفعيل نظام ملاحقة الأرباح الكامل عند اختراق عتبة الـ 2.6%
                         activation_price = buy_price * (1 + RISK_CONFIG['trailing_activation'])
                         if not global_data[cid]["trailing_active"] and price >= activation_price:
                             global_data[cid]["trailing_active"] = True
                             global_data[cid]["highest_price"] = max(price, global_data[cid].get("highest_price", price))
-                            
-                            # ✨ فلتر حظر السبام: يمنع إرسال الرسالة المكررة لـ Telegram إذا تمت إعادة تشغيل البوت والصفقة رابحة بالفعل
                             if not is_first_loop:
                                 send_telegram(f"🔥 *{cid.upper()}* - دخلت منطقة التتبع الذكي الرابح! السعر الحالي: `{price}$`")
-                                
                             save_needed = True
 
-                        # جيم: إدارة ملاحقة الأرباح (Anti-Shakeout) لتفادي الخروج المبكر من الموجات الكبرى
                         if global_data[cid]["trailing_active"]:
                             if price > global_data[cid]["highest_price"]:
                                 global_data[cid]["highest_price"] = price; save_needed = True
@@ -391,10 +398,7 @@ def run_trading_bot():
                                 send_telegram(f"🚀 *بيع تتبعي مطور ناجح:* {cid.upper()}\n🛡️ خروج بناءً على: `{reason}`\n💰 الأرباح المقتنصة: `{net_profit:+.2f}$` (`{((net_profit/(buy_price*global_data[cid]['held']))*100):+.2f}%`) ")
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                                 save_needed = True; continue
-                            elif price <= trailing_stop_price and bearish_signal != "BEARISH":
-                                pass
 
-                        # دال: وقف الخسارة الكلاسيكي المحكم عند 1.2%
                         if price <= stop_loss_price and not global_data[cid]["trailing_active"]:
                             if is_first_loop:
                                 global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
@@ -406,32 +410,25 @@ def run_trading_bot():
                             global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
                             save_needed = True
 
-                    # --- [2] منطق الدخول الاستراتيجي المزدوج ---
                     else:
                         if current_open_trades >= RISK_CONFIG['max_open_trades']: continue
                         if current_time_seconds - global_data[cid].get("last_stop_loss_time", 0.0) < RISK_CONFIG['cooldown_hours'] * 3600: continue
+                        if btc_is_crashing: continue
 
-                        klines_15m = all_fetched_klines_15m.get(symbol, [])
-                        if len(klines_15m) < 25: continue
+                        if symbol in fetched_entry_klines_5m:
+                            klines_5m_raw = fetched_entry_klines_5m[symbol]
+                            closed_klines_entry = klines_5m_raw[:-1] if len(klines_5m_raw) > 1 else []
+                            pattern_signal, pattern_name = analyze_candlestick_patterns(closed_klines_entry)
 
-                        close_prices_15m = [c['close'] for c in klines_15m[-20:]]
-                        sma_15m = sum(close_prices_15m) / 20
-                        variance_15m = sum((x - sma_15m)**2 for x in close_prices_15m) / 20
-                        std_15m = variance_15m ** 0.5 if variance_15m > 0 else 0.001
-                        lower_band_15m = sma_15m - std_15m
-
-                        if price <= lower_band_15m:
-                            klines_5m = get_klines_ohlc(symbol, interval='5m', limit=15)
-                            pattern_signal, pattern_name = analyze_candlestick_patterns(klines_5m)
-
-                            if not btc_is_crashing and pattern_signal == "BULLISH":
+                            if pattern_signal == "BULLISH":
                                 position_size = RISK_CONFIG['entry_amount_usd'] / price
                                 global_data[cid].update({'held': position_size, 'buy_price': price, 'is_holding': True, 'trailing_active': False, 'highest_price': price})
-                                send_telegram(f"🎯 *قنص مزدوج ناجح (Dual-TF Trigger):* {cid.upper()}\n⚠️ الدعم المرصود: `قاع بولنجر 15m`\n✨ تأكيد الحركة: `{pattern_name} على فريم 5m`\n💵 سعر الدخول: `{price}$` [صفقة {current_open_trades + 1}/{RISK_CONFIG['max_open_trades']}]")
+                                send_telegram(f"🎯 *قنص مزدوج ناجح (Dual-TF Trigger):* {cid.upper()}\n⚠️ الدعم المرصود: `قاع بولنجر 15m`\n✨ تأكيد الحركة: `{pattern_name} على فريم 5m (شمعة مغلقة)`\n💵 سعر الدخول: `{price}$` [إجمالي الصفقات المفتوحة: {current_open_trades + 1}]")
                                 current_open_trades += 1; save_needed = True
 
-            if save_needed:
-                with data_lock: save_global_data()
+                if save_needed:
+                    save_global_data()
+                    
             is_first_loop = False; time.sleep(30)
         except Exception as e:
             print(f"⚠️ Error in Loop: {str(e)}", flush=True); time.sleep(30)
