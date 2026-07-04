@@ -23,23 +23,24 @@ global_data = {}
 DATA_FILE = "data.json"
 data_lock = threading.Lock()
 
-# --- إعدادات إدارة المخاطر الاستراتيجية ---
+# --- إعدادات إدارة المخاطر الاستراتيجية المحدثة (إصدار 2.0) ---
 RISK_CONFIG = {
     'entry_amount_usd': 50.0,
-    'stop_loss': 0.012,            # وقف خسارة محكم لحماية رأس المال (1.2%)
-    'early_protect': 0.015,        # تفعيل الحماية المبكرة عند 1.5%
-    'trailing_activation': 0.026,  # تفعيل تتبع الأرباح عند 2.6%
-    'trailing_stop': 0.004,        # تتبع ذكي بفارق 0.4% لقنص القمم
+    'stop_loss': 0.012,            
+    'early_protect': 0.015,        
+    'trailing_activation': 0.026,  
+    'trailing_stop': 0.004,        
     'initial_capital': 1000.0,
-    'max_open_trades': 999,        # ♾️ تم تعديلها لتصبح غير محدودة (ستفتح صفقات لجميع العملات المتاحة عند تحقق الشروط)
-    'cooldown_hours': 2,           # حظر العملة الخاسرة لمدة ساعتين لمنع العناد مع السوق
-    'btc_crash_threshold': -0.03,  # حارس البيتكوين في حال الانهيار بنسبة -3%
-    'binance_fee_rate': 0.001      
+    'max_open_trades': 999,        
+    'cooldown_hours': 2,           
+    'btc_crash_threshold': -0.03,  
+    'binance_fee_rate': 0.001,
+    'top_coins': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'LINKUSDT', 'ADAUSDT'], # العملات المؤهلة لوضع التعافي
+    'max_recovery_percent': 0.4    # سقف تجميد رأس المال في وضع التعافي (40%)
 }
 
-# --- دوال المؤشرات الجديدة (EMA & ATR) ---
+# --- دوال المؤشرات ---
 def calculate_ema(prices, period=100):
-    """حساب المتوسط المتحرك الأسي (EMA) لفلترة الاتجاه"""
     if len(prices) < period:
         return sum(prices) / len(prices) if prices else 0
     ema = sum(prices[:period]) / period
@@ -49,7 +50,6 @@ def calculate_ema(prices, period=100):
     return ema
 
 def calculate_atr(ohlc_data, period=14):
-    """حساب متوسط المدى الحقيقي (ATR) لقياس التقلبات ووقف الخسارة الديناميكي"""
     if len(ohlc_data) < period + 1:
         return 0.0
     trs = []
@@ -61,8 +61,7 @@ def calculate_atr(ohlc_data, period=14):
         trs.append(tr)
     return sum(trs[-period:]) / period
 
-def get_klines_ohlc(symbol, interval, limit=150): # تم زيادة الليمت إلى 150 لتغطية حساب EMA 100
-    """جلب بيانات الشموع الكاملة وتشريحها برمجياً (OHLC) حسب الفريم المطلوب"""
+def get_klines_ohlc(symbol, interval, limit=150): 
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -72,18 +71,18 @@ def get_klines_ohlc(symbol, interval, limit=150): # تم زيادة الليمت
                 'open': float(candle[1]),
                 'high': float(candle[2]),
                 'low': float(candle[3]),
-                'close': float(candle[4])
+                'close': float(candle[4]),
+                'volume': float(candle[5]) # تم إضافة فلتر السيولة
             } for candle in data]
     except Exception as e:
         print(f"⚠️ Binance K-lines API Error for {symbol} ({interval}): {e}", flush=True)
         return []
 
 def analyze_candlestick_patterns(ohlc_data):
-    """محرك السلوك السعري الذكي: تحليل سلاسل الشموع اليابانية الانعكاسية الصاعدة"""
     if len(ohlc_data) < 5:
         return "NEUTRAL", "بيانات غير كافية"
 
-    c1 = ohlc_data[-1]  # الشمعة المغلقة الأخيرة
+    c1 = ohlc_data[-1]  
     c2 = ohlc_data[-2]  
     c3 = ohlc_data[-3]  
 
@@ -102,29 +101,28 @@ def analyze_candlestick_patterns(ohlc_data):
 
     if is_c3_bearish and is_c2_bullish and c2['close'] >= c3['open'] and c2['open'] <= c3['close'] and body2 > body3:
         if is_c1_bullish and c1['close'] > c2['close']:
-            return "BULLISH", "🛡️ نمط الثلاثي الخارجي الصاعد (تأكيد ارتداد مضاعف وآمن)"
+            return "BULLISH", "🛡️ نمط الثلاثي الخارجي الصاعد"
     if is_c3_bearish and body2 < (body3 * 0.3) and is_c1_bullish and c1['close'] > (c3['open'] + c3['close']) / 2:
         if c2['low'] < c3['low'] and c2['low'] < c1['low']:
-            return "BULLISH", "🌌 نمط نجمة الصباح (سلسلة انعكاسية ثلاثية)"
+            return "BULLISH", "🌌 نمط نجمة الصباح"
     if abs(c1['low'] - c2['low']) / (c1['low'] or 1) < 0.0005:
         if is_c2_bearish and is_c1_bullish:
-            return "BULLISH", "⚖️ نمط قاع الملقط (دعم ثنائي حديدي)"
+            return "BULLISH", "⚖️ نمط قاع الملقط"
     if is_c2_bearish and is_c1_bullish and c1['close'] >= c2['open'] and c1['open'] <= c2['close'] and body1 > body2:
         if upper_shadow1 < (body1 * 0.5):  
-            return "BULLISH", "🐋 نمط الابتلاع الشرائي (سيطرة المشترين الحالية)"
+            return "BULLISH", "🐋 نمط الابتلاع الشرائي"
     if is_c2_bearish and is_c1_bullish:
         if c1['open'] <= c2['close'] and c1['close'] > (c2['open'] + c2['close']) / 2 and c1['close'] < c2['open']:
-            return "BULLISH", "🎯 نمط الخط الثاقب (اختراق صاعد لنصف جسم شمعة الهبوط)"
+            return "BULLISH", "🎯 نمط الخط الثاقب"
     if lower_shadow1 >= (2 * body1) and upper_shadow1 < (0.4 * body1) and body1 > 0:
-        return "BULLISH", "🔨 شمعة المطرقة الانعكاسية (رفض هبوط وضغط شراء فوري)"
+        return "BULLISH", "🔨 شمعة المطرقة الانعكاسية"
     if upper_shadow1 >= (2 * body1) and lower_shadow1 < (0.4 * body1) and body1 > 0:
         if c1['close'] > c2['close']:  
-            return "BULLISH", "🏹 شمعة المطرقة المقلوبة (اختبار شرائي ناجح للمستويات العليا)"
+            return "BULLISH", "🏹 شمعة المطرقة المقلوبة"
 
     return "NEUTRAL", "حركة عرضية طبيعية"
 
 def analyze_bearish_patterns(ohlc_data):
-    """محرك السلوك السعري الذكي: رصد الإشارات الانعكاسية الهابطة"""
     if len(ohlc_data) < 4:
         return "NEUTRAL", ""
 
@@ -144,14 +142,14 @@ def analyze_bearish_patterns(ohlc_data):
     lower_shadow1 = min(c1['close'], c1['open']) - c1['low']
 
     if is_c2_bullish and is_c1_bearish and c1['close'] <= c2['open'] and c1['open'] >= c2['close'] and body1 > body2:
-        return "BEARISH", "🐋 نمط الابتلاع البيعي (خروج - سيطرة الدببة)"
+        return "BEARISH", "🐋 نمط الابتلاع البيعي"
     if upper_shadow1 >= (2 * body1) and lower_shadow1 < (0.4 * body1) and body1 > 0:
-        return "BEARISH", "💫 شمعة الشهاب الهابطة (رفض شديد للقمة العليا)"
+        return "BEARISH", "💫 شمعة الشهاب الهابطة"
     if abs(c1['high'] - c2['high']) / (c1['high'] or 1) < 0.0005:
         if is_c2_bullish and is_c1_bearish:
-            return "BEARISH", "⚖️ قمة الملقط الهابطة (مقاومة مزدوجة تمنع الصعود)"
+            return "BEARISH", "⚖️ قمة الملقط الهابطة"
     if is_c3_bullish and body2 < (body3 * 0.3) and is_c1_bearish and c1['close'] < (c3['open'] + c3['close']) / 2:
-        return "BEARISH", "🌆 نمط نجمة المساء (انعكاس اتجاه صاعد محقق)"
+        return "BEARISH", "🌆 نمط نجمة المساء"
 
     return "NEUTRAL", ""
 
@@ -177,12 +175,13 @@ def home():
         win_rate = (stats.get('wins', 0) / total_trades * 100) if total_trades > 0 else 0
         current_capital = RISK_CONFIG['initial_capital'] + stats.get('net_profit', 0.0)
         open_trades = [k.upper() for k, v in global_data.items() if isinstance(v, dict) and v.get("is_holding", False)]
+        recovery_trades = [k.upper() for k, v in global_data.items() if isinstance(v, dict) and v.get("is_recovering", False)]
         return jsonify({
-            "status": "🚀 Halal Trading Bot (Production Ready) Running",
+            "status": "🚀 Halal Trading Bot (V2.0) Running",
             "account_summary": {"initial_capital": f"${RISK_CONFIG['initial_capital']:.2f}", "current_capital": f"${current_capital:.2f}", "net_profit": f"${stats.get('net_profit', 0.0):.2f}"},
-            "protection_status": {"max_allowed_trades": "غير محدود", "currently_open_trades": len(open_trades), "active_positions": open_trades},
+            "protection_status": {"active_positions": open_trades, "recovery_mode_positions": recovery_trades},
             "performance": {"total_trades": total_trades, "win_rate": f"{win_rate:.1f}%"},
-            "strategy": "Macro Support (15m Bollinger) -> Micro Execution & Smart Exit (5m Candlestick) + Score Engine (EMA/ATR)",
+            "strategy": "Macro Support + Micro Execution + Volume Filter + Recovery Mode",
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }), 200
 
@@ -196,7 +195,7 @@ def reset_my_stats():
         global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         for key in list(global_data.keys()):
             if key not in ["global_stats", "monthly_stats", "weekly_stats", "daily_stats"] and isinstance(global_data[key], dict):
-                global_data[key].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'last_stop_loss_time': 0.0, 'atr_stop_loss': 0.0})
+                global_data[key].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'last_stop_loss_time': 0.0, 'atr_stop_loss': 0.0, 'is_recovering': False})
         save_global_data()
     return "⚡ Done! All stats reset successfully.", 200
 
@@ -248,7 +247,7 @@ def update_all_stats(cid, net_diff):
 def run_trading_bot():
     global global_data
     time.sleep(15)
-    print(">>> ADVANCED DUAL-TIMEFRAME PRICE ACTION BOT LOOP STARTED <<<", flush=True)
+    print(">>> ADVANCED V2.0 BOT LOOP STARTED <<<", flush=True)
     
     coin_mapping = {
         "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
@@ -275,7 +274,7 @@ def run_trading_bot():
         if "daily_stats" not in global_data: global_data["daily_stats"] = {"date": datetime.now().strftime("%Y-%m-%d"), "coins": {}}
         save_global_data()
 
-    send_telegram("🔥 *تم ترقية النظام الاستراتيجي للبيئة الحية (Production-Ready)!* 🌌\n1. إضافة فلتر EMA 100 لتأكيد الاتجاه.\n2. إضافة مؤشر ATR للوقف الديناميكي.\n3. تفعيل محرك النقاط (Score Engine) لدقة الدخول.\n♾️ **الحد الأقصى للصفقات: غير محدود**.")
+    send_telegram("🔥 *تم تفعيل الإصدار 2.0 بنجاح!* 🌌\n1. نظام التعافي للعملات الكبرى مفعل.\n2. فلتر السيولة وشمعة التأكيد يعملان.\n3. محرك النقاط المطور جاهز للقنص.")
 
     is_first_loop = True  
     btc_alert_sent = False
@@ -301,7 +300,6 @@ def run_trading_bot():
                 if save_needed:
                     save_global_data()
 
-            # --- NETWORK I/O ---
             try:
                 url = "https://api.binance.com/api/v3/ticker/price"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -321,7 +319,7 @@ def run_trading_bot():
                 if drop_percent <= RISK_CONFIG['btc_crash_threshold']:
                     btc_is_crashing = True
                     if not btc_alert_sent:
-                        send_telegram(f"🚨 *حارس البيتكوين:* هبوط حاد بنسبة `{drop_percent*100:.2f}%`. تجميد طلبات الشراء الجديدة حماية للمحفظة.")
+                        send_telegram(f"🚨 *حارس البيتكوين:* هبوط حاد بنسبة `{drop_percent*100:.2f}%`. تجميد الشراء الجديد.")
                         btc_alert_sent = True
                 else:
                     if btc_alert_sent and drop_percent > -0.02: btc_alert_sent = False
@@ -346,7 +344,6 @@ def run_trading_bot():
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 future_exits = {executor.submit(get_klines_ohlc, sym, '5m', 15): sym for sym in held_symbols}
-                # جلب 150 شمعة لحساب EMA 100 بشكل صحيح
                 future_entries_15m = {executor.submit(get_klines_ohlc, sym, '15m', 150): sym for sym in monitoring_symbols}
                 
                 for future in concurrent.futures.as_completed(future_exits):
@@ -355,37 +352,40 @@ def run_trading_bot():
                     fetched_entry_klines_15m[future_entries_15m[future]] = future.result()
 
             potential_entries = []
-            scores_15m = {} # تخزين البيانات لمحرك النقاط
+            scores_15m = {} 
             
             for sym, klines_15m in fetched_entry_klines_15m.items():
                 if len(klines_15m) < 100: continue
                 close_prices = [c['close'] for c in klines_15m]
                 
-                # حساب EMA 100 والـ ATR
                 ema_100 = calculate_ema(close_prices, 100)
                 atr = calculate_atr(klines_15m, 14)
                 
-                # حساب بولنجر باند
                 close_prices_20 = close_prices[-20:]
                 sma_15m = sum(close_prices_20) / 20
                 variance_15m = sum((x - sma_15m)**2 for x in close_prices_20) / 20
                 std_15m = variance_15m ** 0.5 if variance_15m > 0 else 0.001
                 lower_band_15m = sma_15m - std_15m
                 
+                volumes = [c['volume'] for c in klines_15m]
+                avg_vol = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else 1
+                
                 current_price = market_prices.get(sym, 0)
                 score = 0
                 reasons = []
                 
-                # محرك النقاط - الشروط المبدئية
                 if current_price > ema_100:
                     score += 2
-                    reasons.append("فوق EMA100 (ترند صاعد)")
+                    reasons.append("فوق EMA100")
                 
                 if current_price <= lower_band_15m:
                     score += 3
-                    reasons.append("ملامسة قاع بولنجر (تشبع بيعي)")
+                    reasons.append("قاع بولنجر")
+                    
+                if klines_15m[-1]['volume'] > (avg_vol * 1.2):
+                    score += 2
+                    reasons.append("سيولة قوية (+2)")
                 
-                # تمرير العملة لفريم 5 دقائق إذا حصلت على نقطتين على الأقل
                 if score >= 2:
                     potential_entries.append(sym)
                     scores_15m[sym] = {'score': score, 'reasons': reasons, 'atr': atr}
@@ -397,14 +397,13 @@ def run_trading_bot():
                         fetched_entry_klines_5m[future_entries_5m[future]] = future.result()
 
 
-            # --- INSIDE LOCK ---
             save_needed = False
             with data_lock:
                 for symbol, price in market_prices.items():
                     cid = coin_mapping[symbol]
                     if cid not in global_data: global_data[cid] = {}
-                    for key in ["held", "buy_price", "is_holding", "trailing_active", "highest_price", "last_stop_loss_time", "atr_stop_loss"]:
-                        if key not in global_data[cid]: global_data[cid][key] = 0.0 if key != "is_holding" and key != "trailing_active" else False
+                    for key in ["held", "buy_price", "is_holding", "trailing_active", "highest_price", "last_stop_loss_time", "atr_stop_loss", "is_recovering"]:
+                        if key not in global_data[cid]: global_data[cid][key] = 0.0 if key not in ["is_holding", "trailing_active", "is_recovering"] else False
 
                     if global_data[cid]["is_holding"]:
                         buy_price = global_data[cid]['buy_price']
@@ -412,7 +411,6 @@ def run_trading_bot():
                         
                         current_return = (price - buy_price) / buy_price
                         
-                        # حساب وقف الخسارة باعتماد الأقرب للسعر (الثابت أو الـ ATR الديناميكي)
                         fixed_stop_price = buy_price * (1 - RISK_CONFIG['stop_loss'])
                         dynamic_atr_stop = global_data[cid].get('atr_stop_loss', 0.0)
                         stop_loss_price = max(fixed_stop_price, dynamic_atr_stop) if dynamic_atr_stop > 0 else fixed_stop_price
@@ -420,13 +418,25 @@ def run_trading_bot():
                         klines_5m_raw = fetched_exit_klines_5m.get(symbol, [])
                         closed_klines_exit = klines_5m_raw[:-1] if len(klines_5m_raw) > 1 else []
                         bearish_signal, bearish_pattern_name = analyze_bearish_patterns(closed_klines_exit)
+                        
+                        if global_data[cid].get("is_recovering"):
+                            if current_time_seconds - global_data[cid].get("recovery_start_time", current_time_seconds) > 7 * 86400:
+                                if current_time_seconds - global_data[cid].get("last_recovery_alert", 0) > 86400:
+                                    send_telegram(f"⏳ *تنبيه تعافي:* {cid.upper()} مجمدة في وضع التعافي منذ أكثر من أسبوع.\n📉 الخسارة الحالية: `{current_return*100:.2f}%`\nيرجى المراجعة واتخاذ قرار يدوياً.")
+                                    global_data[cid]["last_recovery_alert"] = current_time_seconds
+                                    save_needed = True
+                            if current_return >= 0:
+                                global_data[cid]["is_recovering"] = False
+                                send_telegram(f"🎉 *نجاح التعافي:* {cid.upper()} عادت لنقطة الدخول وتم إلغاء وضع التعافي للمراقبة الطبيعية.")
+                                save_needed = True
+                            continue 
 
                         if not global_data[cid]["trailing_active"] and current_return >= RISK_CONFIG['early_protect'] and current_return < RISK_CONFIG['trailing_activation']:
                             if bearish_signal == "BEARISH":
                                 net_profit = ((price - buy_price) * global_data[cid]['held']) - ((buy_price + price) * global_data[cid]['held'] * RISK_CONFIG['binance_fee_rate'])
                                 update_all_stats(cid, net_profit)
-                                send_telegram(f"⚠️ *خروج مبكر ذكي لحماية الأرباح:* {cid.upper()}\n🎯 السبب: رصد `{bearish_pattern_name}` قبل تراجع السعر.\n💰 الصافي المحمي: `{net_profit:+.2f}$` (`{current_return*100:+.2f}%`) ")
-                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
+                                send_telegram(f"⚠️ *خروج مبكر ذكي لحماية الأرباح:* {cid.upper()}\n🎯 السبب: رصد `{bearish_pattern_name}` قبل تراجع السعر.\n💰 الصافي المحمي: `{net_profit:+.2f}$`")
+                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'is_recovering': False})
                                 save_needed = True; continue
 
                         activation_price = buy_price * (1 + RISK_CONFIG['trailing_activation'])
@@ -447,33 +457,53 @@ def run_trading_bot():
                             if (price <= trailing_stop_price and bearish_signal == "BEARISH") or (price <= hard_backup_stop):
                                 net_profit = ((price - buy_price) * global_data[cid]['held']) - ((buy_price + price) * global_data[cid]['held'] * RISK_CONFIG['binance_fee_rate'])
                                 update_all_stats(cid, net_profit)
-                                reason = bearish_pattern_name if price > hard_backup_stop else "كسر صمام الأمان التتبعي الأقصى (0.9%)"
-                                send_telegram(f"🚀 *بيع تتبعي مطور ناجح:* {cid.upper()}\n🛡️ خروج بناءً على: `{reason}`\n💰 الأرباح المقتنصة: `{net_profit:+.2f}$` (`{((net_profit/(buy_price*global_data[cid]['held']))*100):+.2f}%`) ")
-                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
+                                reason = bearish_pattern_name if price > hard_backup_stop else "كسر صمام الأمان التتبعي"
+                                send_telegram(f"🚀 *بيع تتبعي مطور ناجح:* {cid.upper()}\n🛡️ خروج بناءً على: `{reason}`\n💰 الأرباح المقتنصة: `{net_profit:+.2f}$`")
+                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'is_recovering': False})
                                 save_needed = True; continue
 
                         if price <= stop_loss_price and not global_data[cid]["trailing_active"]:
                             if is_first_loop:
-                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False})
+                                global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'is_recovering': False})
                                 save_needed = True; continue
+                            
+                            if symbol in RISK_CONFIG['top_coins']:
+                                global_data[cid]["is_recovering"] = True
+                                global_data[cid]["recovery_start_time"] = current_time_seconds
+                                send_telegram(f"🛡️ *حماية المحفظة (وضع التعافي):* {cid.upper()} انخفضت للحد. بدلاً من البيع بخسارة، تم تجميدها للتعافي.")
+                                save_needed = True; continue
+                                
                             net_loss = ((price - buy_price) * global_data[cid]['held']) - ((buy_price + price) * global_data[cid]['held'] * RISK_CONFIG['binance_fee_rate'])
                             update_all_stats(cid, net_loss)
                             global_data[cid]["last_stop_loss_time"] = current_time_seconds
-                            send_telegram(f"🛑 *{cid.upper()} - حماية المحفظة (وقف خسارة)*\n📉 الخسارة: `{net_loss:.2f}$`\n⏳ عزل العملة لمدّة {RISK_CONFIG['cooldown_hours']} ساعتين.")
-                            global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0})
+                            send_telegram(f"🛑 *{cid.upper()} - وقف خسارة قياسي*\n📉 الخسارة: `{net_loss:.2f}$`\n⏳ عزل العملة لمدّة {RISK_CONFIG['cooldown_hours']} ساعتين.")
+                            global_data[cid].update({'held': 0.0, 'buy_price': 0.0, 'is_holding': False, 'trailing_active': False, 'highest_price': 0.0, 'is_recovering': False})
                             save_needed = True
 
                     else:
                         if current_open_trades >= RISK_CONFIG['max_open_trades']: continue
                         if current_time_seconds - global_data[cid].get("last_stop_loss_time", 0.0) < RISK_CONFIG['cooldown_hours'] * 3600: continue
                         if btc_is_crashing: continue
+                        
+                        recovery_count = sum(1 for v in global_data.values() if isinstance(v, dict) and v.get("is_recovering"))
+                        max_allowed_recovery = int(len(coin_mapping) * RISK_CONFIG['max_recovery_percent'])
+                        if recovery_count >= max_allowed_recovery:
+                            continue 
 
                         if symbol in fetched_entry_klines_5m:
                             klines_5m_raw = fetched_entry_klines_5m[symbol]
                             closed_klines_entry = klines_5m_raw[:-1] if len(klines_5m_raw) > 1 else []
-                            pattern_signal, pattern_name = analyze_candlestick_patterns(closed_klines_entry)
+                            
+                            if len(closed_klines_entry) >= 2:
+                                pattern_signal, pattern_name = analyze_candlestick_patterns(closed_klines_entry[:-1])
+                                if pattern_signal == "BULLISH":
+                                    if closed_klines_entry[-1]['close'] > closed_klines_entry[-2]['high']:
+                                        pattern_name += " (بشمعة تأكيد)"
+                                    else:
+                                        pattern_signal = "NEUTRAL"
+                            else:
+                                pattern_signal, pattern_name = "NEUTRAL", ""
 
-                            # استدعاء بيانات محرك النقاط
                             sym_data = scores_15m.get(symbol, {'score': 0, 'reasons': [], 'atr': 0.0})
                             total_score = sym_data['score']
                             reasons = sym_data['reasons'].copy()
@@ -482,10 +512,9 @@ def run_trading_bot():
                                 total_score += 5
                                 reasons.append(pattern_name)
 
-                            # نظام النقاط يطلب 8 نقاط كحد أدنى للدخول (مثلاً: قاع بولنجر 3 + برايس أكشن 5)
                             if total_score >= 8:
                                 position_size = RISK_CONFIG['entry_amount_usd'] / price
-                                atr_stop = price - (2 * sym_data['atr']) # وقف خسارة ديناميكي بضعف قيمة ATR
+                                atr_stop = price - (2 * sym_data['atr']) 
                                 
                                 global_data[cid].update({
                                     'held': position_size, 
@@ -493,11 +522,12 @@ def run_trading_bot():
                                     'is_holding': True, 
                                     'trailing_active': False, 
                                     'highest_price': price,
-                                    'atr_stop_loss': atr_stop
+                                    'atr_stop_loss': atr_stop,
+                                    'is_recovering': False
                                 })
                                 
                                 reasons_str = " | ".join(reasons)
-                                send_telegram(f"🎯 *قنص بالنقاط (Score: {total_score}/10):* {cid.upper()}\n✨ المحفزات: `{reasons_str}`\n💵 سعر الدخول: `{price}$`\n🛡️ وقف ATR ديناميكي: `{atr_stop:.4f}$`\n[إجمالي الصفقات: {current_open_trades + 1}]")
+                                send_telegram(f"🎯 *قنص بالنقاط (Score: {total_score}/10):* {cid.upper()}\n✨ المحفزات: `{reasons_str}`\n💵 سعر الدخول: `{price}$`")
                                 current_open_trades += 1; save_needed = True
 
                 if save_needed:
