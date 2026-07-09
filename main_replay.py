@@ -1,12 +1,18 @@
 import json
 import time
 import os
+from flask import Flask, jsonify
 from pipeline.metadata import MetaAuditOrchestrator
 from pipeline.monitors import SanityChecker
 from analytics.validation import StrictValidationEngine
 from analytics.dashboard import EvidenceDashboard, FilterEfficiencyAnalyzer
 
+# إنشاء خادم ويب مصغر لمنع ريندر من إغلاق السكربت
+app = Flask(__name__)
+REPORT_DATA = {"status": "Initializing"}
+
 def run_measurement_baseline():
+    global REPORT_DATA
     print("🚀 بدء محرك المحاكاة الحتمي لـ Binance (Stage A/B)...")
     
     strategy_config = {
@@ -23,7 +29,7 @@ def run_measurement_baseline():
     
     if not os.path.exists(dataset_path):
         with open(dataset_path, "w") as f:
-            f.write(json.dumps({"ticker": "BTCUSDT", "price": 91000.0}))
+            f.write(json.dumps([{"timestamp": time.time(), "open_price": 91000.0, "high": 91200.0, "low": 90800.0, "close_price": 91100.0, "bid_vol": 10.0, "ask_vol": 8.0}]))
 
     orchestrator = MetaAuditOrchestrator(strategy_config, dataset_path)
     try:
@@ -40,7 +46,24 @@ def run_measurement_baseline():
     checker.monitor_performance(start_time, time.perf_counter())
     
     print("✅ تم فحص النبضة السعرية الأولى بنجاح دون أي Exceptions.")
-    print(f"📊 حالة التشغيل الآن مجمّدة وتنتظر تغذيتها ببيانات Binance الكاملة على جهازك.")
+    
+    # حفظ تقرير النجاح لعرضه عبر الإنترنت
+    REPORT_DATA = {
+        "status": "SUCCESS_CODE_FREEZE",
+        "run_id": run_id,
+        "msg": "حالة التشغيل الآن مجمّدة وتنتظر تغذيتها ببيانات Binance الكاملة.",
+        "timestamp": time.time()
+    }
+
+# تشغيل الفحص أولاً قبل فتح السيرفر
+run_measurement_baseline()
+
+@app.route('/')
+def home():
+    # عند الدخول لروابط ريندر سيظهر لك التقرير فوراً هنا
+    return jsonify(REPORT_DATA)
 
 if __name__ == "__main__":
-    run_measurement_baseline()
+    # تشغيل السيرفر على البورت الذي يطلبه ريندر
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
