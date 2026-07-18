@@ -32,9 +32,7 @@ def fetch_past_8_days_data():
 def calculate_indicators(ticks, period=14):
     n = len(ticks)
     if n <= period: return ticks
-    tr = [0] * n
-    plus_dm = [0] * n
-    minus_dm = [0] * n
+    tr, plus_dm, minus_dm = [0]*n, [0]*n, [0]*n
 
     for i in range(1, n):
         up_move = ticks[i]["high"] - ticks[i-1]["high"]
@@ -74,148 +72,110 @@ def calculate_indicators(ticks, period=14):
         ticks[i]["adx"] = adx[i]
     return ticks
 
-def calculate_correlation(x, y):
-    n = len(x)
-    if n < 2: return 0
-    mean_x, mean_y = sum(x)/n, sum(y)/n
-    num = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
-    den_x = sum((x[i] - mean_x) ** 2 for i in range(n))
-    den_y = sum((x[i] - mean_y) ** 2 for i in range(n))
-    if den_x == 0 or den_y == 0: return 0
-    return num / math.sqrt(den_x * den_y)
+def simulate_trade_path(direction, entry_price, future_candles, be_trigger_percent=None):
+    """تحاكي مسار الصفقة ساعة بساعة لحل مشكلة ارتهان المسار الإحصائي"""
+    be_activated = False
+    
+    for candle in future_candles:
+        if direction == "LONG":
+            max_potential_profit = (candle["high"] - entry_price) / entry_price * 100
+            
+            # التحقق من تفعيل شرط الـ Break-Even أولاً في هذه الشمعة
+            if be_trigger_percent and not be_activated and max_potential_profit >= be_trigger_percent:
+                be_activated = True
+            
+            # إذا كان الـ BE مفعلاً، هل ضرب السعر نقطة الدخول أو هبط تحتها في هذه الشمعة أو الشموع التالية؟
+            if be_activated and candle["low"] <= entry_price:
+                return 0.0, "BREAK_EVEN"
+                
+        else: # SHORT
+            max_potential_profit = (entry_price - candle["low"]) / entry_price * 100
+            
+            if be_trigger_percent and not be_activated and max_potential_profit >= be_trigger_percent:
+                be_activated = True
+                
+            if be_activated and candle["high"] >= entry_price:
+                return 0.0, "BREAK_EVEN"
+    
+    # إذا لم يضرب الـ BE طوال الـ 4 ساعات، نخرج بسعر إغلاق الشمعة الأخيرة
+    final_close = future_candles[-1]["close_price"]
+    if direction == "LONG":
+        pnl = (final_close - entry_price) / entry_price * 100
+    else:
+        pnl = (entry_price - final_close) / entry_price * 100
+        
+    return pnl, "WIN" if pnl > 0 else "LOSS"
 
-def analyze_performance():
+def run_backtest_matrix():
     raw_ticks = fetch_past_8_days_data()
-    if not raw_ticks: return {"error": "لم يتم العثور على بيانات"}
+    if not raw_ticks: return {"error": "بيانات باينانس غير متوفرة حالياً"}
     ticks = calculate_indicators(raw_ticks)
     
-    total_signals, passed_filters = 0, 0
-    trades_matrix = []
-    
-    for i in range(30, len(ticks) - 4):  
+    # رصد الإشارات الثابتة الموحدة أولاً لضمان تماثل العينة
+    detected_signals = []
+    for i in range(30, len(ticks) - 4):
         current = ticks[i]
         prev = ticks[i-1]
         price_change = (current["close_price"] - prev["close_price"]) / prev["close_price"]
         
-        if abs(price_change) > 0.002:
-            total_signals += 1
-            if current["volume"] > prev["volume"] * 1.1:
-                passed_filters += 1
-                entry_price = current["close_price"]
-                direction = "LONG" if price_change > 0 else "SHORT"
-                
-                future_candles = ticks[i+1 : i+5]
-                highs = [c["high"] for c in future_candles]
-                lows = [c["low"] for c in future_candles]
-                exit_price = future_candles[-1]["close_price"]
-                
-                if direction == "LONG":
-                    actual_pnl = (exit_price - entry_price) / entry_price
-                    mfe = (max(highs) - entry_price) / entry_price
-                    mae = (min(lows) - entry_price) / entry_price
-                else:
-                    actual_pnl = (entry_price - exit_price) / entry_price
-                    mfe = (entry_price - min(lows)) / entry_price
-                    mae = (entry_price - max(highs)) / entry_price
-                
-                dt = datetime.utcfromtimestamp(current["timestamp"])
-                trades_matrix.append({
-                    "symbol": "BTCUSDT", "hour": dt.hour, "day_of_week": dt.weekday(),
-                    "adx": current["adx"], "atr": current["atr"], "volume": current["volume"],
-                    "confidence": min(0.95, 0.75 + abs(price_change) * 12),
-                    "mae_percent": mae * 100, "mfe_percent": mfe * 100,
-                    "final_pnl_percent": actual_pnl * 100, "is_win": actual_pnl > 0
-                })
-
-    winners = [t for t in trades_matrix if t["is_win"]]
-    losers = [t for t in trades_matrix if not t["is_win"]]
-    total_trades = len(trades_matrix)
-    wins_count, losses_count = len(winners), len(losers)
-    
-    gross_profits = sum(t["final_pnl_percent"] for t in winners)
-    gross_losses = abs(sum(t["final_pnl_percent"] for t in losers))
-    true_profit_factor = gross_profits / gross_losses if gross_losses > 0 else gross_profits
-    
-    # --- تشريح مسار الصفقات الخاسرة (Trade Path Analysis) ---
-    reached_025 = sum(1 for t in losers if t["mfe_percent"] >= 0.25)
-    reached_050 = sum(1 for t in losers if t["mfe_percent"] >= 0.50)
-    reached_075 = sum(1 for t in losers if t["mfe_percent"] >= 0.75)
-    reached_100 = sum(1 for t in losers if t["mfe_percent"] >= 1.00)
-
-    winner_profile = {}
-    if winners:
-        winner_profile = {
-            "avg_adx_in_wins": sum(t["adx"] for t in winners) / wins_count,
-            "avg_atr_in_wins": sum(t["atr"] for t in winners) / wins_count,
-            "avg_confidence_in_wins": sum(t["confidence"] for t in winners) / wins_count,
-            "avg_mfe_achieved": sum(t["mfe_percent"] for t in winners) / wins_count,
-            "most_active_hour_wins": max(set([t["hour"] for t in winners]), default=0)
-        }
-
-    differential_analysis = {
-        "adx_diff": (sum(t["adx"] for t in winners)/wins_count if wins_count else 0) - (sum(t["adx"] for t in losers)/losses_count if losses_count else 0),
-        "mae_diff_percent": (sum(t["mae_percent"] for t in winners)/wins_count if wins_count else 0) - (sum(t["mae_percent"] for t in losers)/losses_count if losses_count else 0),
-        "confidence_gap": (sum(t["confidence"] for t in winners)/wins_count if wins_count else 0) - (sum(t["confidence"] for t in losers)/losses_count if losses_count else 0)
+        if abs(price_change) > 0.002 and current["volume"] > prev["volume"] * 1.1:
+            detected_signals.append({
+                "entry_price": current["close_price"],
+                "direction": "LONG" if price_change > 0 else "SHORT",
+                "future_candles": ticks[i+1 : i+5]
+            })
+            
+    scenarios = {
+        "1_Baseline (No BE)": None,
+        "2_BE_Activated_At_Plus_0.25%": 0.25,
+        "3_BE_Activated_At_Plus_0.35%": 0.35,
+        "4_BE_Activated_At_Plus_0.50%": 0.50
     }
-
-    hours_pnl = {}
-    for t in trades_matrix: hours_pnl[t["hour"]] = hours_pnl.get(t["hour"], 0) + t["final_pnl_percent"]
+    
+    matrix_results = {}
+    
+    for name, trigger in scenarios.items():
+        wins, losses, bes = 0, 0, 0
+        gross_profits, gross_losses = 0.0, 0.0
         
-    edge_concentration = {
-        "best_performing_hour_utc": max(hours_pnl, key=hours_pnl.get) if hours_pnl else None,
-        "worst_performing_hour_utc": min(hours_pnl, key=hours_pnl.get) if hours_pnl else None,
-        "concentration_by_asset": {"BTCUSDT_net_pnl_percent": sum(t["final_pnl_percent"] for t in trades_matrix)}
-    }
-
-    trend_regime_trades = [t for t in trades_matrix if t["adx"] > 25]
-    range_regime_trades = [t for t in trades_matrix if t["adx"] < 20]
-    
-    def calc_segment_metrics(segment):
-        if not segment: return {"trades": 0, "win_rate": "0%"}
-        seg_wins = sum(1 for t in segment if t["is_win"])
-        return {"trades_count": len(segment), "win_rate": f"{(seg_wins / len(segment) * 100):.2f}%", "net_pnl_percent": f"{sum(t['final_pnl_percent'] for t in segment):.2f}%"}
-
-    regime_validation = {
-        "trend_regime (ADX > 25)": calc_segment_metrics(trend_regime_trades),
-        "range_regime (ADX < 20)": calc_segment_metrics(range_regime_trades)
-    }
-
-    pnls = [t["final_pnl_percent"] for t in trades_matrix]
-    feature_importance = {
-        "market_regime_adx_correlation": calculate_correlation([t["adx"] for t in trades_matrix], pnls),
-        "market_volatility_atr_correlation": calculate_correlation([t["atr"] for t in trades_matrix], pnls),
-        "signal_confidence_correlation": calculate_correlation([t["confidence"] for t in trades_matrix], pnls)
-    }
-
-    return {
-        "status": "QUANT_LAB_ANALYSIS_COMPLETE",
-        "baseline_metrics": {
-            "total_market_signals_spotted": total_signals,
+        for sig in detected_signals:
+            pnl, outcome = simulate_trade_path(sig["direction"], sig["entry_price"], sig["future_candles"], trigger)
+            
+            if outcome == "WIN":
+                wins += 1
+                gross_profits += pnl
+            elif outcome == "LOSS":
+                losses += 1
+                gross_losses += abs(pnl)
+            elif outcome == "BREAK_EVEN":
+                bes += 1
+                
+        total_trades = wins + losses + bes
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        profit_factor = gross_profits / gross_losses if gross_losses > 0 else gross_profits
+        net_pnl = gross_profits - gross_losses
+        
+        matrix_results[name] = {
             "total_executed_trades": total_trades,
-            "successful_trades": wins_count,
-            "failed_trades": losses_count,
-            "win_rate": f"{((wins_count / total_trades * 100) if total_trades > 0 else 0):.2f}%",
-            "true_profit_factor": f"{true_profit_factor:.2f}"
-        },
-        "quant_research_reports": {
-            "1_winner_profile": winner_profile,
-            "2_winner_vs_loser_differential": differential_analysis,
-            "3_edge_concentration": edge_concentration,
-            "4_regime_validation": regime_validation,
-            "5_feature_importance_report": feature_importance,
-            "6_trade_path_analysis_for_losers": {
-                "total_losing_trades_analyzed": losses_count,
-                "losers_that_reached_plus_0_25_percent": reached_025,
-                "losers_that_reached_plus_0_50_percent": reached_050,
-                "losers_that_reached_plus_0_75_percent": reached_075,
-                "losers_that_reached_plus_1_00_percent": reached_100
-            }
+            "wins_count": wins,
+            "losses_count": losses,
+            "break_even_count": bes,
+            "win_rate": f"{win_rate:.2f}%",
+            "true_profit_factor": f"{profit_factor:.2f}",
+            "net_pnl_percent": f"{net_pnl:.2f}%",
+            "avg_profit_per_win": f"{(gross_profits/wins if wins > 0 else 0):.3f}%",
+            "avg_loss_per_loss": f"{(gross_losses/losses if losses > 0 else 0):.3f}%"
         }
+        
+    return {
+        "status": "QUANT_LAB_MATRIX_ANALYSIS_COMPLETE",
+        "total_signals_analyzed": len(detected_signals),
+        "comparative_scenarios_matrix": matrix_results
     }
 
 @app.route('/')
 def dashboard():
-    return jsonify(analyze_performance())
+    return jsonify(run_backtest_matrix())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
