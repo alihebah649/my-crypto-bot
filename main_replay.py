@@ -72,46 +72,32 @@ def calculate_indicators(ticks, period=14):
         ticks[i]["adx"] = adx[i]
     return ticks
 
-def simulate_trade_path(direction, entry_price, future_candles, be_trigger_percent=None):
-    """تحاكي مسار الصفقة ساعة بساعة لحل مشكلة ارتهان المسار الإحصائي"""
-    be_activated = False
-    
+def simulate_take_profit_path(direction, entry_price, future_candles, tp_target_percent=None):
+    """تحاكي ما إذا كانت الصفقة ستضرب الهدف الرقمي المسبق ساعة بساعة قبل نهاية وقت الاحتجاز اليومي"""
     for candle in future_candles:
         if direction == "LONG":
-            max_potential_profit = (candle["high"] - entry_price) / entry_price * 100
-            
-            # التحقق من تفعيل شرط الـ Break-Even أولاً في هذه الشمعة
-            if be_trigger_percent and not be_activated and max_potential_profit >= be_trigger_percent:
-                be_activated = True
-            
-            # إذا كان الـ BE مفعلاً، هل ضرب السعر نقطة الدخول أو هبط تحتها في هذه الشمعة أو الشموع التالية؟
-            if be_activated and candle["low"] <= entry_price:
-                return 0.0, "BREAK_EVEN"
-                
+            max_profit = (candle["high"] - entry_price) / entry_price * 100
+            if tp_target_percent and max_profit >= tp_target_percent:
+                return tp_target_percent, "WIN_TP"
         else: # SHORT
-            max_potential_profit = (entry_price - candle["low"]) / entry_price * 100
-            
-            if be_trigger_percent and not be_activated and max_potential_profit >= be_trigger_percent:
-                be_activated = True
+            max_profit = (entry_price - candle["low"]) / entry_price * 100
+            if tp_target_percent and max_profit >= tp_target_percent:
+                return tp_target_percent, "WIN_TP"
                 
-            if be_activated and candle["high"] >= entry_price:
-                return 0.0, "BREAK_EVEN"
-    
-    # إذا لم يضرب الـ BE طوال الـ 4 ساعات، نخرج بسعر إغلاق الشمعة الأخيرة
+    # إذا لم تلمس الهدف خلال 4 ساعات، تخرج بسعر إغلاق الشمعة الأخيرة
     final_close = future_candles[-1]["close_price"]
     if direction == "LONG":
         pnl = (final_close - entry_price) / entry_price * 100
     else:
         pnl = (entry_price - final_close) / entry_price * 100
         
-    return pnl, "WIN" if pnl > 0 else "LOSS"
+    return pnl, "WIN_CLOSE" if pnl > 0 else "LOSS"
 
-def run_backtest_matrix():
+def run_tp_backtest_matrix():
     raw_ticks = fetch_past_8_days_data()
-    if not raw_ticks: return {"error": "بيانات باينانس غير متوفرة حالياً"}
+    if not raw_ticks: return {"error": "فشل جلب بيانات السوق الحية"}
     ticks = calculate_indicators(raw_ticks)
     
-    # رصد الإشارات الثابتة الموحدة أولاً لضمان تماثل العينة
     detected_signals = []
     for i in range(30, len(ticks) - 4):
         current = ticks[i]
@@ -126,31 +112,29 @@ def run_backtest_matrix():
             })
             
     scenarios = {
-        "1_Baseline (No BE)": None,
-        "2_BE_Activated_At_Plus_0.25%": 0.25,
-        "3_BE_Activated_At_Plus_0.35%": 0.35,
-        "4_BE_Activated_At_Plus_0.50%": 0.50
+        "1_Baseline (No Fixed TP)": None,
+        "2_Fixed_TP_At_Plus_0.25%": 0.25,
+        "3_Fixed_TP_At_Plus_0.35%": 0.35,
+        "4_Fixed_TP_At_Plus_0.50%": 0.50
     }
     
     matrix_results = {}
     
-    for name, trigger in scenarios.items():
-        wins, losses, bes = 0, 0, 0
+    for name, tp_target in scenarios.items():
+        wins, losses = 0, 0
         gross_profits, gross_losses = 0.0, 0.0
         
         for sig in detected_signals:
-            pnl, outcome = simulate_trade_path(sig["direction"], sig["entry_price"], sig["future_candles"], trigger)
+            pnl, outcome = simulate_take_profit_path(sig["direction"], sig["entry_price"], sig["future_candles"], tp_target)
             
-            if outcome == "WIN":
+            if outcome in ["WIN_TP", "WIN_CLOSE"]:
                 wins += 1
                 gross_profits += pnl
-            elif outcome == "LOSS":
+            else:
                 losses += 1
                 gross_losses += abs(pnl)
-            elif outcome == "BREAK_EVEN":
-                bes += 1
                 
-        total_trades = wins + losses + bes
+        total_trades = wins + losses
         win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
         profit_factor = gross_profits / gross_losses if gross_losses > 0 else gross_profits
         net_pnl = gross_profits - gross_losses
@@ -159,23 +143,20 @@ def run_backtest_matrix():
             "total_executed_trades": total_trades,
             "wins_count": wins,
             "losses_count": losses,
-            "break_even_count": bes,
             "win_rate": f"{win_rate:.2f}%",
             "true_profit_factor": f"{profit_factor:.2f}",
-            "net_pnl_percent": f"{net_pnl:.2f}%",
-            "avg_profit_per_win": f"{(gross_profits/wins if wins > 0 else 0):.3f}%",
-            "avg_loss_per_loss": f"{(gross_losses/losses if losses > 0 else 0):.3f}%"
+            "net_pnl_percent": f"{net_pnl:.2f}%"
         }
         
     return {
-        "status": "QUANT_LAB_MATRIX_ANALYSIS_COMPLETE",
+        "status": "QUANT_LAB_TP_MATRIX_COMPLETE",
         "total_signals_analyzed": len(detected_signals),
-        "comparative_scenarios_matrix": matrix_results
+        "tp_comparative_matrix": matrix_results
     }
 
 @app.route('/')
 def dashboard():
-    return jsonify(run_backtest_matrix())
+    return jsonify(run_tp_backtest_matrix())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
