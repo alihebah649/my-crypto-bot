@@ -175,6 +175,11 @@ def analyze_performance():
         seg_wins = sum(1 for t in segment if t["is_win"])
         return {"trades_count": len(segment), "win_rate": f"{(seg_wins / len(segment) * 100):.2f}%", "net_pnl_percent": f"{sum(t['final_pnl_percent'] for t in segment):.2f}%"}
 
+    regime_validation = {
+        "trend_regime (ADX > 25)": calc_segment_metrics(trend_regime_trades),
+        "range_regime (ADX < 20)": calc_segment_metrics(range_regime_trades)
+    }
+
     pnls = [t["final_pnl_percent"] for t in trades_matrix]
     feature_importance = {
         "market_regime_adx_correlation": calculate_correlation([t["adx"] for t in trades_matrix], pnls),
