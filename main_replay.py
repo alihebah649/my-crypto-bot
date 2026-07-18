@@ -8,8 +8,8 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-def fetch_past_8_days_data():
-    symbol = "BTCUSDT"
+def fetch_asset_data(symbol):
+    """جلب بيانات الحركة السعرية لـ 8 أيام مضت لأي زوج مالي"""
     interval = "1h"
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=200"
     try:
@@ -44,119 +44,128 @@ def calculate_indicators(ticks, period=14):
         if up_move > down_move and up_move > 0: plus_dm[i] = up_move
         if down_move > up_move and down_move > 0: minus_dm[i] = down_move
 
-    str_val, splus_dm, sminus_dm = [0]*n, [0]*n, [0]*n
+    str_val = [0]*n
     str_val[period] = sum(tr[1:period+1])
-    splus_dm[period] = sum(plus_dm[1:period+1])
-    sminus_dm[period] = sum(minus_dm[1:period+1])
-
     for i in range(period + 1, n):
         str_val[i] = str_val[i-1] - (str_val[i-1] / period) + tr[i]
-        splus_dm[i] = splus_dm[i-1] - (splus_dm[i-1] / period) + plus_dm[i]
-        sminus_dm[i] = sminus_dm[i-1] - (sminus_dm[i-1] / period) + minus_dm[i]
-
-    adx, dx = [0]*n, [0]*n
-    for i in range(period, n):
-        if str_val[i] == 0: continue
-        plus_di = 100 * (splus_dm[i] / str_val[i])
-        minus_di = 100 * (sminus_dm[i] / str_val[i])
-        denom = plus_di + minus_di
-        dx[i] = (100 * abs(plus_di - minus_di) / denom) if denom != 0 else 0
-
-    if n > period * 2:
-        adx[period * 2] = sum(dx[period:period * 2]) / period
-        for i in range(period * 2 + 1, n):
-            adx[i] = ((adx[i-1] * (period - 1)) + dx[i]) / period
 
     for i in range(n):
         ticks[i]["atr"] = str_val[i] / period if str_val[i] else 0
-        ticks[i]["adx"] = adx[i]
     return ticks
 
-def simulate_take_profit_path(direction, entry_price, future_candles, tp_target_percent=None):
-    """تحاكي ما إذا كانت الصفقة ستضرب الهدف الرقمي المسبق ساعة بساعة قبل نهاية وقت الاحتجاز اليومي"""
+def simulate_event_driven_path(direction, entry_price, future_candles, tp_percent, sl_percent):
+    """
+    محاكاة حركة السعر ساعة بساعة (Event-Driven) لحل مشكلة ارتهان المسار.
+    تتبنى القاعدة الأكثر تحفظاً: في حال تداخل الهدف والستوب في نفس الشمعة، تُعتبر خسارة فوراً.
+    """
     for candle in future_candles:
         if direction == "LONG":
             max_profit = (candle["high"] - entry_price) / entry_price * 100
-            if tp_target_percent and max_profit >= tp_target_percent:
-                return tp_target_percent, "WIN_TP"
+            max_loss = (entry_price - candle["low"]) / entry_price * 100
+            
+            # في حال ضرب الاثنين في نفس الساعة -> افتراض السيناريو الأسوأ (خسارة)
+            if max_profit >= tp_percent and max_loss >= sl_percent:
+                return -sl_percent, "LOSS"
+            if max_loss >= sl_percent:
+                return -sl_percent, "LOSS"
+            if max_profit >= tp_percent:
+                return tp_percent, "WIN"
         else: # SHORT
             max_profit = (entry_price - candle["low"]) / entry_price * 100
-            if tp_target_percent and max_profit >= tp_target_percent:
-                return tp_target_percent, "WIN_TP"
+            max_loss = (candle["high"] - entry_price) / entry_price * 100
+            
+            if max_profit >= tp_percent and max_loss >= sl_percent:
+                return -sl_percent, "LOSS"
+            if max_loss >= sl_percent:
+                return -sl_percent, "LOSS"
+            if max_profit >= tp_percent:
+                return tp_percent, "WIN"
                 
-    # إذا لم تلمس الهدف خلال 4 ساعات، تخرج بسعر إغلاق الشمعة الأخيرة
+    # إذا انتهت الـ 4 ساعات دون ملامسة الأهداف، نغلق بـ سعر إغلاق الشمعة الأخيرة (Timeout)
     final_close = future_candles[-1]["close_price"]
     if direction == "LONG":
         pnl = (final_close - entry_price) / entry_price * 100
     else:
         pnl = (entry_price - final_close) / entry_price * 100
-        
-    return pnl, "WIN_CLOSE" if pnl > 0 else "LOSS"
-
-def run_tp_backtest_matrix():
-    raw_ticks = fetch_past_8_days_data()
-    if not raw_ticks: return {"error": "فشل جلب بيانات السوق الحية"}
-    ticks = calculate_indicators(raw_ticks)
-    
-    detected_signals = []
-    for i in range(30, len(ticks) - 4):
-        current = ticks[i]
-        prev = ticks[i-1]
-        price_change = (current["close_price"] - prev["close_price"]) / prev["close_price"]
-        
-        if abs(price_change) > 0.002 and current["volume"] > prev["volume"] * 1.1:
-            detected_signals.append({
-                "entry_price": current["close_price"],
-                "direction": "LONG" if price_change > 0 else "SHORT",
-                "future_candles": ticks[i+1 : i+5]
-            })
-            
-    scenarios = {
-        "1_Baseline (No Fixed TP)": None,
-        "2_Fixed_TP_At_Plus_0.25%": 0.25,
-        "3_Fixed_TP_At_Plus_0.35%": 0.35,
-        "4_Fixed_TP_At_Plus_0.50%": 0.50
-    }
-    
-    matrix_results = {}
-    
-    for name, tp_target in scenarios.items():
-        wins, losses = 0, 0
-        gross_profits, gross_losses = 0.0, 0.0
-        
-        for sig in detected_signals:
-            pnl, outcome = simulate_take_profit_path(sig["direction"], sig["entry_price"], sig["future_candles"], tp_target)
-            
-            if outcome in ["WIN_TP", "WIN_CLOSE"]:
-                wins += 1
-                gross_profits += pnl
-            else:
-                losses += 1
-                gross_losses += abs(pnl)
-                
-        total_trades = wins + losses
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-        profit_factor = gross_profits / gross_losses if gross_losses > 0 else gross_profits
-        net_pnl = gross_profits - gross_losses
-        
-        matrix_results[name] = {
-            "total_executed_trades": total_trades,
-            "wins_count": wins,
-            "losses_count": losses,
-            "win_rate": f"{win_rate:.2f}%",
-            "true_profit_factor": f"{profit_factor:.2f}",
-            "net_pnl_percent": f"{net_pnl:.2f}%"
-        }
-        
-    return {
-        "status": "QUANT_LAB_TP_MATRIX_COMPLETE",
-        "total_signals_analyzed": len(detected_signals),
-        "tp_comparative_matrix": matrix_results
-    }
+    return pnl, "WIN" if pnl > 0 else "LOSS"
 
 @app.route('/')
-def dashboard():
-    return jsonify(run_tp_backtest_matrix())
+def run_optimization_sweep():
+    assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    tp_sweep_values = [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 1.00]
+    
+    optimization_matrix = {}
+    
+    for symbol in assets:
+        raw_ticks = fetch_asset_data(symbol)
+        if not raw_ticks:
+            optimization_matrix[symbol] = "خطأ في الاتصال ببيانات باينانس"
+            continue
+            
+        ticks = calculate_indicators(raw_ticks)
+        
+        # رصد إشارات الدخول الثابتة الموحدة لهذا الأصل
+        detected_signals = []
+        for i in range(30, len(ticks) - 4):
+            current = ticks[i]
+            prev = ticks[i-1]
+            price_change = (current["close_price"] - prev["close_price"]) / prev["close_price"]
+            
+            if abs(price_change) > 0.002 and current["volume"] > prev["volume"] * 1.1:
+                detected_signals.append({
+                    "entry_price": current["close_price"],
+                    "direction": "LONG" if price_change > 0 else "SHORT",
+                    "future_candles": ticks[i+1 : i+5]
+                })
+                
+        sweep_reports = []
+        
+        # تشغيل المسح الشامل لجميع قيم الأهداف مع تثبيت نظام مخاطرة متماثل 1:1
+        for tp in tp_sweep_values:
+            sl = tp  # تثبيت نظام 1:1 Risk-to-Reward لحساب كفاءة الإشارة بدقة وعادلية
+            wins, losses = 0, 0
+            gross_profits, gross_losses = 0.0, 0.0
+            
+            for sig in detected_signals:
+                pnl, outcome = simulate_event_driven_path(sig["direction"], sig["entry_price"], sig["future_candles"], tp, sl)
+                if outcome == "WIN":
+                    wins += 1
+                    gross_profits += pnl
+                else:
+                    losses += 1
+                    gross_losses += abs(pnl)
+                    
+            total_trades = wins + losses
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+            profit_factor = gross_profits / gross_losses if gross_losses > 0 else (gross_profits if gross_profits > 0 else 0)
+            net_pnl = gross_profits - gross_losses
+            
+            avg_win = (gross_profits / wins) if wins > 0 else 0
+            avg_loss = (gross_losses / losses) if losses > 0 else 0
+            
+            # حساب التوقع الرياضي الحقيقي للنظام: Expectancy = (WR * AvgWin) - (LR * AvgLoss)
+            loss_rate = 100 - win_rate
+            expectancy = ((win_rate / 100) * avg_win) - ((loss_rate / 100) * avg_loss)
+            
+            sweep_reports.append({
+                "TP_Target": f"{tp:.2f}%",
+                "Win_Rate": f"{win_rate:.2f}%",
+                "Profit_Factor": f"{profit_factor:.2f}",
+                "Avg_Win": f"{avg_win:.3f}%",
+                "Avg_Loss": f"{avg_loss:.3f}%",
+                "Expectancy": f"{expectancy:.4f}%",
+                "Net_PnL": f"{net_pnl:.2f}%",
+                "Sample_Trades": total_trades
+            })
+            
+        optimization_matrix[symbol] = sweep_reports
+        
+    return jsonify({
+        "status": "INSTITUTIONAL_EVENT_DRIVEN_OPTIMIZATION_COMPLETE",
+        "methodology_note": "Symmetrical 1:1 Bracket System (SL=TP). Intra-candle conflict rules set to Absolute Worst Case (Stop-Loss First).",
+        "data_provenance": "Binance Live Spot API (1h Klines Matrix)",
+        "results": optimization_matrix
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
