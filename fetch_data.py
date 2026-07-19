@@ -1,73 +1,101 @@
 import os
-import json
+import time
 import requests
+import pandas as pd
+from datetime import datetime
 
-def fetch_binance_historical_data():
-    print("⏳ جاري سحب البيانات التاريخية مباشرة من Binance API العامة...")
-    
-    # سحب أحدث 500 شمعة (كل شمعة تمثل 5 دقائق مثلاً 5m أو دقيقة 1m) لزوج BTCUSDT
-    symbol = "BTCUSDT"
-    interval = "5m"
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=500"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        raw_candles = response.json()
+class QuantDataEngine:
+    def __init__(self, storage_dir="data_warehouse"):
+        self.storage_dir = storage_dir
+        self.base_url = "https://api.binance.com/api/v3/klines"
+        if not os.path.exists(self.storage_dir):
+            os.makedirs(self.storage_dir)
+            print(f"[*] تم إنشاء مجلد تخزين البيانات المحلي: {self.storage_dir}")
+
+    def fetch_historical_candles(self, symbol, interval="1h", total_candles=13000):
+        """جلب كميات ضخمة من البيانات التاريخية عبر حلقة تراجع زمني تكسر حاجز الـ 1000 شمعة لـ Binance"""
+        print(f"\n[+] جاري سحب البيانات التاريخية للعملة {symbol} ({interval})...")
+        all_klines = []
+        end_time = int(time.time() * 1000)
         
-        # ترتيب البيانات لتصبح ميكانيكية حتمية ومفهومة للبوت
-        formatted_ticks = []
-        for c in raw_candles:
-            formatted_ticks.append({
-                "timestamp": float(c[0]),      # وقت فتح الشمعة
-                "open_price": float(c[1]),     # سعر الفتح
-                "high": float(c[2]),           # أعلى سعر
-                "low": float(c[3]),            # أدنى سعر
-                "close_price": float(c[4]),    # سعر الإغلاق
-                "bid_vol": float(c[5]) * 0.6,  # محاكاة لحجم طلبات الشراء
-                "ask_vol": float(c[5]) * 0.4   # محاكاة لحجم طلبات البيع
-            })
+        iterations = (total_candles // 1000) + 1
+        
+        for iteration in range(iterations):
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": 1000,
+                "endTime": end_time
+            }
+            try:
+                response = requests.get(self.base_url, params=params, timeout=15)
+                data = response.json()
+                
+                if not data or len(data) == 0:
+                    print(f"[!] لا توجد بيانات تاريخية إضافية متاحة لـ {symbol}")
+                    break
+                    
+                all_klines = data + all_klines
+                end_time = data[0][0] - 1
+                
+                print(f"    -> التقدم: تم جلب {len(all_klines)}/{total_candles} شمعة...")
+                time.sleep(0.5) # حماية الـ IP من الحظر
+                
+                if len(all_klines) >= total_candles:
+                    all_klines = all_klines[-total_candles:]
+                    break
+            except Exception as e:
+                print(f"[X] خطأ في الشبكة أثناء جلب الحزمة: {e}")
+                time.sleep(2)
+                continue
+
+        # تحويل البيانات الخام إلى مصفوفة Pandas وتنظيفها
+        columns = [
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "number_of_trades",
+            "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+        ]
+        df = pd.DataFrame(all_klines, columns=columns)
+        
+        df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms")
+        numeric_cols = ["open", "high", "low", "close", "volume"]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
             
-        print(f"✅ تم سحب {len(formatted_ticks)} نقطة بيانات بنجاح من Binance!")
-        return formatted_ticks
-    except Exception as e:
-        print(f"❌ فشل سحب البيانات من Binance: {e}")
-        return None
+        # الاحتفاظ بالأعمدة الأساسية للتداول الكمي فقط لتوفير الذاكرة والسرعة
+        df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+        df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+        return df
 
-def save_to_local_and_jsonbin(data):
-    if not data:
-        return
-        
-    # 1. الحفظ المحلي في السيرفر (مجلد data) ليقرأ منه ملف main_replay.py
-    os.makedirs("data", exist_ok=True)
-    local_path = "data/binance_24h_data.json"
-    with open(local_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
-    print(f"💾 تم حفظ البيانات محلياً في السيرفر بمسار: {local_path}")
-    
-    # 2. إرسال وتحديث البيانات في منصة JSONBIN (سحابياً)
-    # ملاحظة: تأكد من إضافة الـ Master Key والـ Bin ID في إعدادات Render (Environment Variables)
-    jsonbin_key = os.getenv("JSONBIN_API_KEY")
-    jsonbin_id = os.getenv("JSONBIN_BIN_ID")
-    
-    if jsonbin_key and jsonbin_id:
-        print("☁️ جاري مزامنة البيانات مع منصة JSONBIN...")
-        headers = {
-            "Content-Type": "application/json",
-            "X-Master-Key": jsonbin_key
-        }
-        bin_url = f"https://api.jsonbin.io/v3/b/{jsonbin_id}"
-        try:
-            res = requests.put(bin_url, json=data, headers=headers, timeout=15)
-            if res.status_code == 200:
-                print("✨ تم قفل ومزامنة البيانات السحابية في JSONBIN بنجاح!")
-            else:
-                print(f"⚠️ فشل التحديث في JSONBIN، كود الاستجابة: {res.status_code}")
-        except Exception as e:
-            print(f"⚠️ حدث خطأ أثناء الاتصال بـ JSONBIN: {e}")
-    else:
-        print("ℹ️ لم يتم العثور على متغيرات JSONBIN البيئية في Render، تم الاكتفاء بالنسخة المحلية.")
+    def build_and_save_basket(self, assets, interval="1h", total_candles=13000):
+        """بناء السلة الكاملة وحفظها بصيغة Parquet المضغوطة"""
+        summary_report = {}
+        for asset in assets:
+            df = self.fetch_historical_candles(asset, interval, total_candles)
+            
+            # حفظ الملف بصيغة Parquet عالية الأداء
+            file_path = os.path.join(self.storage_dir, f"{asset}_{interval}.parquet")
+            df.to_parquet(file_path, index=False, engine="pyarrow", compression="snappy")
+            
+            summary_report[asset] = {
+                "total_rows": len(df),
+                "start_date": str(df["timestamp"].min()),
+                "end_date": str(df["timestamp"].max()),
+                "file_path": file_path
+            }
+            print(f"[✓] تم أرشفة {asset} بنجاح. النطاق الزمني: {df['timestamp'].min()} إلى {df['timestamp'].max()}")
+            
+        return summary_report
 
 if __name__ == "__main__":
-    market_data = fetch_binance_historical_data()
-    save_to_local_and_jsonbin(market_data)
+    # السلة المقترحة لمنع انحياز الأصل المالي (Asset Overfitting)
+    crypto_basket = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "LINKUSDT", "ADAUSDT"]
+    
+    engine = QuantDataEngine(storage_dir="data_warehouse")
+    report = engine.build_and_save_basket(assets=crypto_basket, interval="1h", total_candles=13000)
+    
+    print("\n" + "="*50)
+    print("      DATA ENGINE PHASE 1 REPORT")
+    print("="*50)
+    import json
+    print(json.dumps(report, indent=4))
