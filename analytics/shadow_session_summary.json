@@ -1,0 +1,15 @@
+{
+    "session_end_time": "2026-07-22T20:33:06.295464+00:00",
+    "execution_rate_pct": 100.0,
+    "total_signals": 14,
+    "total_executed": 14,
+    "latency_profile": {
+        "avg_ms": 55.64,
+        "min_ms": 22,
+        "max_ms": 80
+    },
+    "slippage_profile": {
+        "avg_bps": 1.33,
+        "max_bps": 2.38
+    }
+}
