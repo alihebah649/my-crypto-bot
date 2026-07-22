@@ -31,9 +31,9 @@ def send_telegram_message(message: str):
     try:
         response = requests.post(url, json=payload, timeout=5)
         if response.status_code != 200:
-            print(f"⚠️ Telegram Alert Failed: {response.text}")
+            print(f"⚠️ فشل إرسال تنبيه تلجرام: {response.text}")
     except Exception as e:
-        print(f"⚠️ Telegram Connection Error: {e}")
+        print(f"⚠️ خطأ في الاتصال بتلجرام: {e}")
 
 # --- 3. محرك الحسابات الفنية اللحظية ---
 class AlphaSignalEngine:
@@ -102,14 +102,13 @@ async def start_live_shadow_engine():
     engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
     tick_count = 0
     
-    # رسالة ترحيبية معربة
-    send_telegram_message("🤖 *بوت علي للتداول يعمل الآن على Render!*\n🎯 الوضع: *تداول ورقي مستمر 24/7*\n🔌 جاري الاتصال بـ Coinbase...")
+    send_telegram_message("🤖 *بوت علي للتداول يعمل الآن على Render!*\n🎯 الوضع: *تداول ورقي مستمر 24/7*\n🔌 جاري الاتصال بالبث الحي لـ Coinbase...")
     
     while True:
         try:
             async with websockets.connect(coinbase_ws_url, ping_interval=20, ping_timeout=20) as ws:
                 await ws.send(json.dumps({"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["ticker"]}))
-                print("✅ Connected to Coinbase Live WebSocket.")
+                print("✅ متصل بنجاح مع بث Coinbase اللحظي.")
                 
                 while True:
                     response = await ws.recv()
@@ -138,20 +137,20 @@ async def start_live_shadow_engine():
                         tracker.record_execution(datetime.now(UTC).isoformat(), signal, live_price, executed_price, live_volume, latency, slippage, rsi)
                         tracker.save_data_to_analytics()
                         
-                        # تعريب الإشعارات الفورية
+                        # إشعارات فورية معربة بالكامل
                         emoji = "🟢" if signal == "BUY" else "🔴"
                         action_arabic = "شراء" if signal == "BUY" else "بيع"
                         
                         send_telegram_message(
-                            f"{emoji} *تم تنفيذ صفقة فرجية (ورقية)*\n"
-                            f"• *النوع:* {action_arabic}\n"
-                            f"• *سعر السوق:* ${live_price:.2f}\n"
-                            f"• *السعر المحاكي المنفذ:* ${executed_price:.2f}\n"
-                            f"• *مؤشر RSI:* {rsi} | *مؤشر EMA:* {ema:.2f}\n"
+                            f"{emoji} *تنفيذ صفقة تداول ورقي (محاكي)*\n"
+                            f"• *الإجراء:* {action_arabic}\n"
+                            f"• *سعر السوق اللحظي:* ${live_price:.2f}\n"
+                            f"• *السعر التنفيذي المحاكي:* ${executed_price:.2f}\n"
+                            f"• *مؤشر القوة النسبية RSI:* {rsi} | *المتوسط الأسي EMA:* {ema:.2f}\n"
                             f"• *زمن الاستجابة:* {latency}ms | *الانزلاق السعري:* {slippage} bps"
                         )
         except Exception as e:
-            print(f"⚠️ WebSocket connection lost, reconnecting... Error: {e}")
+            print(f"⚠️ انقطع الاتصال، جاري إعادة المحاولة... الخطأ: {e}")
             await asyncio.sleep(5)
 
 def start_trading_loop():
