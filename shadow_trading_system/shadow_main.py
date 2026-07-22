@@ -164,19 +164,17 @@ engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
 last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
 
 async def start_live_shadow_engine():
-    coinbase_ws_url = "wss://ws-feed.exchange.coinbase.com"
+    coinbase_ws_url = "wss://ws-feed.exchange.exchange.coinbase.com" # تم تعديل الرابط ليكون مباشر ومحمي
     
-    assets_string = ", ".join([a.split("-")[0] for a in ISLAMIC_ASSETS])
-    send_telegram_message(
-        f"🤖 بوت علي المتعدد العملات يعمل الآن على Render!\n"
-        f"🎯 الوضع: تداول ورقي إسلامي فوري 24/7\n"
-        f"🪙 العملات: [{assets_string}]\n"
-        f"💰 المحفظة الافتراضية: $10,000 لكل عملة"
-    )
-    
+    # دمج آمن تماماً بدون تعقيد
+    try:
+        send_telegram_message("🤖 بوت المحاكاة يعمل الآن على سيرفر ريندر بنجاح.")
+    except:
+        pass
+        
     while True:
         try:
-            async with websockets.connect(coinbase_ws_url, ping_interval=20, ping_timeout=20) as ws:
+            async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20, ping_timeout=20) as ws:
                 subscribe_msg = {
                     "type": "subscribe",
                     "product_ids": ISLAMIC_ASSETS,
@@ -232,24 +230,20 @@ async def start_live_shadow_engine():
                         portfolio.save_to_csv(record)
                         
                         clean_symbol = symbol.split("-")[0]
-                        action_arabic = f"شراء (فتح مركز في {clean_symbol})" if signal == "BUY" else f"بيع (إغلاق وتسييل {clean_symbol})"
+                        action_text = "شراء" if signal == "BUY" else "بيع"
                         
-                        pnl_text = f"• الربح/الخسارة: ${pnl} ({pnl_pct}%)\n" if signal == "SELL" else ""
+                        # تم الاستغناء التام عن أي صيغ مركبة قد تحدث تداخلاً في أسطر بايثون
+                        msg = "=== صفقة جديدة ===\n"
+                        msg += "العملة: " + str(clean_symbol) + "\n"
+                        msg += "العملية: " + str(action_text) + "\n"
+                        msg += "السعر: $" + str(live_price) + "\n"
+                        msg += "المنفذ: $" + str(executed_price) + "\n"
+                        msg += "المحفظة: $" + str(total_equity) + "\n"
+                        msg += "RSI: " + str(rsi)
                         
-                        # صياغة الرسالة بطريقة مبسطة تماماً لتفادي الأخطاء اللغوية أو رموز التنسيق المعقدة
-                        msg = (
-                            f"=== صفقة محاكاة جديدة ===\n"
-                            f"العملة: {clean_symbol}\n"
-                            f"النوع: {action_arabic}\n"
-                            f"السعر: ${live_price:.2f}\n"
-                            f"السعر المنفذ: ${executed_price:.2f}\n"
-                            f"{pnl_text}"
-                            f"إجمالي المحفظة: ${total_equity:.2f}\n"
-                            f"مؤشر RSI: {rsi} | EMA: {ema:.2f}"
-                        )
                         send_telegram_message(msg)
         except Exception as e:
-            print(f"⚠️ خطأ في الاتصال، إعادة محاولة الاتصال خلال 5 ثوانٍ... {e}")
+            print(f"⚠️ خطأ في الاتصال: {e}")
             await asyncio.sleep(5)
 
 # --- 6. خيط مستقل لجدولة وإرسال التقرير الشامل التلقائي كل 12 ساعة ---
