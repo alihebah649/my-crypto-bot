@@ -4,3 +4,4 @@ numpy
 pandas
 requests
 pyarrow
+websockets>=12.0
