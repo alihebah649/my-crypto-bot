@@ -9,8 +9,9 @@ from datetime import datetime, UTC
 import websockets
 import requests
 from flask import Flask
+import time
 
-# --- 1. إعداد سيرفر Flask لاستقبال نبضات UptimeRobot لضمان العمل 24/7 ---
+# --- 1. إعداد سيرفر Flask لضمان العمل 24/7 ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -30,7 +31,9 @@ def send_telegram_message(message: str):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=5)
-        if response.status_code != 200:
+        if response.status_code == 429:
+            print(f"⚠️ تلجرام يطلب التهدئة (429): {response.text}")
+        elif response.status_code != 200:
             print(f"⚠️ فشل إرسال تنبيه تلجرام: {response.text}")
     except Exception as e:
         print(f"⚠️ خطأ في الاتصال بتلجرام: {e}")
@@ -73,8 +76,6 @@ class MultiPortfolioTracker:
         self.initial_balance = initial_balance
         self.analytics_dir = analytics_dir
         os.makedirs(self.analytics_dir, exist_ok=True)
-        
-        # بنية البيانات لتخزين وإدارة محافظ العملات بشكل معزول
         self.portfolios = {}
         
     def _init_symbol(self, symbol):
@@ -97,7 +98,6 @@ class MultiPortfolioTracker:
         trade_status = "EXEC"
 
         if side == "BUY" and not p["has_position"]:
-            # محاكاة شراء بكامل قيمة السيولة النقدية المتوفرة للعملة
             p["crypto_held"] = p["balance"] / executed_price
             p["last_buy_price"] = executed_price
             p["balance"] = 0.0
@@ -106,7 +106,6 @@ class MultiPortfolioTracker:
             trade_status = "OPEN_POSITION"
             
         elif side == "SELL" and p["has_position"]:
-            # بيع كامل المعروض وتسييل المركز وحساب الأرباح والخسائر الصافية
             revenue = p["crypto_held"] * executed_price
             pnl = revenue - (p["crypto_held"] * p["last_buy_price"])
             pnl_pct = (pnl / (p["crypto_held"] * p["last_buy_price"])) * 100
@@ -157,11 +156,13 @@ class MultiPortfolioTracker:
         send_telegram_message(report_msg)
 
 # --- 5. محرك البث والتداول الورقي اللانهائي المستمر 24/7 ---
-# قائمة الأصول الإسلامية الكبرى المعتمدة مضافاً إليها عملة BNB
 ISLAMIC_ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
 
 portfolio = MultiPortfolioTracker()
 engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
+
+# قاموس لحفظ وقت آخر صفقة لكل عملة لتفادي حظر تلجرام (Cooldown: 5 دقائق)
+last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
 
 async def start_live_shadow_engine():
     coinbase_ws_url = "wss://ws-feed.exchange.coinbase.com"
@@ -203,13 +204,21 @@ async def start_live_shadow_engine():
                     
                     signal = engine.get_signal(rsi)
                     
-                    # تصفية إشارات الشراء أو البيع التكرارية
                     portfolio._init_symbol(symbol)
                     has_pos = portfolio.portfolios[symbol]["has_position"]
+                    
+                    # التحقق من تغيير الإشارة الفعلي
                     if (signal == "BUY" and has_pos) or (signal == "SELL" and not has_pos):
                         continue
                         
                     if signal in ["BUY", "SELL"]:
+                        # حماية: التحقق من انقضاء فترة التهدئة (300 ثانية = 5 دقائق) للعملة المحددة منعاً لـ 429
+                        current_timestamp = time.time()
+                        if current_timestamp - last_trade_time[symbol] < 300:
+                            continue
+                        
+                        last_trade_time[symbol] = current_timestamp
+                        
                         start_time = datetime.now(UTC)
                         await asyncio.sleep(np.random.uniform(0.02, 0.08))
                         latency = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
@@ -217,7 +226,6 @@ async def start_live_shadow_engine():
                         factor = (1 + (slippage / 10000)) if signal == "BUY" else (1 - (slippage / 10000))
                         executed_price = round(live_price * factor, 2)
                         
-                        # معالجة الصفقة وتحديث المحفظة مالياً للعملة المحددة
                         status, pnl, pnl_pct, total_equity = portfolio.process_trade(symbol, signal, executed_price)
                         
                         record = {
@@ -227,15 +235,14 @@ async def start_live_shadow_engine():
                         }
                         portfolio.save_to_csv(record)
                         
-                        # إرسال إشعار تلجرام تفصيلي باللغة العربية
                         emoji = "🟢" if signal == "BUY" else "🔴"
                         clean_symbol = symbol.split("-")[0]
                         action_arabic = f"شراء (فتح مركز في {clean_symbol})" if signal == "BUY" else f"بيع (إغلاق وتسييل {clean_symbol})"
                         
                         pnl_text = f"• *الربح/الخسارة لهذه الصفقة:* ${pnl} ({pnl_pct}%)\n" if signal == "SELL" else ""
                         
-                        send_telegram_message(
-                            f"{emoji} *تم تنفيذ صفقة فرجية (ورقية)*\n"
+                        msg = (
+                            f"{emoji} *تم تنفيذ صفقة محاكاة ناجحة*\n"
                             f"• *العملة:* {clean_symbol}\n"
                             f"• *النوع:* {action_arabic}\n"
                             f"• *سعر السوق:* ${live_price:.2f}\n"
@@ -245,6 +252,7 @@ async def start_live_shadow_engine():
                             f"• *مؤشر RSI:* {rsi} | *مؤشر EMA:* {ema:.2f}\n"
                             f"• *زمن الاستجابة:* {latency}ms | *الانزلاق السعري:* {slippage} bps"
                         )
+                        send_telegram_message(msg)
         except Exception as e:
             print(f"⚠️ خطأ في الاتصال، إعادة محاولة الاتصال خلال 5 ثوانٍ... {e}")
             await asyncio.sleep(5)
@@ -253,7 +261,7 @@ async def start_live_shadow_engine():
 def daily_report_scheduler():
     import time
     while True:
-        time.sleep(43200)  # الانتظار لمدة 12 ساعة للبث التلقائي القادم
+        time.sleep(43200)
         try:
             portfolio.send_periodic_report()
         except Exception as e:
@@ -263,9 +271,6 @@ def start_trading_loop():
     asyncio.run(start_live_shadow_engine())
 
 if __name__ == "__main__":
-    # تشغيل خيط محرك التداول 
     threading.Thread(target=start_trading_loop, daemon=True).start()
-    # تشغيل خيط مجدول التقارير الدورية
     threading.Thread(target=daily_report_scheduler, daemon=True).start()
-    # تشغيل سيرفر ويب Flask لربطه بـ UptimeRobot
     run_flask()
