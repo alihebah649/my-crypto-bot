@@ -18,7 +18,6 @@ def home():
     return {"status": "healthy", "engine": "running", "timestamp": datetime.now(UTC).isoformat()}, 200
 
 def run_flask():
-    # Render يمرر المنفذ تلقائياً عبر متغير البيئة PORT
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
@@ -96,21 +95,6 @@ class ExecutionMetricsTracker:
             if not file_exists: writer.writeheader()
             writer.writerows(self.trade_records)
 
-        avg_latency = sum(self.latencies) / len(self.latencies)
-        avg_slippage = sum(self.slippages) / len(self.slippages)
-        exec_rate = (self.total_executed / self.total_signals) * 100 if self.total_signals > 0 else 0
-
-        summary_data = {
-            "session_end_time": datetime.now(UTC).isoformat(),
-            "execution_rate_pct": round(exec_rate, 2),
-            "total_signals": self.total_signals,
-            "total_executed": self.total_executed,
-            "latency_profile": {"avg_ms": round(avg_latency, 2), "min_ms": min(self.latencies), "max_ms": max(self.latencies)},
-            "slippage_profile": {"avg_bps": round(avg_slippage, 2), "max_bps": max(self.slippages)}
-        }
-        with open(os.path.join(self.analytics_dir, "shadow_session_summary.json"), mode="w", encoding="utf-8") as f:
-            json.dump(summary_data, f, indent=4, ensure_ascii=False)
-
 # --- 5. محرك التداول الورقي اللانهائي المستمر 24/7 ---
 async def start_live_shadow_engine():
     coinbase_ws_url = "wss://ws-feed.exchange.coinbase.com"
@@ -118,9 +102,10 @@ async def start_live_shadow_engine():
     engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
     tick_count = 0
     
-    send_telegram_message("🤖 *Ali Crypto Bot Is Live on Render!*\n🎯 Mode: *Continuous Paper Trading 24/7*\n🔌 Connecting to Coinbase...")
+    # رسالة ترحيبية معربة
+    send_telegram_message("🤖 *بوت علي للتداول يعمل الآن على Render!*\n🎯 الوضع: *تداول ورقي مستمر 24/7*\n🔌 جاري الاتصال بـ Coinbase...")
     
-    while True: # حلقة لانهائية للعمل المستمر
+    while True:
         try:
             async with websockets.connect(coinbase_ws_url, ping_interval=20, ping_timeout=20) as ws:
                 await ws.send(json.dumps({"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["ticker"]}))
@@ -138,7 +123,7 @@ async def start_live_shadow_engine():
                     engine.update_price(live_price)
                     ema, rsi = engine.calculate_indicators()
                     
-                    if rsi is None: continue # التسخين صامت في الخلفية
+                    if rsi is None: continue
                     
                     signal = engine.get_signal(live_price, rsi)
                     if signal in ["BUY", "SELL"]:
@@ -151,29 +136,28 @@ async def start_live_shadow_engine():
                         executed_price = round(live_price * factor, 2)
                         
                         tracker.record_execution(datetime.now(UTC).isoformat(), signal, live_price, executed_price, live_volume, latency, slippage, rsi)
-                        tracker.save_data_to_analytics() # حفظ فوري لكل صفقة
+                        tracker.save_data_to_analytics()
                         
-                        # إشعار تلجرام الفوري
+                        # تعريب الإشعارات الفورية
                         emoji = "🟢" if signal == "BUY" else "🔴"
+                        action_arabic = "شراء" if signal == "BUY" else "بيع"
+                        
                         send_telegram_message(
-                            f"{emoji} *PAPER TRADE EXECUTED*\n"
-                            f"• *Action:* {signal}\n"
-                            f"• *Market Price:* ${live_price:.2f}\n"
-                            f"• *Simulated Executed:* ${executed_price:.2f}\n"
-                            f"• *RSI:* {rsi} | *EMA:* {ema:.2f}\n"
-                            f"• *Latency:* {latency}ms | *Slippage:* {slippage} bps"
+                            f"{emoji} *تم تنفيذ صفقة فرجية (ورقية)*\n"
+                            f"• *النوع:* {action_arabic}\n"
+                            f"• *سعر السوق:* ${live_price:.2f}\n"
+                            f"• *السعر المحاكي المنفذ:* ${executed_price:.2f}\n"
+                            f"• *مؤشر RSI:* {rsi} | *مؤشر EMA:* {ema:.2f}\n"
+                            f"• *زمن الاستجابة:* {latency}ms | *الانزلاق السعري:* {slippage} bps"
                         )
         except Exception as e:
             print(f"⚠️ WebSocket connection lost, reconnecting... Error: {e}")
-            await asyncio.sleep(5) # انتظار 5 ثوانٍ قبل إعادة الاتصال التلقائي
+            await asyncio.sleep(5)
 
 def start_trading_loop():
     asyncio.run(start_live_shadow_engine())
 
 if __name__ == "__main__":
-    # تشغيل محرك التداول في Thread منفصل ليعمل في الخلفية للأبد
     trading_thread = threading.Thread(target=start_trading_loop, daemon=True)
     trading_thread.start()
-    
-    # تشغيل سيرفر Flask في الـ Main Thread لاستقبال نبضات UptimeRobot وثبات الـ Port
     run_flask()
