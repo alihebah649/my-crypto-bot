@@ -1,24 +1,85 @@
 import asyncio
 import json
 import random
+import os
+import csv
 from datetime import datetime, UTC
 import websockets
 
-# --- 1. هيكل تجميع البيانات الإحصائية المصحح ---
+# --- 1. هيكل تجميع وحفظ البيانات الإحصائية مطور ---
 class ExecutionMetricsTracker:
-    def __init__(self):
+    def __init__(self, analytics_dir="../analytics"):
         self.latencies = []
         self.slippages = []
         self.total_signals = 0
         self.total_executed = 0
+        self.trade_records = []
+        # تحديد مسار مجلد التحليلات وضمان وجوده
+        self.analytics_dir = analytics_dir
+        os.makedirs(self.analytics_dir, exist_ok=True)
 
     def record_signal(self):
         self.total_signals += 1
 
-    def record_execution(self, latency_ms: int, slippage_bps: float):
+    def record_execution(self, timestamp, live_price, executed_price, volume, latency_ms, slippage_bps):
         self.latencies.append(latency_ms)
         self.slippages.append(slippage_bps)
         self.total_executed += 1
+        
+        # حفظ سجل الصفقة الحالية
+        self.trade_records.append({
+            "timestamp": timestamp,
+            "live_price": live_price,
+            "executed_price": executed_price,
+            "volume": volume,
+            "latency_ms": latency_ms,
+            "slippage_bps": slippage_bps
+        })
+
+    def save_data_to_analytics(self):
+        """دالة مخصصة لحفظ البيانات والإحصائيات في مجلد التحليلات بشكل دائم"""
+        if not self.latencies:
+            return
+
+        # 1. حفظ سجل الصفقات التفصيلي بصيغة CSV
+        csv_file_path = os.path.join(self.analytics_dir, "shadow_trades_log.csv")
+        file_exists = os.path.isfile(csv_file_path)
+        
+        with open(csv_file_path, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["timestamp", "live_price", "executed_price", "volume", "latency_ms", "slippage_bps"])
+            if not file_exists:
+                writer.writeheader()  # كتابة العناوين في أول مرة فقط
+            writer.writerows(self.trade_records)
+
+        # 2. حساب المؤشرات الإجمالية وتصدير ملخص الجلسة بصيغة JSON
+        avg_latency = sum(self.latencies) / len(self.latencies)
+        max_latency = max(self.latencies)
+        min_latency = min(self.latencies)
+        avg_slippage = sum(self.slippages) / len(self.slippages)
+        max_slippage = max(self.slippages)
+        exec_rate = (self.total_executed / self.total_signals) * 100 if self.total_signals > 0 else 0
+
+        summary_data = {
+            "session_end_time": datetime.now(UTC).isoformat(),
+            "execution_rate_pct": round(exec_rate, 2),
+            "total_signals": self.total_signals,
+            "total_executed": self.total_executed,
+            "latency_profile": {
+                "avg_ms": round(avg_latency, 2),
+                "min_ms": min_latency,
+                "max_ms": max_latency
+            },
+            "slippage_profile": {
+                "avg_bps": round(avg_slippage, 2),
+                "max_bps": max_slippage
+            }
+        }
+
+        json_file_path = os.path.join(self.analytics_dir, "shadow_session_summary.json")
+        with open(json_file_path, mode="w", encoding="utf-8") as f:
+            json.dump(summary_data, f, indent=4, ensure_ascii=False)
+            
+        print(f"\n💾 Analytics Saved Successfully inside '{self.analytics_dir}/' folder!")
 
     def generate_summary_report(self):
         print("\n" + "="*57)
@@ -32,10 +93,8 @@ class ExecutionMetricsTracker:
         avg_latency = sum(self.latencies) / len(self.latencies)
         max_latency = max(self.latencies)
         min_latency = min(self.latencies)
-        
         avg_slippage = sum(self.slippages) / len(self.slippages)
         max_slippage = max(self.slippages)
-        
         exec_rate = (self.total_executed / self.total_signals) * 100 if self.total_signals > 0 else 0
 
         print(f"📈 Execution Rate  : {exec_rate:.2f}% ({self.total_executed}/{self.total_signals} Signals Executed)")
@@ -43,7 +102,7 @@ class ExecutionMetricsTracker:
         print(f"📉 Slippage Profile : Avg: {avg_slippage:.2f} bps | Max: {max_slippage:.2f} bps")
         print("="*57 + "\n")
 
-# --- 2. محرك تشغيل الـ Shadow Trading عبر Coinbase Websocket ---
+# --- 2. محرك تشغيل الـ Shadow Trading المحدث عبر Coinbase Websocket ---
 async def start_live_shadow_engine(max_ticks: int = 30):
     print("🚦 Running Automated Production Readiness Gates...", flush=True)
     print("  ✅ Data_Integrity: PASSED | ✅ Infrastructure_Stable: PASSED", flush=True)
@@ -76,6 +135,7 @@ async def start_live_shadow_engine(max_ticks: int = 30):
                 tick_count += 1
                 live_price = float(data['price'])
                 live_volume = float(data.get('last_size', 0))
+                timestamp_str = datetime.now(UTC).isoformat()
                 
                 if random.random() > 0.4:
                     tracker.record_signal()
@@ -87,7 +147,7 @@ async def start_live_shadow_engine(max_ticks: int = 30):
                     slippage = round(random.uniform(0.5, 3.0), 2)
                     executed_price = round(live_price * (1 + (slippage / 10000)), 2)
                     
-                    tracker.record_execution(latency, slippage)
+                    tracker.record_execution(timestamp_str, live_price, executed_price, live_volume, latency, slippage)
                     
                     print(f"🎯 Live Tick {tick_count:02d} | Coinbase Price: {live_price:.2f} | Executed At: {executed_price:.2f} | Vol: {live_volume:.3f} | ⏱️ {latency}ms | 📉 {slippage}bps", flush=True)
                 else:
@@ -97,7 +157,10 @@ async def start_live_shadow_engine(max_ticks: int = 30):
         print(f"\n❌ WebSocket Error: {e}", flush=True)
         
     print("\n🏁 Live test loop finished. Disconnecting from Coinbase.", flush=True)
+    
+    # طباعة التقرير ثم حفظ البيانات في مجلد التحليلات بشكل دائم
     tracker.generate_summary_report()
+    tracker.save_data_to_analytics()
 
 if __name__ == "__main__":
     asyncio.run(start_live_shadow_engine(max_ticks=30))
