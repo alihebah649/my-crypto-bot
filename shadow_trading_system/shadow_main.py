@@ -133,10 +133,10 @@ class MultiPortfolioTracker:
 
     def send_periodic_report(self):
         if not self.portfolios:
-            send_telegram_message("📊 *التقرير الدوري لأداء البوت:*\nلا توجد صفقات منفذة حتى الآن.")
+            send_telegram_message("📊 التقرير الدوري لأداء البوت:\nلا توجد صفقات منفذة حتى الآن.")
             return
 
-        report_msg = "📊 *التقرير الدوري الشامل للمحفظة الإسلامية المتعددة* 📊\n\n"
+        report_msg = "📊 التقرير الدوري الشامل للمحفظة الإسلامية المتعددة 📊\n\n"
         grand_total_pnl = 0.0
         
         for symbol, p in self.portfolios.items():
@@ -145,14 +145,14 @@ class MultiPortfolioTracker:
             
             clean_name = symbol.split("-")[0]
             report_msg += (
-                f"🪙 *عملة {clean_name}:*\n"
-                f"  • صافي الأرباح/الخسائر: ${p['total_pnl']:.2f}\n"
-                f"  • إجمالي الصفقات: {p['total_trades']} | نسبة النجاح: {win_rate:.2f}%\n"
-                f"  • الحالة: {'🔄 ممتلك للمركز' if p['has_position'] else '💵 سيولة متوفرة'}\n"
+                f"🪙 عملة {clean_name}:\n"
+                f"  • صافي الأرباح: ${p['total_pnl']:.2f}\n"
+                f"  • الصفقات: {p['total_trades']} | النجاح: {win_rate:.2f}%\n"
+                f"  • الحالة: {'ممتلك للمركز' if p['has_position'] else 'سيولة متوفرة'}\n"
                 f"───────────────────\n"
             )
         
-        report_msg += f"📈 *إجمالي أرباح المحفظة الكلية المجمعة:* ${grand_total_pnl:,.2f}"
+        report_msg += f"📈 إجمالي الأرباح المجمعة: ${grand_total_pnl:,.2f}"
         send_telegram_message(report_msg)
 
 # --- 5. محرك البث والتداول الورقي اللانهائي المستمر 24/7 ---
@@ -161,7 +161,6 @@ ISLAMIC_ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-
 portfolio = MultiPortfolioTracker()
 engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
 
-# قاموس لحفظ وقت آخر صفقة لكل عملة لتفادي حظر تلجرام (Cooldown: 5 دقائق)
 last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
 
 async def start_live_shadow_engine():
@@ -169,11 +168,10 @@ async def start_live_shadow_engine():
     
     assets_string = ", ".join([a.split("-")[0] for a in ISLAMIC_ASSETS])
     send_telegram_message(
-        f"🤖 *بوت علي المتعدد العملات يعمل الآن على Render!*\n"
-        f"🎯 الوضع: *تداول ورقي إسلامي فوري (Spot) 24/7*\n"
-        f"🪙 العملات المراقبة الحلال المعتمدة: \n`[{assets_string}]`\n"
-        f"💰 المحفظة الافتراضية: *$10,000 لكل عملة بشكل مستقل*\n"
-        f"🔌 جاري فتح الاتصال وقنوات البث المباشر..."
+        f"🤖 بوت علي المتعدد العملات يعمل الآن على Render!\n"
+        f"🎯 الوضع: تداول ورقي إسلامي فوري 24/7\n"
+        f"🪙 العملات: [{assets_string}]\n"
+        f"💰 المحفظة الافتراضية: $10,000 لكل عملة"
     )
     
     while True:
@@ -207,12 +205,10 @@ async def start_live_shadow_engine():
                     portfolio._init_symbol(symbol)
                     has_pos = portfolio.portfolios[symbol]["has_position"]
                     
-                    # التحقق من تغيير الإشارة الفعلي
                     if (signal == "BUY" and has_pos) or (signal == "SELL" and not has_pos):
                         continue
                         
                     if signal in ["BUY", "SELL"]:
-                        # حماية: التحقق من انقضاء فترة التهدئة (300 ثانية = 5 دقائق) للعملة المحددة منعاً لـ 429
                         current_timestamp = time.time()
                         if current_timestamp - last_trade_time[symbol] < 300:
                             continue
@@ -235,22 +231,21 @@ async def start_live_shadow_engine():
                         }
                         portfolio.save_to_csv(record)
                         
-                        emoji = "🟢" if signal == "BUY" else "🔴"
                         clean_symbol = symbol.split("-")[0]
                         action_arabic = f"شراء (فتح مركز في {clean_symbol})" if signal == "BUY" else f"بيع (إغلاق وتسييل {clean_symbol})"
                         
-                        pnl_text = f"• *الربح/الخسارة لهذه الصفقة:* ${pnl} ({pnl_pct}%)\n" if signal == "SELL" else ""
+                        pnl_text = f"• الربح/الخسارة: ${pnl} ({pnl_pct}%)\n" if signal == "SELL" else ""
                         
+                        # صياغة الرسالة بطريقة مبسطة تماماً لتفادي الأخطاء اللغوية أو رموز التنسيق المعقدة
                         msg = (
-                            f"{emoji} *تم تنفيذ صفقة محاكاة ناجحة*\n"
-                            f"• *العملة:* {clean_symbol}\n"
-                            f"• *النوع:* {action_arabic}\n"
-                            f"• *سعر السوق:* ${live_price:.2f}\n"
-                            f"• *السعر المحاكي المنفذ:* ${executed_price:.2f}\n"
+                            f"=== صفقة محاكاة جديدة ===\n"
+                            f"العملة: {clean_symbol}\n"
+                            f"النوع: {action_arabic}\n"
+                            f"السعر: ${live_price:.2f}\n"
+                            f"السعر المنفذ: ${executed_price:.2f}\n"
                             f"{pnl_text}"
-                            f"• *إجمالي قيمة محفظة {clean_symbol} الآن:* ${total_equity:.2f}\n"
-                            f"• *مؤشر RSI:* {rsi} | *مؤشر EMA:* {ema:.2f}\n"
-                            f"• *زمن الاستجابة:* {latency}ms | *الانزلاق السعري:* {slippage} bps"
+                            f"إجمالي المحفظة: ${total_equity:.2f}\n"
+                            f"مؤشر RSI: {rsi} | EMA: {ema:.2f}"
                         )
                         send_telegram_message(msg)
         except Exception as e:
