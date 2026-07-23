@@ -28,7 +28,6 @@ telegram_cooldown_until = 0.0
 def send_telegram_message(message: str):
     global telegram_cooldown_until
     if time.time() < telegram_cooldown_until:
-        print(f"ℹ️ [تخطي تلجرام]: {message.replace('\n', ' | ')}")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
@@ -41,7 +40,7 @@ def send_telegram_message(message: str):
             except Exception:
                 retry_after = 300
             telegram_cooldown_until = time.time() + retry_after
-            print(f"⚠️ تجميد تلجرام لـ {retry_after} ثانية.")
+            print(f"⚠️ تجميد مؤقت بسبب قيود تليجرام لـ {retry_after} ثانية.")
         elif response.status_code != 200:
             print(f"⚠️ فشل تلجرام: {response.text}")
     except Exception as e:
@@ -171,7 +170,7 @@ engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
 last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
 
 async def start_live_shadow_engine():
-    send_telegram_message("🤖 بوت المحاكاة المطور جاهز وبدأ رصد العملات...")
+    send_telegram_message("🤖 تم تشغيل الإصدار الجديد والمطور! نظام كبح جماح التنبيهات مفعّل.")
     while True:
         try:
             async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20, ping_timeout=20) as ws:
@@ -197,7 +196,7 @@ async def start_live_shadow_engine():
                         
                     if signal in ["BUY", "SELL"]:
                         current_timestamp = time.time()
-                        if current_timestamp - last_trade_time[symbol] < 300: continue
+                        if current_timestamp - last_trade_time[symbol] < 1800: continue
                         last_trade_time[symbol] = current_timestamp
                         
                         start_time = datetime.now(UTC)
