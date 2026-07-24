@@ -12,25 +12,30 @@ from flask import Flask
 import time
 
 # ==========================================
-# 1. QUANT ENGINES (V2.2 INSTITUTIONAL CORE)
+# 1. QUANT ENGINES (V2.2.1 FIXED RISK)
 # ==========================================
 
 class DynamicRiskEngine:
     def __init__(self, risk_per_trade_pct=0.01, max_exposure_pct=0.25):
-        self.risk_per_trade_pct = risk_per_trade_pct
+        self.risk_per_trade_pct = risk_per_trade_pct # 1% مخاطرة فعلية من رأس المال
         self.max_exposure_pct = max_exposure_pct
 
-    def calculate_position_size(self, current_equity, entry_price, atr, stop_loss_multiplier=2.0, remaining_exposure=0):
-        if pd.isna(atr) or atr <= 0: return 0.0
+    def calculate_position_size(self, current_equity, entry_price, atr, stop_loss_multiplier=2.0, remaining_exposure=0, cash_available=0):
+        if pd.isna(atr) or atr <= 0: 
+            # قيد أمان صارم: إذا كان ال ATR غير متوفر، لا تستخدم كامل الرصيد، بل استخدم نسبة ثابتة آمنة (مثلاً 5% من الكاش) كحد أدنى أو ارفض
+            return min(current_equity * 0.05, cash_available)
         
-        # 1. حساب الحجم المثالي بناءً على الـ Equity الحالي
+        # 1. حساب الحجم بناءً على مخاطرة الـ ATR
         risk_amount = current_equity * self.risk_per_trade_pct
         risk_per_share = atr * stop_loss_multiplier
         ideal_shares = risk_amount / risk_per_share
         ideal_position_usd = ideal_shares * entry_price
         
-        # 2. تقليم الحجم (Capping) بدلاً من الرفض التام إذا تجاوز الانكشاف المتبقي
-        actual_position_usd = min(ideal_position_usd, remaining_exposure)
+        # 2. قيود صارمة جداً لمنع دخول كامل الرصيد بأي شكل من الأشكال:
+        # ألا يتجاوز حجم الصفقة الحد الأقصى المسموح للمخاطرة (مثلاً 5% من إجمالي المحفظة كقيمة أسمية للصفقة الواحدة لضمان التنوع)
+        max_notional_per_trade = current_equity * 0.05 
+        
+        actual_position_usd = min(ideal_position_usd, max_notional_per_trade, remaining_exposure, cash_available)
         
         return max(actual_position_usd, 0.0)
 
@@ -56,11 +61,9 @@ class GlobalPortfolioTracker:
         return exposure
 
     def execute_buy(self, symbol, executed_price, position_size_usd, atr):
-        if position_size_usd > self.cash:
-            position_size_usd = self.cash # تأمين أخير ضد الرصيد السالب
+        if position_size_usd > self.cash or position_size_usd <= 0:
+            return False
             
-        if position_size_usd <= 0: return False
-
         crypto_amount = position_size_usd / executed_price
         self.cash -= position_size_usd
         
@@ -69,8 +72,8 @@ class GlobalPortfolioTracker:
             "entry_price": executed_price,
             "highest_price": executed_price,
             "atr_at_entry": atr,
-            "hard_stop": executed_price - (atr * 2.0), # Hard Stop
-            "trailing_stop": executed_price - (atr * 2.5) # Trailing Stop
+            "hard_stop": executed_price - (atr * 2.0),
+            "trailing_stop": executed_price - (atr * 2.5)
         }
         return True
 
@@ -91,7 +94,6 @@ class GlobalPortfolioTracker:
             pos = self.positions[symbol]
             if current_price > pos["highest_price"]:
                 pos["highest_price"] = current_price
-                # رفع الوقف المتحرك مع السعر
                 new_trail = current_price - (pos["atr_at_entry"] * 2.5)
                 if new_trail > pos["trailing_stop"]:
                     pos["trailing_stop"] = new_trail
@@ -99,11 +101,8 @@ class GlobalPortfolioTracker:
     def check_exits(self, symbol, current_price):
         if symbol not in self.positions: return None
         pos = self.positions[symbol]
-        
-        if current_price <= pos["hard_stop"]:
-            return "HARD_STOP"
-        if current_price <= pos["trailing_stop"]:
-            return "TRAILING_STOP"
+        if current_price <= pos["hard_stop"]: return "HARD_STOP"
+        if current_price <= pos["trailing_stop"]: return "TRAILING_STOP"
         return None
 
 # ==========================================
@@ -117,17 +116,13 @@ class OHLCVResampler:
         self.history = {}
 
     def process_tick(self, symbol, price, volume, timestamp):
-        # تجميع الـ ticks لإنشاء شموع حقيقية HLC
         minute_ts = int(timestamp // self.tf) * self.tf
-        
-        if symbol not in self.history:
-            self.history[symbol] = []
+        if symbol not in self.history: self.history[symbol] = []
             
         if symbol not in self.current_candles or self.current_candles[symbol]['ts'] != minute_ts:
             if symbol in self.current_candles:
                 self.history[symbol].append(self.current_candles[symbol])
-                if len(self.history[symbol]) > 200:
-                    self.history[symbol].pop(0)
+                if len(self.history[symbol]) > 200: self.history[symbol].pop(0)
             
             self.current_candles[symbol] = {
                 'ts': minute_ts, 'open': price, 'high': price, 'low': price, 'close': price, 'volume': volume
@@ -142,8 +137,7 @@ class OHLCVResampler:
     def get_dataframe(self, symbol):
         if symbol not in self.history or len(self.history[symbol]) < 2:
             return pd.DataFrame()
-        df = pd.DataFrame(self.history[symbol])
-        return df
+        return pd.DataFrame(self.history[symbol])
 
 class QuantIndicators:
     @staticmethod
@@ -151,10 +145,8 @@ class QuantIndicators:
         if len(df) < max(rsi_period, ema_period, atr_period) + 1:
             return None, None, None
 
-        # 1. EMA 100
         df['ema100'] = df['close'].ewm(span=ema_period, adjust=False).mean()
 
-        # 2. Wilder's RSI
         delta = df['close'].diff()
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
@@ -163,7 +155,6 @@ class QuantIndicators:
         rs = ema_up / ema_down
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # 3. True Range & Wilder's ATR
         df['prev_close'] = df['close'].shift(1)
         df['tr1'] = df['high'] - df['low']
         df['tr2'] = (df['high'] - df['prev_close']).abs()
@@ -178,7 +169,6 @@ class ScoreEngine:
     @staticmethod
     def evaluate(current_price, ema100, rsi):
         if pd.isna(ema100) or pd.isna(rsi): return "HOLD"
-        
         score = 0
         if current_price > ema100: score += 50
         if rsi < 40: score += 30
@@ -194,7 +184,7 @@ class ScoreEngine:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return {"status": "healthy v2.2.0"}, 200
+def home(): return {"status": "healthy v2.2.1"}, 200
 
 def run_flask(): app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
@@ -215,12 +205,12 @@ def send_telegram_message(message: str):
 ISLAMIC_ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
 
 portfolio = GlobalPortfolioTracker(initial_balance=10000.0)
-resampler = OHLCVResampler(timeframe_seconds=60) # شموع الدقيقة
+resampler = OHLCVResampler(timeframe_seconds=60)
 risk_engine = DynamicRiskEngine(risk_per_trade_pct=0.01, max_exposure_pct=0.25)
 current_prices = {}
 
 async def start_live_shadow_engine():
-    send_telegram_message("🤖 بوت V2.2.0 يعمل: محفظة مركزية، OHLCV حقيقي، ATR/RSI سليم.")
+    send_telegram_message("🤖 بوت V2.2.1 يعمل: تم فرض قيود صارمة على حجم الصفقات ومنع دخول كامل الرصيد.")
     
     while True:
         try:
@@ -239,10 +229,8 @@ async def start_live_shadow_engine():
                     current_prices[symbol] = price
                     timestamp = time.time()
                     
-                    # 1. تحديث الشموع (Resampling)
                     resampler.process_tick(symbol, price, float(data.get('last_size', 0)), timestamp)
                     
-                    # 2. تحديث الإيقاف المتحرك وفحص الخروج (Stops)
                     portfolio.update_trailing_stops(symbol, price)
                     exit_reason = portfolio.check_exits(symbol, price)
                     
@@ -253,7 +241,6 @@ async def start_live_shadow_engine():
                             send_telegram_message(f"🔴 إغلاق آلي ({exit_reason})\nالعملة: {symbol}\nالربح/خسارة: {pct}%\nالرصيد: ${eq:.2f}")
                         continue
 
-                    # 3. حساب المؤشرات وبناء الإشارات
                     df = resampler.get_dataframe(symbol)
                     if df.empty: continue
                     
@@ -272,16 +259,29 @@ async def start_live_shadow_engine():
                         max_allowed_exposure = current_equity * risk_engine.max_exposure_pct
                         remaining_exp = max_allowed_exposure - current_exposure
                         
-                        if remaining_exp <= 0: continue # المحفظة متشبعة
+                        if remaining_exp <= 50: continue
                         
+                        # حساب حجم الدخول الآمن مع تمرير السيولة المتاحة (Cash)
                         size_usd = risk_engine.calculate_position_size(
-                            current_equity, price, atr, remaining_exposure=remaining_exp
+                            current_equity=current_equity, 
+                            entry_price=price, 
+                            atr=atr, 
+                            remaining_exposure=remaining_exp,
+                            cash_available=portfolio.cash
                         )
                         
-                        if size_usd > 50: # الحد الأدنى للصفقة
+                        if size_usd >= 10: # الحد الأدنى المسموح للصفقة
                             if portfolio.execute_buy(symbol, price, size_usd, atr):
                                 eq = portfolio.get_current_equity(current_prices)
-                                send_telegram_message(f"🟢 شراء (Score >= 80)\nالعملة: {symbol}\nالحجم: ${size_usd:.2f}\nEMA100: {ema100:.2f}\nالرصيد: ${eq:.2f}")
+                                clean_name = symbol.split("-")[0]
+                                send_telegram_message(
+                                    f"=== صفقة شراء جديدة V2.2.1 ===\n"
+                                    f"العملة: {clean_name}\n"
+                                    f"المبلغ المستخدم: ${size_usd:.2f}\n"
+                                    f"سعر الدخول: ${price:.2f}\n"
+                                    f"الرصيد الكلي: ${eq:.2f}\n"
+                                    f"RSI: {rsi:.1f}"
+                                )
                                 
         except Exception as e:
             print(f"WS Error: {e}")
