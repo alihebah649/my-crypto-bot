@@ -5,261 +5,288 @@ import csv
 import threading
 import pandas as pd
 import numpy as np
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import websockets
 import requests
 from flask import Flask
 import time
 
-# --- 1. إعداد سيرفر Flask لضمان العمل 24/7 ---
-app = Flask(__name__)
+# ==========================================
+# 1. QUANT ENGINES (V2.2 INSTITUTIONAL CORE)
+# ==========================================
 
-@app.route('/')
-def home():
-    return {"status": "healthy", "engine": "running", "timestamp": datetime.now(UTC).isoformat()}, 200
+class DynamicRiskEngine:
+    def __init__(self, risk_per_trade_pct=0.01, max_exposure_pct=0.25):
+        self.risk_per_trade_pct = risk_per_trade_pct
+        self.max_exposure_pct = max_exposure_pct
 
-def run_flask():
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    def calculate_position_size(self, current_equity, entry_price, atr, stop_loss_multiplier=2.0, remaining_exposure=0):
+        if pd.isna(atr) or atr <= 0: return 0.0
+        
+        # 1. حساب الحجم المثالي بناءً على الـ Equity الحالي
+        risk_amount = current_equity * self.risk_per_trade_pct
+        risk_per_share = atr * stop_loss_multiplier
+        ideal_shares = risk_amount / risk_per_share
+        ideal_position_usd = ideal_shares * entry_price
+        
+        # 2. تقليم الحجم (Capping) بدلاً من الرفض التام إذا تجاوز الانكشاف المتبقي
+        actual_position_usd = min(ideal_position_usd, remaining_exposure)
+        
+        return max(actual_position_usd, 0.0)
 
-# --- 2. إعدادات تلجرام بأمان وسحب التوكن من Render ---
-TELEGRAM_TOKEN = os.getenv("TOKEN", "8672887924:AAGaLFIEbk_2MHq9gMb5ja2FJhVj-oG3M0I")
-TELEGRAM_CHAT_ID = "199325566"
-
-def send_telegram_message(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, json=payload, timeout=5)
-        if response.status_code == 429:
-            print(f"⚠️ تلجرام يطلب التهدئة (429): {response.text}")
-        elif response.status_code != 200:
-            print(f"⚠️ فشل إرسال تنبيه تلجرام: {response.text}")
-    except Exception as e:
-        print(f"⚠️ خطأ في الاتصال بتلجرام: {e}")
-
-# --- 3. محرك الحسابات الفنية اللحظية المتعدد لكل عملة ---
-class AlphaSignalEngine:
-    def __init__(self, rsi_period=14, ema_period=9):
-        self.rsi_period = rsi_period
-        self.ema_period = ema_period
-        self.prices = {}
-
-    def update_price(self, symbol: str, price: float):
-        if symbol not in self.prices:
-            self.prices[symbol] = []
-        self.prices[symbol].append(price)
-        if len(self.prices[symbol]) > 100: 
-            self.prices[symbol].pop(0)
-
-    def calculate_indicators(self, symbol: str):
-        if symbol not in self.prices or len(self.prices[symbol]) < self.rsi_period + 1: 
-            return None, None
-        df = pd.DataFrame(self.prices[symbol], columns=["price"])
-        df["ema"] = df["price"].ewm(span=self.ema_period, adjust=False).mean()
-        delta = df["price"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-        rs = gain / (loss + 1e-9)
-        rsi = 100 - (100 / (1 + rs))
-        return round(df["ema"].iloc[-1], 2), round(rsi.iloc[-1], 2)
-
-    def get_signal(self, rsi):
-        if rsi is None: return "HOLD"
-        if rsi < 30: return "BUY"
-        elif rsi > 70: return "SELL"
-        return "HOLD"
-
-# --- 4. إدارة المحافظ المالية المستقلة والصفقات الفورية والتحليلات ---
-class MultiPortfolioTracker:
+class GlobalPortfolioTracker:
     def __init__(self, initial_balance=10000.0, analytics_dir="analytics"):
         self.initial_balance = initial_balance
+        self.cash = initial_balance
+        self.positions = {}
         self.analytics_dir = analytics_dir
         os.makedirs(self.analytics_dir, exist_ok=True)
-        self.portfolios = {}
+        self.trade_history = []
+
+    def get_current_equity(self, current_prices):
+        equity = self.cash
+        for sym, pos in self.positions.items():
+            equity += pos["crypto_held"] * current_prices.get(sym, pos["entry_price"])
+        return equity
+
+    def get_current_exposure(self, current_prices):
+        exposure = 0.0
+        for sym, pos in self.positions.items():
+            exposure += pos["crypto_held"] * current_prices.get(sym, pos["entry_price"])
+        return exposure
+
+    def execute_buy(self, symbol, executed_price, position_size_usd, atr):
+        if position_size_usd > self.cash:
+            position_size_usd = self.cash # تأمين أخير ضد الرصيد السالب
+            
+        if position_size_usd <= 0: return False
+
+        crypto_amount = position_size_usd / executed_price
+        self.cash -= position_size_usd
         
-    def _init_symbol(self, symbol):
-        if symbol not in self.portfolios:
-            self.portfolios[symbol] = {
-                "balance": self.initial_balance,
-                "crypto_held": 0.0,
-                "last_buy_price": 0.0,
-                "has_position": False,
-                "total_trades": 0,
-                "winning_trades": 0,
-                "total_pnl": 0.0
+        self.positions[symbol] = {
+            "crypto_held": crypto_amount,
+            "entry_price": executed_price,
+            "highest_price": executed_price,
+            "atr_at_entry": atr,
+            "hard_stop": executed_price - (atr * 2.0), # Hard Stop
+            "trailing_stop": executed_price - (atr * 2.5) # Trailing Stop
+        }
+        return True
+
+    def execute_sell(self, symbol, executed_price, exit_reason="SIGNAL"):
+        if symbol not in self.positions: return False, 0, 0
+        
+        pos = self.positions.pop(symbol)
+        revenue = pos["crypto_held"] * executed_price
+        invested = pos["crypto_held"] * pos["entry_price"]
+        pnl = revenue - invested
+        pnl_pct = (pnl / invested) * 100
+        
+        self.cash += revenue
+        return True, round(pnl, 2), round(pnl_pct, 2)
+
+    def update_trailing_stops(self, symbol, current_price):
+        if symbol in self.positions:
+            pos = self.positions[symbol]
+            if current_price > pos["highest_price"]:
+                pos["highest_price"] = current_price
+                # رفع الوقف المتحرك مع السعر
+                new_trail = current_price - (pos["atr_at_entry"] * 2.5)
+                if new_trail > pos["trailing_stop"]:
+                    pos["trailing_stop"] = new_trail
+
+    def check_exits(self, symbol, current_price):
+        if symbol not in self.positions: return None
+        pos = self.positions[symbol]
+        
+        if current_price <= pos["hard_stop"]:
+            return "HARD_STOP"
+        if current_price <= pos["trailing_stop"]:
+            return "TRAILING_STOP"
+        return None
+
+# ==========================================
+# 2. MARKET DATA & INDICATORS ENGINE
+# ==========================================
+
+class OHLCVResampler:
+    def __init__(self, timeframe_seconds=60):
+        self.tf = timeframe_seconds
+        self.current_candles = {}
+        self.history = {}
+
+    def process_tick(self, symbol, price, volume, timestamp):
+        # تجميع الـ ticks لإنشاء شموع حقيقية HLC
+        minute_ts = int(timestamp // self.tf) * self.tf
+        
+        if symbol not in self.history:
+            self.history[symbol] = []
+            
+        if symbol not in self.current_candles or self.current_candles[symbol]['ts'] != minute_ts:
+            if symbol in self.current_candles:
+                self.history[symbol].append(self.current_candles[symbol])
+                if len(self.history[symbol]) > 200:
+                    self.history[symbol].pop(0)
+            
+            self.current_candles[symbol] = {
+                'ts': minute_ts, 'open': price, 'high': price, 'low': price, 'close': price, 'volume': volume
             }
+        else:
+            c = self.current_candles[symbol]
+            c['high'] = max(c['high'], price)
+            c['low'] = min(c['low'], price)
+            c['close'] = price
+            c['volume'] += volume
 
-    def process_trade(self, symbol, side, executed_price):
-        self._init_symbol(symbol)
-        p = self.portfolios[symbol]
-        pnl = 0.0
-        pnl_pct = 0.0
-        trade_status = "EXEC"
+    def get_dataframe(self, symbol):
+        if symbol not in self.history or len(self.history[symbol]) < 2:
+            return pd.DataFrame()
+        df = pd.DataFrame(self.history[symbol])
+        return df
 
-        if side == "BUY" and not p["has_position"]:
-            p["crypto_held"] = p["balance"] / executed_price
-            p["last_buy_price"] = executed_price
-            p["balance"] = 0.0
-            p["has_position"] = True
-            p["total_trades"] += 1
-            trade_status = "OPEN_POSITION"
-            
-        elif side == "SELL" and p["has_position"]:
-            revenue = p["crypto_held"] * executed_price
-            pnl = revenue - (p["crypto_held"] * p["last_buy_price"])
-            pnl_pct = (pnl / (p["crypto_held"] * p["last_buy_price"])) * 100
-            
-            p["balance"] = revenue
-            p["crypto_held"] = 0.0
-            p["has_position"] = False
-            p["total_trades"] += 1
-            p["total_pnl"] += pnl
-            
-            if pnl > 0:
-                p["winning_trades"] += 1
-            trade_status = "CLOSE_POSITION"
-            
-        total_equity = p["crypto_held"] * executed_price if p["has_position"] else p["balance"]
-        return trade_status, round(pnl, 2), round(pnl_pct, 2), round(total_equity, 2)
+class QuantIndicators:
+    @staticmethod
+    def calculate_all(df, rsi_period=14, ema_period=100, atr_period=14):
+        if len(df) < max(rsi_period, ema_period, atr_period) + 1:
+            return None, None, None
 
-    def save_to_csv(self, record):
-        csv_file_path = os.path.join(self.analytics_dir, "shadow_trades_log.csv")
-        file_exists = os.path.isfile(csv_file_path)
-        with open(csv_file_path, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(record.keys()))
-            if not file_exists: writer.writeheader()
-            writer.writerow(record)
+        # 1. EMA 100
+        df['ema100'] = df['close'].ewm(span=ema_period, adjust=False).mean()
 
-    def send_periodic_report(self):
-        if not self.portfolios:
-            send_telegram_message("📊 التقرير الدوري لأداء البوت:\nلا توجد صفقات منفذة حتى الآن.")
-            return
+        # 2. Wilder's RSI
+        delta = df['close'].diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        ema_up = up.ewm(alpha=1/rsi_period, adjust=False).mean()
+        ema_down = down.ewm(alpha=1/rsi_period, adjust=False).mean()
+        rs = ema_up / ema_down
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-        report_msg = "📊 التقرير الدوري الشامل للمحفظة الإسلامية المتعددة 📊\n\n"
-        grand_total_pnl = 0.0
+        # 3. True Range & Wilder's ATR
+        df['prev_close'] = df['close'].shift(1)
+        df['tr1'] = df['high'] - df['low']
+        df['tr2'] = (df['high'] - df['prev_close']).abs()
+        df['tr3'] = (df['low'] - df['prev_close']).abs()
+        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        df['atr'] = df['tr'].ewm(alpha=1/atr_period, adjust=False).mean()
+
+        last_row = df.iloc[-1]
+        return last_row['ema100'], last_row['rsi'], last_row['atr']
+
+class ScoreEngine:
+    @staticmethod
+    def evaluate(current_price, ema100, rsi):
+        if pd.isna(ema100) or pd.isna(rsi): return "HOLD"
         
-        for symbol, p in self.portfolios.items():
-            win_rate = (p["winning_trades"] / p["total_trades"] * 100) if p["total_trades"] > 0 else 0.0
-            grand_total_pnl += p["total_pnl"]
-            
-            clean_name = symbol.split("-")[0]
-            report_msg += (
-                f"🪙 عملة {clean_name}:\n"
-                f"  • صافي الأرباح: ${p['total_pnl']:.2f}\n"
-                f"  • الصفقات: {p['total_trades']} | النجاح: {win_rate:.2f}%\n"
-                f"  • الحالة: {'ممتلك للمركز' if p['has_position'] else 'سيولة متوفرة'}\n"
-                f"───────────────────\n"
-            )
+        score = 0
+        if current_price > ema100: score += 50
+        if rsi < 40: score += 30
+        if rsi > 70: score -= 50
         
-        report_msg += f"📈 إجمالي الأرباح المجمعة: ${grand_total_pnl:,.2f}"
-        send_telegram_message(report_msg)
+        if score >= 80: return "BUY"
+        if score <= -50: return "SELL"
+        return "HOLD"
 
-# --- 5. محرك البث والتداول الورقي اللانهائي المستمر 24/7 ---
+# ==========================================
+# 3. INFRASTRUCTURE & FLASK
+# ==========================================
+
+app = Flask(__name__)
+@app.route('/')
+def home(): return {"status": "healthy v2.2.0"}, 200
+
+def run_flask(): app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "199325566")
+
+def send_telegram_message(message: str):
+    if not TELEGRAM_TOKEN: return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
+    except: pass
+
+# ==========================================
+# 4. LIVE TRADING LOOP
+# ==========================================
+
 ISLAMIC_ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
 
-portfolio = MultiPortfolioTracker()
-engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
-
-last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
+portfolio = GlobalPortfolioTracker(initial_balance=10000.0)
+resampler = OHLCVResampler(timeframe_seconds=60) # شموع الدقيقة
+risk_engine = DynamicRiskEngine(risk_per_trade_pct=0.01, max_exposure_pct=0.25)
+current_prices = {}
 
 async def start_live_shadow_engine():
-    coinbase_ws_url = "wss://ws-feed.exchange.exchange.coinbase.com" # تم تعديل الرابط ليكون مباشر ومحمي
+    send_telegram_message("🤖 بوت V2.2.0 يعمل: محفظة مركزية، OHLCV حقيقي، ATR/RSI سليم.")
     
-    # دمج آمن تماماً بدون تعقيد
-    try:
-        send_telegram_message("🤖 بوت المحاكاة يعمل الآن على سيرفر ريندر بنجاح.")
-    except:
-        pass
-        
     while True:
         try:
-            async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20, ping_timeout=20) as ws:
-                subscribe_msg = {
-                    "type": "subscribe",
-                    "product_ids": ISLAMIC_ASSETS,
-                    "channels": ["ticker"]
-                }
-                await ws.send(json.dumps(subscribe_msg))
+            async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20) as ws:
+                await ws.send(json.dumps({"type": "subscribe", "product_ids": ISLAMIC_ASSETS, "channels": ["ticker"]}))
                 
                 while True:
                     response = await ws.recv()
                     data = json.loads(response)
-                    if data.get("type") != "ticker" or "price" not in data: continue
+                    if data.get("type") != "ticker": continue
                     
                     symbol = data.get("product_id")
                     if symbol not in ISLAMIC_ASSETS: continue
                     
-                    live_price = float(data['price'])
-                    live_volume = float(data.get('last_size', 0))
+                    price = float(data['price'])
+                    current_prices[symbol] = price
+                    timestamp = time.time()
                     
-                    engine.update_price(symbol, live_price)
-                    ema, rsi = engine.calculate_indicators(symbol)
+                    # 1. تحديث الشموع (Resampling)
+                    resampler.process_tick(symbol, price, float(data.get('last_size', 0)), timestamp)
                     
-                    if rsi is None: continue
+                    # 2. تحديث الإيقاف المتحرك وفحص الخروج (Stops)
+                    portfolio.update_trailing_stops(symbol, price)
+                    exit_reason = portfolio.check_exits(symbol, price)
                     
-                    signal = engine.get_signal(rsi)
-                    
-                    portfolio._init_symbol(symbol)
-                    has_pos = portfolio.portfolios[symbol]["has_position"]
-                    
-                    if (signal == "BUY" and has_pos) or (signal == "SELL" and not has_pos):
+                    if exit_reason:
+                        success, pnl, pct = portfolio.execute_sell(symbol, price, exit_reason)
+                        if success:
+                            eq = portfolio.get_current_equity(current_prices)
+                            send_telegram_message(f"🔴 إغلاق آلي ({exit_reason})\nالعملة: {symbol}\nالربح/خسارة: {pct}%\nالرصيد: ${eq:.2f}")
                         continue
+
+                    # 3. حساب المؤشرات وبناء الإشارات
+                    df = resampler.get_dataframe(symbol)
+                    if df.empty: continue
+                    
+                    ema100, rsi, atr = QuantIndicators.calculate_all(df)
+                    signal = ScoreEngine.evaluate(price, ema100, rsi)
+                    
+                    if signal == "SELL" and symbol in portfolio.positions:
+                        success, pnl, pct = portfolio.execute_sell(symbol, price, "SIGNAL")
+                        if success:
+                            eq = portfolio.get_current_equity(current_prices)
+                            send_telegram_message(f"🔴 بيع استراتيجي\nالعملة: {symbol}\nالربح: {pct}%\nالرصيد: ${eq:.2f}")
+                            
+                    elif signal == "BUY" and symbol not in portfolio.positions:
+                        current_equity = portfolio.get_current_equity(current_prices)
+                        current_exposure = portfolio.get_current_exposure(current_prices)
+                        max_allowed_exposure = current_equity * risk_engine.max_exposure_pct
+                        remaining_exp = max_allowed_exposure - current_exposure
                         
-                    if signal in ["BUY", "SELL"]:
-                        current_timestamp = time.time()
-                        if current_timestamp - last_trade_time[symbol] < 300:
-                            continue
+                        if remaining_exp <= 0: continue # المحفظة متشبعة
                         
-                        last_trade_time[symbol] = current_timestamp
+                        size_usd = risk_engine.calculate_position_size(
+                            current_equity, price, atr, remaining_exposure=remaining_exp
+                        )
                         
-                        start_time = datetime.now(UTC)
-                        await asyncio.sleep(np.random.uniform(0.02, 0.08))
-                        latency = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-                        slippage = round(np.random.uniform(0.3, 2.5), 2)
-                        factor = (1 + (slippage / 10000)) if signal == "BUY" else (1 - (slippage / 10000))
-                        executed_price = round(live_price * factor, 2)
-                        
-                        status, pnl, pnl_pct, total_equity = portfolio.process_trade(symbol, signal, executed_price)
-                        
-                        record = {
-                            "timestamp": datetime.now(UTC).isoformat(), "symbol": symbol, "side": signal, "live_price": live_price,
-                            "executed_price": executed_price, "volume": live_volume, "latency_ms": latency,
-                            "slippage_bps": slippage, "rsi": rsi, "pnl": pnl, "portfolio_equity": total_equity
-                        }
-                        portfolio.save_to_csv(record)
-                        
-                        clean_symbol = symbol.split("-")[0]
-                        action_text = "شراء" if signal == "BUY" else "بيع"
-                        
-                        # تم الاستغناء التام عن أي صيغ مركبة قد تحدث تداخلاً في أسطر بايثون
-                        msg = "=== صفقة جديدة ===\n"
-                        msg += "العملة: " + str(clean_symbol) + "\n"
-                        msg += "العملية: " + str(action_text) + "\n"
-                        msg += "السعر: $" + str(live_price) + "\n"
-                        msg += "المنفذ: $" + str(executed_price) + "\n"
-                        msg += "المحفظة: $" + str(total_equity) + "\n"
-                        msg += "RSI: " + str(rsi)
-                        
-                        send_telegram_message(msg)
+                        if size_usd > 50: # الحد الأدنى للصفقة
+                            if portfolio.execute_buy(symbol, price, size_usd, atr):
+                                eq = portfolio.get_current_equity(current_prices)
+                                send_telegram_message(f"🟢 شراء (Score >= 80)\nالعملة: {symbol}\nالحجم: ${size_usd:.2f}\nEMA100: {ema100:.2f}\nالرصيد: ${eq:.2f}")
+                                
         except Exception as e:
-            print(f"⚠️ خطأ في الاتصال: {e}")
+            print(f"WS Error: {e}")
             await asyncio.sleep(5)
 
-# --- 6. خيط مستقل لجدولة وإرسال التقرير الشامل التلقائي كل 12 ساعة ---
-def daily_report_scheduler():
-    import time
-    while True:
-        time.sleep(43200)
-        try:
-            portfolio.send_periodic_report()
-        except Exception as e:
-            print(f"Error sending periodic report: {e}")
-
-def start_trading_loop():
-    asyncio.run(start_live_shadow_engine())
-
 if __name__ == "__main__":
-    threading.Thread(target=start_trading_loop, daemon=True).start()
-    threading.Thread(target=daily_report_scheduler, daemon=True).start()
+    threading.Thread(target=lambda: asyncio.run(start_live_shadow_engine()), daemon=True).start()
     run_flask()
