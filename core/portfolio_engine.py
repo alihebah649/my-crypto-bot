@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional
 
 
 @dataclass
 class Position:
     """
-    يمثل صفقة واحدة مفتوحة على أصل مالي واحد.
+    يمثل صفقة واحدة مفتوحة.
     """
 
     symbol: str
@@ -26,23 +26,24 @@ class Position:
 class PortfolioState:
     """
     يمثل الحالة الكاملة للمحفظة.
-    جميع عمليات فتح وإغلاق الصفقات تمر عبر هذا الكلاس.
+    جميع عمليات فتح وإغلاق وإدارة الصفقات تتم من خلال هذا الكلاس.
     """
 
     balance: float
     open_positions: Dict[str, Position] = field(default_factory=dict)
 
-    def open_position(self, symbol: str, quantity: float, entry_price: float) -> bool:
+    # ==========================
+    # إدارة الصفقات
+    # ==========================
+
+    def open_position(
+        self,
+        symbol: str,
+        quantity: float,
+        entry_price: float
+    ) -> bool:
         """
         فتح صفقة جديدة.
-
-        Returns
-        -------
-        True
-            إذا تم فتح الصفقة بنجاح.
-
-        False
-            إذا كانت هناك صفقة مفتوحة بالفعل على نفس الرمز.
         """
 
         if symbol in self.open_positions:
@@ -57,3 +58,39 @@ class PortfolioState:
         )
 
         return True
+
+    def close_position(self, symbol: str) -> bool:
+        """
+        إغلاق صفقة.
+        """
+
+        if symbol not in self.open_positions:
+            return False
+
+        del self.open_positions[symbol]
+        return True
+
+    # ==========================
+    # الاستعلامات
+    # ==========================
+
+    def has_position(self, symbol: str) -> bool:
+        """
+        هل توجد صفقة مفتوحة؟
+        """
+
+        return symbol in self.open_positions
+
+    def get_position(self, symbol: str) -> Optional[Position]:
+        """
+        الحصول على بيانات صفقة.
+        """
+
+        return self.open_positions.get(symbol)
+
+    def total_open_positions(self) -> int:
+        """
+        عدد الصفقات المفتوحة.
+        """
+
+        return len(self.open_positions)
