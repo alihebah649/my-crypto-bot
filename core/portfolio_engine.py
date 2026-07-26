@@ -4,111 +4,140 @@ from typing import Dict, Optional
 
 @dataclass
 class Position:
-    """
-    يمثل صفقة واحدة مفتوحة.
-    """
-
     symbol: str
+
     quantity: float = 0.0
+
     entry_price: float = 0.0
+
     highest_price: float = 0.0
 
     is_open: bool = False
+
     trailing_active: bool = False
+
     recovery_mode: bool = False
 
     atr_stop: float = 0.0
+
     last_stop_time: float = 0.0
+
     recovery_start_time: float = 0.0
 
 
 @dataclass
 class PortfolioState:
-    """
-    يمثل الحالة الكاملة للمحفظة.
-    جميع عمليات إدارة الصفقات تتم من خلال هذا الكلاس.
-    """
-
     balance: float
+
     open_positions: Dict[str, Position] = field(default_factory=dict)
 
-    # =====================================================
-    # إدارة الصفقات
-    # =====================================================
+    # -----------------------------
+    # Position Management
+    # -----------------------------
 
     def open_position(
         self,
         symbol: str,
         quantity: float,
-        entry_price: float
-    ) -> bool:
-
-        if symbol in self.open_positions:
-            return False
+        entry_price: float,
+        atr_stop: float = 0.0,
+    ):
 
         self.open_positions[symbol] = Position(
             symbol=symbol,
             quantity=quantity,
             entry_price=entry_price,
             highest_price=entry_price,
-            is_open=True
+            is_open=True,
+            atr_stop=atr_stop,
         )
-
-        return True
-
-    def close_position(self, symbol: str) -> bool:
-
-        if symbol not in self.open_positions:
-            return False
-
-        del self.open_positions[symbol]
-        return True
-
-    # =====================================================
-    # الاستعلام
-    # =====================================================
-
-    def has_position(self, symbol: str) -> bool:
-        return symbol in self.open_positions
 
     def get_position(self, symbol: str) -> Optional[Position]:
         return self.open_positions.get(symbol)
 
-    def total_open_positions(self) -> int:
-        return len(self.open_positions)
+    def close_position(self, symbol: str):
 
-    # =====================================================
-    # تحديثات الصفقة
-    # =====================================================
+        if symbol in self.open_positions:
+            del self.open_positions[symbol]
 
-    def update_highest_price(self, symbol: str, current_price: float):
+    def has_position(self, symbol: str) -> bool:
+        return symbol in self.open_positions
 
-        position = self.get_position(symbol)
+    # -----------------------------
+    # Portfolio Statistics
+    # -----------------------------
 
-        if position is None:
-            return
+    def exposure_usd(self, current_prices: Dict[str, float]) -> float:
 
-        if current_price > position.highest_price:
-            position.highest_price = current_price
+        exposure = 0.0
 
-    # =====================================================
-    # الحسابات
-    # =====================================================
+        for symbol, position in self.open_positions.items():
 
-    def unrealized_pnl(self, symbol: str, current_price: float) -> float:
+            if symbol not in current_prices:
+                continue
+
+            exposure += (
+                current_prices[symbol] *
+                position.quantity
+            )
+
+        return exposure
+
+    def unrealized_pnl(
+        self,
+        current_prices: Dict[str, float]
+    ) -> float:
+
+        pnl = 0.0
+
+        for symbol, position in self.open_positions.items():
+
+            if symbol not in current_prices:
+                continue
+
+            pnl += (
+                current_prices[symbol]
+                - position.entry_price
+            ) * position.quantity
+
+        return pnl
+
+    # -----------------------------
+    # Trade Settlement
+    # -----------------------------
+
+    def realize_position(
+        self,
+        symbol: str,
+        exit_price: float,
+        fee_rate: float
+    ) -> float:
+        """
+        إغلاق الصفقة وحساب الربح أو الخسارة الصافية بعد الرسوم.
+        """
 
         position = self.get_position(symbol)
 
         if position is None:
             return 0.0
 
-        return (current_price - position.entry_price) * position.quantity
+        gross_profit = (
+            exit_price - position.entry_price
+        ) * position.quantity
 
-    def exposure_usd(self) -> float:
+        fees = (
+            (
+                position.entry_price * position.quantity
+            ) +
+            (
+                exit_price * position.quantity
+            )
+        ) * fee_rate
 
-        total = 0.0
+        net_profit = gross_profit - fees
 
-        for position in self.open_positions.values():
-            total += position.entry_price * position.quantity
+        self.balance += net_profit
 
-        return total
+        self.close_position(symbol)
+
+        return net_profit
