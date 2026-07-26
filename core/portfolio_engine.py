@@ -26,15 +26,15 @@ class Position:
 class PortfolioState:
     """
     يمثل الحالة الكاملة للمحفظة.
-    جميع عمليات فتح وإغلاق وإدارة الصفقات تتم من خلال هذا الكلاس.
+    جميع عمليات إدارة الصفقات تتم من خلال هذا الكلاس.
     """
 
     balance: float
     open_positions: Dict[str, Position] = field(default_factory=dict)
 
-    # ==========================
+    # =====================================================
     # إدارة الصفقات
-    # ==========================
+    # =====================================================
 
     def open_position(
         self,
@@ -42,9 +42,6 @@ class PortfolioState:
         quantity: float,
         entry_price: float
     ) -> bool:
-        """
-        فتح صفقة جديدة.
-        """
 
         if symbol in self.open_positions:
             return False
@@ -60,9 +57,6 @@ class PortfolioState:
         return True
 
     def close_position(self, symbol: str) -> bool:
-        """
-        إغلاق صفقة.
-        """
 
         if symbol not in self.open_positions:
             return False
@@ -70,27 +64,51 @@ class PortfolioState:
         del self.open_positions[symbol]
         return True
 
-    # ==========================
-    # الاستعلامات
-    # ==========================
+    # =====================================================
+    # الاستعلام
+    # =====================================================
 
     def has_position(self, symbol: str) -> bool:
-        """
-        هل توجد صفقة مفتوحة؟
-        """
-
         return symbol in self.open_positions
 
     def get_position(self, symbol: str) -> Optional[Position]:
-        """
-        الحصول على بيانات صفقة.
-        """
-
         return self.open_positions.get(symbol)
 
     def total_open_positions(self) -> int:
-        """
-        عدد الصفقات المفتوحة.
-        """
-
         return len(self.open_positions)
+
+    # =====================================================
+    # تحديثات الصفقة
+    # =====================================================
+
+    def update_highest_price(self, symbol: str, current_price: float):
+
+        position = self.get_position(symbol)
+
+        if position is None:
+            return
+
+        if current_price > position.highest_price:
+            position.highest_price = current_price
+
+    # =====================================================
+    # الحسابات
+    # =====================================================
+
+    def unrealized_pnl(self, symbol: str, current_price: float) -> float:
+
+        position = self.get_position(symbol)
+
+        if position is None:
+            return 0.0
+
+        return (current_price - position.entry_price) * position.quantity
+
+    def exposure_usd(self) -> float:
+
+        total = 0.0
+
+        for position in self.open_positions.values():
+            total += position.entry_price * position.quantity
+
+        return total
