@@ -31,7 +31,9 @@ class Position:
 
     recovery_start_time: float = 0.0
 
-    entry_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    entry_time: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 @dataclass
@@ -50,20 +52,69 @@ class PortfolioState:
 class PortfolioEngine:
     """
     محرك إدارة المحفظة.
-    مسؤول عن فتح وإغلاق الصفقات وتحديث الرصيد.
     """
 
     def __init__(self, initial_balance: float):
 
         self.state = PortfolioState(balance=initial_balance)
 
-    # --------------------------------------------------
+    # ==========================================================
+    # معلومات المحفظة
+    # ==========================================================
 
-    def get_balance(self) -> float:
-
+    @property
+    def balance(self) -> float:
+        """
+        الرصيد النقدي الحالي.
+        """
         return self.state.balance
 
-    # --------------------------------------------------
+    def get_balance(self) -> float:
+        return self.state.balance
+
+    def get_equity(self, current_prices=None) -> float:
+        """
+        إجمالي قيمة المحفظة = الرصيد + قيمة الصفقات المفتوحة.
+        """
+
+        equity = self.state.balance
+
+        for position in self.state.open_positions.values():
+
+            price = position.entry_price
+
+            if current_prices is not None:
+                price = current_prices.get(
+                    position.symbol,
+                    position.entry_price,
+                )
+
+            equity += position.quantity * price
+
+        return equity
+
+    def current_exposure(self) -> float:
+
+        exposure = 0.0
+
+        for position in self.state.open_positions.values():
+
+            exposure += (
+                position.quantity
+                * position.entry_price
+            )
+
+        return exposure
+
+    def get_total_exposure(self) -> float:
+        return self.current_exposure()
+
+    def open_positions_count(self) -> int:
+        return len(self.state.open_positions)
+
+    # ==========================================================
+    # إدارة المراكز
+    # ==========================================================
 
     def has_position(self, symbol: str) -> bool:
 
@@ -71,13 +122,9 @@ class PortfolioEngine:
 
         return position is not None and position.is_open
 
-    # --------------------------------------------------
-
     def get_position(self, symbol: str) -> Optional[Position]:
 
         return self.state.open_positions.get(symbol)
-
-    # --------------------------------------------------
 
     def open_position(
         self,
@@ -88,7 +135,9 @@ class PortfolioEngine:
     ):
 
         if self.has_position(symbol):
-            raise ValueError(f"يوجد مركز مفتوح مسبقاً على {symbol}")
+            raise ValueError(
+                f"يوجد مركز مفتوح مسبقاً على {symbol}"
+            )
 
         cost = quantity * entry_price
 
@@ -107,9 +156,13 @@ class PortfolioEngine:
             entry_time=datetime.now(timezone.utc),
         )
 
-    # --------------------------------------------------
+        return True
 
-    def update_highest_price(self, symbol: str, current_price: float):
+    def update_highest_price(
+        self,
+        symbol: str,
+        current_price: float,
+    ):
 
         position = self.get_position(symbol)
 
@@ -118,8 +171,6 @@ class PortfolioEngine:
 
         if current_price > position.highest_price:
             position.highest_price = current_price
-
-    # --------------------------------------------------
 
     def close_position(
         self,
@@ -134,7 +185,7 @@ class PortfolioEngine:
         position = self.get_position(symbol)
 
         if position is None:
-            raise ValueError(f"لا يوجد مركز مفتوح على {symbol}")
+            return None
 
         gross_profit = (
             (exit_price - position.entry_price)
@@ -168,34 +219,19 @@ class PortfolioEngine:
 
         return net_profit
 
-    # --------------------------------------------------
-
-    def current_exposure(self) -> float:
-
-        exposure = 0.0
-
-        for position in self.state.open_positions.values():
-
-            exposure += (
-                position.quantity
-                * position.entry_price
-            )
-
-        return exposure
-
-    # --------------------------------------------------
-
-    def open_positions_count(self) -> int:
-
-        return len(self.state.open_positions)
-
-    # --------------------------------------------------
+    # ==========================================================
+    # التقارير
+    # ==========================================================
 
     def portfolio_snapshot(self):
 
         return {
-            "balance": self.state.balance,
-            "open_positions": list(self.state.open_positions.keys()),
+            "balance": self.balance,
+            "equity": self.get_equity(),
+            "open_positions": list(
+                self.state.open_positions.keys()
+            ),
+            "open_positions_count": self.open_positions_count(),
             "exposure": self.current_exposure(),
             "closed_trades": self.state.ledger.total_trades(),
             "net_profit": self.state.ledger.total_net_profit(),
