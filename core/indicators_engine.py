@@ -63,6 +63,73 @@ class IndicatorsEngine:
         ).mean()
 
     @staticmethod
+    def adx(df: pd.DataFrame, period: int = 14):
+
+        high = df["high"]
+
+        low = df["low"]
+
+        close = df["close"]
+
+        plus_dm = high.diff()
+
+        minus_dm = -low.diff()
+
+        plus_dm = plus_dm.where(
+            (plus_dm > minus_dm) & (plus_dm > 0),
+            0.0,
+        )
+
+        minus_dm = minus_dm.where(
+            (minus_dm > plus_dm) & (minus_dm > 0),
+            0.0,
+        )
+
+        tr = pd.concat(
+            [
+                high - low,
+                (high - close.shift()).abs(),
+                (low - close.shift()).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+
+        atr = tr.ewm(
+            alpha=1 / period,
+            adjust=False,
+        ).mean()
+
+        plus_di = (
+            100
+            * plus_dm.ewm(
+                alpha=1 / period,
+                adjust=False,
+            ).mean()
+            / atr
+        )
+
+        minus_di = (
+            100
+            * minus_dm.ewm(
+                alpha=1 / period,
+                adjust=False,
+            ).mean()
+            / atr
+        )
+
+        dx = (
+            (plus_di - minus_di).abs()
+            / (plus_di + minus_di)
+        ) * 100
+
+        adx = dx.ewm(
+            alpha=1 / period,
+            adjust=False,
+        ).mean()
+
+        return adx
+
+    @staticmethod
     def macd(
         series: pd.Series,
         fast=12,
@@ -70,20 +137,30 @@ class IndicatorsEngine:
         signal=9,
     ):
 
-        ema_fast = IndicatorsEngine.ema(series, fast)
+        ema_fast = IndicatorsEngine.ema(
+            series,
+            fast,
+        )
 
-        ema_slow = IndicatorsEngine.ema(series, slow)
+        ema_slow = IndicatorsEngine.ema(
+            series,
+            slow,
+        )
 
         macd = ema_fast - ema_slow
 
         signal_line = macd.ewm(
             span=signal,
-            adjust=False
+            adjust=False,
         ).mean()
 
         histogram = macd - signal_line
 
-        return macd, signal_line, histogram
+        return (
+            macd,
+            signal_line,
+            histogram,
+        )
 
     @staticmethod
     def bollinger_bands(
@@ -92,7 +169,9 @@ class IndicatorsEngine:
         std=2,
     ):
 
-        middle = series.rolling(period).mean()
+        middle = series.rolling(
+            period
+        ).mean()
 
         deviation = (
             series.rolling(period).std()
@@ -103,7 +182,11 @@ class IndicatorsEngine:
 
         lower = middle - deviation
 
-        return upper, middle, lower
+        return (
+            upper,
+            middle,
+            lower,
+        )
 
     @staticmethod
     def calculate_all(df: pd.DataFrame):
@@ -124,6 +207,11 @@ class IndicatorsEngine:
         )
 
         df["atr"] = IndicatorsEngine.atr(
+            df,
+            14,
+        )
+
+        df["adx"] = IndicatorsEngine.adx(
             df,
             14,
         )
