@@ -1,0 +1,33 @@
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+@dataclass
+class Position:
+    """
+    يمثل صفقة مفتوحة داخل المحفظة.
+    """
+
+    symbol: str
+
+    quantity: float = 0.0
+
+    entry_price: float = 0.0
+
+    highest_price: float = 0.0
+
+    is_open: bool = False
+
+    trailing_active: bool = False
+
+    recovery_mode: bool = False
+
+    atr_stop: float = 0.0
+
+    last_stop_time: float = 0.0
+
+    recovery_start_time: float = 0.0
+
+    entry_time: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
