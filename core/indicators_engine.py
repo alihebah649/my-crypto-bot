@@ -1,3 +1,9 @@
+from pathlib import Path
+
+code = '''"""
+Professional Indicators Engine (skeleton)
+"""
+
 import pandas as pd
 
 class IndicatorsEngine:
@@ -85,3 +91,7 @@ class IndicatorsEngine:
         df["bb_upper"],df["bb_mid"],df["bb_lower"]=IndicatorsEngine.bollinger_bands(df["close"])
         df["supertrend"],df["supertrend_up"]=IndicatorsEngine.supertrend(df)
         return df
+'''
+path="/mnt/data/indicators_engine.py"
+Path(path).write_text(code,encoding="utf-8")
+print(path)
