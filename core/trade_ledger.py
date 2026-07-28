@@ -1,106 +1,328 @@
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
-from typing import List
-import uuid
+from dataclasses import asdict
+from datetime import datetime
+from typing import List, Optional
+import csv
+import json
 
-
-@dataclass
-class TradeRecord:
-    """
-    يمثل صفقة مغلقة كاملة.
-    """
-
-    trade_id: str
-
-    symbol: str
-
-    entry_time: datetime
-    exit_time: datetime
-
-    entry_price: float
-    exit_price: float
-
-    quantity: float
-
-    gross_profit: float
-    fees: float
-    net_profit: float
-
-    exit_reason: str
-
-    strategy_version: str
-
-    run_id: str
+from core.models import ClosedTrade
 
 
 class TradeLedger:
     """
-    دفتر الأستاذ لجميع الصفقات المغلقة.
+    يحتفظ بجميع الصفقات المغلقة
+    ويحسب الإحصائيات الأساسية للبوت.
     """
 
     def __init__(self):
-        self.closed_trades: List[TradeRecord] = []
+
+        self.closed_trades: List[ClosedTrade] = []
+
+    # ==========================================================
+    # إضافة صفقة
+    # ==========================================================
 
     def add_trade(
         self,
-        symbol: str,
-        entry_time: datetime,
-        exit_time: datetime,
-        entry_price: float,
-        exit_price: float,
-        quantity: float,
-        gross_profit: float,
-        fees: float,
-        net_profit: float,
-        exit_reason: str,
-        strategy_version: str,
-        run_id: str
-    ):
+        trade: ClosedTrade,
+    ) -> ClosedTrade:
 
-        record = TradeRecord(
-            trade_id=uuid.uuid4().hex,
+        self.closed_trades.append(trade)
 
-            symbol=symbol,
+        return trade
 
-            entry_time=entry_time,
-            exit_time=exit_time,
+    # ==========================================================
+    # عدد الصفقات
+    # ==========================================================
 
-            entry_price=entry_price,
-            exit_price=exit_price,
-
-            quantity=quantity,
-
-            gross_profit=gross_profit,
-            fees=fees,
-            net_profit=net_profit,
-
-            exit_reason=exit_reason,
-
-            strategy_version=strategy_version,
-
-            run_id=run_id
-        )
-
-        self.closed_trades.append(record)
-
-        return record
-
-    def total_trades(self):
+    def total_trades(self) -> int:
 
         return len(self.closed_trades)
 
-    def total_net_profit(self):
+    # ==========================================================
+    # إجمالي الربح
+    # ==========================================================
 
-        return sum(t.net_profit for t in self.closed_trades)
+    def total_net_profit(self) -> float:
 
-    def winning_trades(self):
+        return sum(
 
-        return sum(1 for t in self.closed_trades if t.net_profit > 0)
+            trade.net_profit
 
-    def losing_trades(self):
+            for trade in self.closed_trades
 
-        return sum(1 for t in self.closed_trades if t.net_profit <= 0)
+        )
 
-    def export(self):
+    # ==========================================================
+    # إجمالي الرسوم
+    # ==========================================================
 
-        return [asdict(t) for t in self.closed_trades]
+    def total_fees(self) -> float:
+
+        return sum(
+
+            trade.fees
+
+            for trade in self.closed_trades
+
+        )
+
+    # ==========================================================
+    # الصفقات الرابحة
+    # ==========================================================
+
+    def winning_trades(self) -> int:
+
+        return sum(
+
+            1
+
+            for trade in self.closed_trades
+
+            if trade.net_profit > 0
+
+        )
+
+    # ==========================================================
+    # الصفقات الخاسرة
+    # ==========================================================
+
+    def losing_trades(self) -> int:
+
+        return sum(
+
+            1
+
+            for trade in self.closed_trades
+
+            if trade.net_profit <= 0
+
+        )
+
+    # ==========================================================
+    # نسبة النجاح
+    # ==========================================================
+
+    def win_rate(self) -> float:
+
+        total = self.total_trades()
+
+        if total == 0:
+
+            return 0.0
+
+        return (
+
+            self.winning_trades()
+
+            / total
+
+        ) * 100
+
+    # ==========================================================
+    # أكبر ربح
+    # ==========================================================
+
+    def largest_win(self) -> float:
+
+        if not self.closed_trades:
+
+            return 0.0
+
+        return max(
+
+            trade.net_profit
+
+            for trade in self.closed_trades
+
+        )
+
+    # ==========================================================
+    # أكبر خسارة
+    # ==========================================================
+
+    def largest_loss(self) -> float:
+
+        if not self.closed_trades:
+
+            return 0.0
+
+        return min(
+
+            trade.net_profit
+
+            for trade in self.closed_trades
+
+        )    # ==========================================================
+    # متوسط الربح
+    # ==========================================================
+
+    def average_win(self) -> float:
+
+        wins = [
+
+            trade.net_profit
+
+            for trade in self.closed_trades
+
+            if trade.net_profit > 0
+
+        ]
+
+        if not wins:
+
+            return 0.0
+
+        return sum(wins) / len(wins)
+
+    # ==========================================================
+    # متوسط الخسارة
+    # ==========================================================
+
+    def average_loss(self) -> float:
+
+        losses = [
+
+            trade.net_profit
+
+            for trade in self.closed_trades
+
+            if trade.net_profit <= 0
+
+        ]
+
+        if not losses:
+
+            return 0.0
+
+        return sum(losses) / len(losses)
+
+    # ==========================================================
+    # البحث عن صفقة
+    # ==========================================================
+
+    def get_trade(
+        self,
+        trade_id: str,
+    ) -> Optional[ClosedTrade]:
+
+        for trade in self.closed_trades:
+
+            if trade.trade_id == trade_id:
+
+                return trade
+
+        return None
+
+    # ==========================================================
+    # تصدير JSON
+    # ==========================================================
+
+    def export_json(
+        self,
+        filename: str,
+    ):
+
+        with open(
+            filename,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
+            json.dump(
+
+                [
+
+                    asdict(t)
+
+                    for t in self.closed_trades
+
+                ],
+
+                f,
+
+                indent=4,
+
+                default=str,
+
+                ensure_ascii=False,
+
+            )
+
+    # ==========================================================
+    # تصدير CSV
+    # ==========================================================
+
+    def export_csv(
+        self,
+        filename: str,
+    ):
+
+        if not self.closed_trades:
+
+            return
+
+        with open(
+
+            filename,
+
+            "w",
+
+            newline="",
+
+            encoding="utf-8",
+
+        ) as f:
+
+            writer = csv.DictWriter(
+
+                f,
+
+                fieldnames=list(
+
+                    asdict(
+
+                        self.closed_trades[0]
+
+                    ).keys()
+
+                ),
+
+            )
+
+            writer.writeheader()
+
+            for trade in self.closed_trades:
+
+                writer.writerow(
+
+                    asdict(trade)
+
+                )
+
+    # ==========================================================
+    # حذف جميع الصفقات
+    # ==========================================================
+
+    def clear(self):
+
+        self.closed_trades.clear()
+
+    # ==========================================================
+    # آخر صفقة
+    # ==========================================================
+
+    def last_trade(self) -> Optional[ClosedTrade]:
+
+        if not self.closed_trades:
+
+            return None
+
+        return self.closed_trades[-1]
+
+    # ==========================================================
+    # جميع الصفقات
+    # ==========================================================
+
+    def all_trades(self) -> List[ClosedTrade]:
+
+        return self.closed_trades
