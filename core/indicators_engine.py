@@ -4,7 +4,8 @@ import pandas as pd
 
 class IndicatorEngine:
     """
-    محرك حساب المؤشرات الفنية.
+    Shadow Trading System V3
+    Indicator Engine
 
     يعتمد على DataFrame يحتوي الأعمدة:
 
@@ -20,11 +21,14 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def ema(series, period):
+    def ema(
+        series,
+        period,
+    ):
 
         return series.ewm(
             span=period,
-            adjust=False
+            adjust=False,
         ).mean()
 
     # ==========================================================
@@ -32,7 +36,10 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def rsi(close, period=14):
+    def rsi(
+        close,
+        period=14,
+    ):
 
         delta = close.diff()
 
@@ -42,26 +49,90 @@ class IndicatorEngine:
 
         avg_gain = gain.ewm(
             alpha=1 / period,
-            adjust=False
+            adjust=False,
         ).mean()
 
         avg_loss = loss.ewm(
             alpha=1 / period,
-            adjust=False
+            adjust=False,
         ).mean()
 
         rs = avg_gain / avg_loss
 
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (
+            100 / (1 + rs)
+        )
+
+        return rsi
+
+    # ==========================================================
+    # STOCHASTIC RSI
+    # ==========================================================
+
+    @staticmethod
+    def stochastic_rsi(
+        close,
+        rsi_period=14,
+        stoch_period=14,
+    ):
+
+        rsi = IndicatorEngine.rsi(
+            close,
+            rsi_period,
+        )
+
+        lowest = rsi.rolling(
+            stoch_period,
+        ).min()
+
+        highest = rsi.rolling(
+            stoch_period,
+        ).max()
+
+        denominator = (
+            highest - lowest
+        ).replace(
+            0,
+            np.nan,
+        )
+
+        stoch = (
+            (
+                rsi - lowest
+            )
+            /
+            denominator
+        ) * 100
+
+        return stoch
+
+    # ==========================================================
+    # RATE OF CHANGE
+    # ==========================================================
+
+    @staticmethod
+    def roc(
+        close,
+        period=10,
+    ):
+
+        return (
+            close.pct_change(period)
+        ) * 100
 
     # ==========================================================
     # ATR
     # ==========================================================
 
     @staticmethod
-    def atr(df, period=14):
+    def atr(
+        df,
+        period=14,
+    ):
 
-        prev_close = df["close"].shift(1)
+        previous_close = (
+            df["close"].shift(1)
+        )
 
         tr = pd.concat(
 
@@ -69,9 +140,15 @@ class IndicatorEngine:
 
                 df["high"] - df["low"],
 
-                (df["high"] - prev_close).abs(),
+                (
+                    df["high"]
+                    - previous_close
+                ).abs(),
 
-                (df["low"] - prev_close).abs(),
+                (
+                    df["low"]
+                    - previous_close
+                ).abs(),
 
             ],
 
@@ -79,7 +156,7 @@ class IndicatorEngine:
 
         ).max(axis=1)
 
-        return tr.ewm(
+        atr = tr.ewm(
 
             alpha=1 / period,
 
@@ -87,219 +164,175 @@ class IndicatorEngine:
 
         ).mean()
 
+        return atr
+
     # ==========================================================
     # MACD
     # ==========================================================
 
     @staticmethod
-    def macd(close):
+    def macd(
+        close,
+    ):
 
         ema12 = IndicatorEngine.ema(
-
             close,
-
             12,
-
         )
 
         ema26 = IndicatorEngine.ema(
-
             close,
-
             26,
-
         )
 
         macd = ema12 - ema26
 
         signal = macd.ewm(
-
             span=9,
-
             adjust=False,
-
         ).mean()
 
-        hist = macd - signal
+        histogram = (
+            macd - signal
+        )
 
-        return macd, signal, hist
+        return (
+
+            macd,
+
+            signal,
+
+            histogram,
+
+        )
 
     # ==========================================================
-    # Bollinger Bands
+    # BOLLINGER BANDS
     # ==========================================================
 
     @staticmethod
     def bollinger(
-
         close,
-
         period=20,
-
         std=2,
-
     ):
 
-        ma = close.rolling(period).mean()
+        middle = close.rolling(
+            period,
+        ).mean()
 
-        sigma = close.rolling(period).std()
+        sigma = close.rolling(
+            period,
+        ).std()
 
-        upper = ma + sigma * std
+        upper = (
+            middle
+            + sigma * std
+        )
 
-        lower = ma - sigma * std
+        lower = (
+            middle
+            - sigma * std
+        )
 
-        return upper, ma, lower
+        return (
+
+            upper,
+
+            middle,
+
+            lower,
+
+        )
 
     # ==========================================================
-    # Volume Ratio
-    # ==========================================================
-
-    @staticmethod
-    def volume_ratio(
-
-        volume,
-
-        period=20,
-
-    ):
-
-        avg = volume.rolling(period).mean()
-
-        return volume / avg
-
-    # ==========================================================
-    # تجهيز جميع المؤشرات
-    # ==========================================================
-
-    @staticmethod
-    def prepare(df):
-
-        if len(df) < 220:
-
-            return None
-
-        result = {}
-
-        result["ema20"] = IndicatorEngine.ema(
-
-            df["close"],
-
-            20,
-
-        )
-
-        result["ema50"] = IndicatorEngine.ema(
-
-            df["close"],
-
-            50,
-
-        )
-
-        result["ema200"] = IndicatorEngine.ema(
-
-            df["close"],
-
-            200,
-
-        )
-
-        result["rsi"] = IndicatorEngine.rsi(
-
-            df["close"]
-
-        )
-
-        result["atr"] = IndicatorEngine.atr(
-
-            df
-
-        )
-
-        macd, signal, hist = IndicatorEngine.macd(
-
-            df["close"]
-
-        )
-
-        result["macd"] = macd
-
-        result["macd_signal"] = signal
-
-        result["macd_hist"] = hist
-
-        upper, middle, lower = IndicatorEngine.bollinger(
-
-            df["close"]
-
-        )
-
-        result["bb_upper"] = upper
-
-        result["bb_middle"] = middle
-
-        result["bb_lower"] = lower
-
-        result["volume_ratio"] = (
-
-            IndicatorEngine.volume_ratio(
-
-                df["volume"]
-
-            )
-
-        )
-
-        return pd.DataFrame(result)    # ==========================================================
     # ADX
     # ==========================================================
 
     @staticmethod
-    def adx(df, period=14):
+    def adx(
+        df,
+        period=14,
+    ):
 
         high = df["high"]
         low = df["low"]
         close = df["close"]
 
         plus_dm = high.diff()
+
         minus_dm = -low.diff()
 
         plus_dm = plus_dm.where(
-            (plus_dm > minus_dm) & (plus_dm > 0),
+            (plus_dm > minus_dm)
+            & (plus_dm > 0),
             0.0,
         )
 
         minus_dm = minus_dm.where(
-            (minus_dm > plus_dm) & (minus_dm > 0),
+            (minus_dm > plus_dm)
+            & (minus_dm > 0),
             0.0,
         )
 
         tr = pd.concat(
+
             [
+
                 high - low,
+
                 (high - close.shift()).abs(),
+
                 (low - close.shift()).abs(),
+
             ],
+
             axis=1,
+
         ).max(axis=1)
 
         atr = tr.rolling(period).mean()
 
         plus_di = (
+
             100
+
             * plus_dm.rolling(period).mean()
+
             / atr
+
         )
 
         minus_di = (
+
             100
+
             * minus_dm.rolling(period).mean()
+
             / atr
+
+        )
+
+        denominator = (
+
+            plus_di + minus_di
+
+        ).replace(
+
+            0,
+
+            np.nan,
+
         )
 
         dx = (
+
             (plus_di - minus_di).abs()
+
             /
-            (plus_di + minus_di)
+
+            denominator
+
         ) * 100
 
         return dx.rolling(period).mean()
@@ -309,18 +342,31 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def vwap(df):
+    def vwap(
+        df,
+    ):
 
-        tp = (
+        typical_price = (
+
             df["high"]
+
             + df["low"]
+
             + df["close"]
+
         ) / 3
 
         return (
-            (tp * df["volume"]).cumsum()
+
+            (
+                typical_price
+                * df["volume"]
+            ).cumsum()
+
             /
+
             df["volume"].cumsum()
+
         )
 
     # ==========================================================
@@ -333,9 +379,11 @@ class IndicatorEngine:
         period=20,
     ):
 
-        avg_volume = volume.rolling(period).mean()
+        average = volume.rolling(
+            period
+        ).mean()
 
-        return volume / avg_volume
+        return volume / average
 
     # ==========================================================
     # Donchian Channel
@@ -347,13 +395,41 @@ class IndicatorEngine:
         period=20,
     ):
 
-        upper = df["high"].rolling(period).max()
+        upper = (
 
-        lower = df["low"].rolling(period).min()
+            df["high"]
 
-        middle = (upper + lower) / 2
+            .rolling(period)
 
-        return upper, middle, lower
+            .max()
+
+        )
+
+        lower = (
+
+            df["low"]
+
+            .rolling(period)
+
+            .min()
+
+        )
+
+        middle = (
+
+            upper + lower
+
+        ) / 2
+
+        return (
+
+            upper,
+
+            middle,
+
+            lower,
+
+        )
 
     # ==========================================================
     # SuperTrend
@@ -366,158 +442,130 @@ class IndicatorEngine:
         multiplier=3.0,
     ):
 
-        atr = IndicatorEngine.atr(df, period)
+        atr = IndicatorEngine.atr(
+            df,
+            period,
+        )
 
         hl2 = (
+
             df["high"]
+
             + df["low"]
+
         ) / 2
 
-        upperband = hl2 + multiplier * atr
+        upperband = (
+            hl2 + multiplier * atr
+        ).copy()
 
-        lowerband = hl2 - multiplier * atr
+        lowerband = (
+            hl2 - multiplier * atr
+        ).copy()
 
         trend = [True]
 
-        supertrend = [lowerband.iloc[0]]
+        supertrend = [
 
-        for i in range(1, len(df)):
+            lowerband.iloc[0]
 
-            if df["close"].iloc[i] > upperband.iloc[i - 1]:
+        ]
+
+        for i in range(
+
+            1,
+
+            len(df),
+
+        ):
+
+            if (
+
+                df["close"].iloc[i]
+
+                >
+
+                upperband.iloc[i - 1]
+
+            ):
 
                 trend.append(True)
 
-            elif df["close"].iloc[i] < lowerband.iloc[i - 1]:
+            elif (
+
+                df["close"].iloc[i]
+
+                <
+
+                lowerband.iloc[i - 1]
+
+            ):
 
                 trend.append(False)
 
             else:
 
-                trend.append(trend[-1])
+                trend.append(
+
+                    trend[-1]
+
+                )
 
                 if trend[-1]:
 
                     lowerband.iloc[i] = max(
+
                         lowerband.iloc[i],
+
                         lowerband.iloc[i - 1],
+
                     )
 
                 else:
 
                     upperband.iloc[i] = min(
+
                         upperband.iloc[i],
+
                         upperband.iloc[i - 1],
+
                     )
 
             if trend[-1]:
 
                 supertrend.append(
+
                     lowerband.iloc[i]
+
                 )
 
             else:
 
                 supertrend.append(
+
                     upperband.iloc[i]
+
                 )
 
         return (
 
             pd.Series(
+
                 supertrend,
+
                 index=df.index,
+
             ),
 
             pd.Series(
+
                 trend,
+
                 index=df.index,
+
             ),
+
         )
 
-    # ==========================================================
-    # Trend Strength
-    # ==========================================================
 
-    @staticmethod
-    def trend_strength(indicators):
-
-        score = 0
-
-        if indicators["ema20"].iloc[-1] > indicators["ema50"].iloc[-1]:
-            score += 1
-
-        if indicators["ema50"].iloc[-1] > indicators["ema200"].iloc[-1]:
-            score += 1
-
-        if indicators["adx"].iloc[-1] > 25:
-            score += 1
-
-        if indicators["supertrend_trend"].iloc[-1]:
-            score += 1
-
-        return score
-
-    # ==========================================================
-    # Momentum Score
-    # ==========================================================
-
-    @staticmethod
-    def momentum_score(indicators):
-
-        score = 0
-
-        if indicators["rsi"].iloc[-1] > 55:
-            score += 1
-
-        if indicators["macd_hist"].iloc[-1] > 0:
-            score += 1
-
-        if indicators["relative_volume"].iloc[-1] > 1.3:
-            score += 1
-
-        return score
-
-    # ==========================================================
-    # Finalize Indicators
-    # ==========================================================
-
-    @staticmethod
-    def finalize(
-        df,
-        indicators,
-    ):
-
-        indicators["adx"] = IndicatorEngine.adx(df)
-
-        indicators["vwap"] = IndicatorEngine.vwap(df)
-
-        indicators["relative_volume"] = (
-            IndicatorEngine.relative_volume(
-                df["volume"]
-            )
-        )
-
-        (
-            indicators["donchian_upper"],
-            indicators["donchian_middle"],
-            indicators["donchian_lower"],
-        ) = IndicatorEngine.donchian(df)
-
-        (
-            indicators["supertrend"],
-            indicators["supertrend_trend"],
-        ) = IndicatorEngine.supertrend(df)
-
-        indicators["trend_strength"] = (
-            IndicatorEngine.trend_strength(
-                indicators
-            )
-        )
-
-        indicators["momentum_score"] = (
-            IndicatorEngine.momentum_score(
-                indicators
-            )
-        )
-
-        return indicators
+``
