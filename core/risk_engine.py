@@ -1,111 +1,406 @@
 from dataclasses import dataclass
+from typing import Optional
+
+from core.models import (
+    TradeType,
+    RiskLevel,
+)
 
 
 @dataclass
-class RiskConfig:
-    # نسبة المخاطرة من رأس المال في الصفقة الواحدة
-    risk_per_trade: float = 0.01
+class RiskDecision:
+    """
+    نتيجة قرار إدارة المخاطرة.
+    """
 
-    # أقصى نسبة يمكن استثمارها من كامل المحفظة
-    max_portfolio_exposure: float = 0.25
+    allowed: bool
 
-    # أقصى نسبة للصفقة الواحدة
-    max_position_size: float = 0.05
+    position_size: float
 
-    # أقل قيمة للصفقة بالدولار
-    min_position_size: float = 10.0
+    risk_level: RiskLevel
 
-    # مضاعف ATR للستوب
-    atr_multiplier: float = 2.0
+    reason: str
 
 
 class RiskEngine:
+    """
+    محرك إدارة رأس المال والمخاطرة.
 
-    def __init__(self, config: RiskConfig = None):
-        self.config = config or RiskConfig()
+    مسؤول عن:
+    - تحديد حجم الصفقة.
+    - منع المخاطرة الزائدة.
+    - توزيع رأس المال بين Scalping و Swing.
+    - التحكم في Recovery.
+    """
+
+    def __init__(
+        self,
+        max_portfolio_exposure: float = 0.70,
+        max_position_size: float = 0.10,
+        min_position_size: float = 0.02,
+        max_open_trades: int = 8,
+    ):
+
+        self.max_portfolio_exposure = (
+            max_portfolio_exposure
+        )
+
+        self.max_position_size = (
+            max_position_size
+        )
+
+        self.min_position_size = (
+            min_position_size
+        )
+
+        self.max_open_trades = (
+            max_open_trades
+        )
+
+
+    # ==========================================================
+    # تحديد مستوى المخاطرة
+    # ==========================================================
+
+    def calculate_risk_level(
+        self,
+        confidence: float,
+        volatility: float,
+        market_strength: float,
+    ) -> RiskLevel:
+
+        score = 0
+
+
+        # قوة الإشارة
+
+        if confidence >= 90:
+
+            score += 2
+
+        elif confidence >= 75:
+
+            score += 1
+
+        else:
+
+            score -= 1
+
+
+        # التقلب
+
+        if volatility < 0.03:
+
+            score += 1
+
+        elif volatility > 0.08:
+
+            score -= 1
+
+
+        # قوة السوق
+
+        if market_strength > 1.2:
+
+            score += 1
+
+        elif market_strength < 0.8:
+
+            score -= 1
+
+
+
+        if score >= 3:
+
+            return RiskLevel.LOW
+
+
+        elif score <= 0:
+
+            return RiskLevel.HIGH
+
+
+        return RiskLevel.MEDIUM
+
+
+    # ==========================================================
+    # حساب الحجم الأساسي للصفقة
+    # ==========================================================
 
     def calculate_position_size(
         self,
-        equity: float,
-        cash: float,
-        current_exposure: float,
-        entry_price: float,
-        atr: float,
+        balance: float,
+        confidence: float,
+        trade_type: TradeType,
+        risk_level: RiskLevel,
     ) -> float:
-        """
-        يحسب حجم الصفقة بالدولار.
-        """
 
-        if equity <= 0:
-            return 0.0
 
-        if atr is None or atr <= 0:
-            return 0.0
-
-        # المبلغ الذي نسمح بخسارته
-        risk_amount = equity * self.config.risk_per_trade
-
-        stop_distance = atr * self.config.atr_multiplier
-
-        if stop_distance <= 0:
-            return 0.0
-
-        quantity = risk_amount / stop_distance
-
-        position_value = quantity * entry_price
-
-        # الحد الأقصى للصفقة الواحدة
-        max_position = equity * self.config.max_position_size
-
-        # الحد الأقصى للتعرض الكلي
-        max_total = equity * self.config.max_portfolio_exposure
-
-        remaining = max_total - current_exposure
-
-        if remaining <= 0:
-            return 0.0
-
-        position_value = min(
-            position_value,
-            max_position,
-            remaining,
-            cash,
+        base_percentage = (
+            self.max_position_size
         )
 
-        if position_value < self.config.min_position_size:
-            return 0.0
 
-        return round(position_value, 2)
+        # تعديل حسب نوع الصفقة
 
-    def hard_stop_price(self, entry_price: float, atr: float) -> float:
-        """
-        سعر وقف الخسارة الابتدائي.
-        """
-        return entry_price - (atr * self.config.atr_multiplier)
+        if trade_type == TradeType.SCALPING:
 
-    def trailing_stop_price(
+            base_percentage *= 0.7
+
+
+        elif trade_type == TradeType.SWING:
+
+            base_percentage *= 1.0
+
+
+
+        # تعديل حسب المخاطرة
+
+        if risk_level == RiskLevel.LOW:
+
+            multiplier = 1.0
+
+
+        elif risk_level == RiskLevel.MEDIUM:
+
+            multiplier = 0.7
+
+
+        else:
+
+            multiplier = 0.35
+
+
+
+        # تعديل حسب الثقة
+
+        confidence_multiplier = (
+            confidence / 100
+        )
+
+
+        final_percentage = (
+            base_percentage
+            *
+            multiplier
+            *
+            confidence_multiplier
+        )
+
+
+        # الحد الأدنى والأقصى
+
+        if final_percentage < self.min_position_size:
+
+            final_percentage = (
+                self.min_position_size
+            )
+
+
+        if final_percentage > self.max_position_size:
+
+            final_percentage = (
+                self.max_position_size
+            )
+
+
+        return (
+            balance
+            *
+            final_percentage
+        )    # ==========================================================
+    # التحقق من الحد الأقصى للتعرض
+    # ==========================================================
+
+    def exposure_allowed(
         self,
-        highest_price: float,
-        atr: float,
-        multiplier: float = 2.5,
-    ) -> float:
-        """
-        وقف الخسارة المتحرك.
-        """
-        return highest_price - (atr * multiplier)
-
-    def can_open_new_trade(
-        self,
-        equity: float,
+        balance: float,
         current_exposure: float,
+        new_position_size: float,
     ) -> bool:
 
-        max_allowed = equity * self.config.max_portfolio_exposure
+        total = (
+            current_exposure
+            + new_position_size
+        )
 
-        return current_exposure < max_allowed
+        return (
+            total
+            <=
+            balance
+            * self.max_portfolio_exposure
+        )
 
-    def risk_percentage(self) -> float:
-        return self.config.risk_per_trade * 100
+    # ==========================================================
+    # الحد الأقصى لعدد الصفقات
+    # ==========================================================
 
-    def max_exposure_percentage(self) -> float:
-        return self.config.max_portfolio_exposure * 100
+    def can_open_trade(
+        self,
+        open_positions: int,
+    ) -> bool:
+
+        return (
+            open_positions
+            <
+            self.max_open_trades
+        )
+
+    # ==========================================================
+    # تعديل الحجم باستخدام ATR
+    # ==========================================================
+
+    def apply_atr_adjustment(
+        self,
+        position_size: float,
+        atr_percent: float,
+    ) -> float:
+
+        if atr_percent <= 0:
+
+            return position_size
+
+        if atr_percent >= 0.08:
+
+            return (
+                position_size
+                * 0.50
+            )
+
+        if atr_percent >= 0.05:
+
+            return (
+                position_size
+                * 0.70
+            )
+
+        if atr_percent >= 0.03:
+
+            return (
+                position_size
+                * 0.85
+            )
+
+        return position_size
+
+    # ==========================================================
+    # Recovery Filter
+    # ==========================================================
+
+    def recovery_allowed(
+        self,
+        symbol: str,
+        allowed_symbols,
+    ) -> bool:
+
+        return (
+            symbol
+            in
+            allowed_symbols
+        )
+
+    # ==========================================================
+    # القرار النهائي
+    # ==========================================================
+
+    def evaluate_trade(
+        self,
+        balance: float,
+        confidence: float,
+        volatility: float,
+        market_strength: float,
+        trade_type: TradeType,
+        current_exposure: float,
+        open_positions: int,
+        atr_percent: float,
+    ) -> RiskDecision:
+
+        risk_level = self.calculate_risk_level(
+
+            confidence,
+
+            volatility,
+
+            market_strength,
+
+        )
+
+        position_size = (
+
+            self.calculate_position_size(
+
+                balance,
+
+                confidence,
+
+                trade_type,
+
+                risk_level,
+
+            )
+
+        )
+
+        position_size = (
+
+            self.apply_atr_adjustment(
+
+                position_size,
+
+                atr_percent,
+
+            )
+
+        )
+
+        if not self.can_open_trade(
+
+            open_positions,
+
+        ):
+
+            return RiskDecision(
+
+                allowed=False,
+
+                position_size=0.0,
+
+                risk_level=risk_level,
+
+                reason="MAX_OPEN_TRADES",
+
+            )
+
+        if not self.exposure_allowed(
+
+            balance,
+
+            current_exposure,
+
+            position_size,
+
+        ):
+
+            return RiskDecision(
+
+                allowed=False,
+
+                position_size=0.0,
+
+                risk_level=risk_level,
+
+                reason="MAX_EXPOSURE",
+
+            )
+
+        return RiskDecision(
+
+            allowed=True,
+
+            position_size=round(position_size, 2),
+
+            risk_level=risk_level,
+
+            reason="APPROVED",
+
+        )
