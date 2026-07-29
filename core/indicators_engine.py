@@ -569,3 +569,208 @@ class IndicatorEngine:
 
 
 ``
+    # ==========================================================
+    # Trend Strength
+    # ==========================================================
+
+    @staticmethod
+    def trend_strength(
+        indicators,
+    ):
+
+        score = 0
+
+        if (
+            indicators["ema20"].iloc[-1]
+            >
+            indicators["ema50"].iloc[-1]
+        ):
+            score += 1
+
+        if (
+            indicators["ema50"].iloc[-1]
+            >
+            indicators["ema200"].iloc[-1]
+        ):
+            score += 1
+
+        if (
+            indicators["adx"].iloc[-1]
+            >= 25
+        ):
+            score += 1
+
+        if (
+            indicators["supertrend_trend"].iloc[-1]
+        ):
+            score += 1
+
+        return score
+
+    # ==========================================================
+    # Momentum Score
+    # ==========================================================
+
+    @staticmethod
+    def momentum_score(
+        indicators,
+    ):
+
+        score = 0
+
+        if (
+            indicators["macd_hist"].iloc[-1]
+            > 0
+        ):
+            score += 1
+
+        if (
+            indicators["rsi"].iloc[-1]
+            > 55
+        ):
+            score += 1
+
+        if (
+            indicators["stochastic_rsi"].iloc[-1]
+            > 50
+        ):
+            score += 1
+
+        if (
+            indicators["roc"].iloc[-1]
+            > 0
+        ):
+            score += 1
+
+        if (
+            indicators["relative_volume"].iloc[-1]
+            > 1.30
+        ):
+            score += 1
+
+        return score
+
+    # ==========================================================
+    # Prepare All Indicators
+    # ==========================================================
+
+    @staticmethod
+    def prepare(
+        df,
+    ):
+
+        if len(df) < 220:
+
+            return None
+
+        indicators = pd.DataFrame(
+            index=df.index
+        )
+
+        indicators["ema20"] = (
+            IndicatorEngine.ema(
+                df["close"],
+                20,
+            )
+        )
+
+        indicators["ema50"] = (
+            IndicatorEngine.ema(
+                df["close"],
+                50,
+            )
+        )
+
+        indicators["ema200"] = (
+            IndicatorEngine.ema(
+                df["close"],
+                200,
+            )
+        )
+
+        indicators["rsi"] = (
+            IndicatorEngine.rsi(
+                df["close"],
+            )
+        )
+
+        indicators["stochastic_rsi"] = (
+            IndicatorEngine.stochastic_rsi(
+                df["close"],
+            )
+        )
+
+        indicators["roc"] = (
+            IndicatorEngine.roc(
+                df["close"],
+            )
+        )
+
+        indicators["atr"] = (
+            IndicatorEngine.atr(
+                df,
+            )
+        )
+
+        (
+            indicators["macd"],
+            indicators["macd_signal"],
+            indicators["macd_hist"],
+        ) = IndicatorEngine.macd(
+            df["close"],
+        )
+
+        (
+            indicators["bb_upper"],
+            indicators["bb_middle"],
+            indicators["bb_lower"],
+        ) = IndicatorEngine.bollinger(
+            df["close"],
+        )
+
+        indicators["adx"] = (
+            IndicatorEngine.adx(
+                df,
+            )
+        )
+
+        indicators["vwap"] = (
+            IndicatorEngine.vwap(
+                df,
+            )
+        )
+
+        indicators["relative_volume"] = (
+            IndicatorEngine.relative_volume(
+                df["volume"],
+            )
+        )
+
+        (
+            indicators["donchian_upper"],
+            indicators["donchian_middle"],
+            indicators["donchian_lower"],
+        ) = IndicatorEngine.donchian(
+            df,
+        )
+
+        (
+            indicators["supertrend"],
+            indicators["supertrend_trend"],
+        ) = IndicatorEngine.supertrend(
+            df,
+        )
+
+        indicators["trend_strength"] = (
+            IndicatorEngine.trend_strength(
+                indicators,
+            )
+        )
+
+        indicators["momentum_score"] = (
+            IndicatorEngine.momentum_score(
+                indicators,
+            )
+        )
+
+        return indicators
