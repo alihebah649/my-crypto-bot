@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Optional
 
 from core.models import (
+    Position,
+    PositionRuntime,
     TradeSignal,
     TradeType,
 )
@@ -19,11 +22,12 @@ from core.risk_engine import (
 )
 
 
+# ==========================================================
+# Execution Result
+# ==========================================================
+
 @dataclass
 class ExecutionResult:
-    """
-    نتيجة تنفيذ الصفقة.
-    """
 
     success: bool
 
@@ -33,7 +37,7 @@ class ExecutionResult:
 
     signal: TradeSignal
 
-    trade_type: TradeType | None
+    trade_type: Optional[TradeType]
 
     quantity: float
 
@@ -48,16 +52,15 @@ class ExecutionResult:
     execution_time: datetime
 
 
+# ==========================================================
+# Execution Engine
+# ==========================================================
+
 class ExecutionEngine:
+
     """
-    مسؤول عن تنفيذ قرارات التداول.
-
-    لا يحسب المؤشرات.
-
-    لا يحسب المخاطرة.
-
-    وإنما يستقبل القرار النهائي
-    ثم ينفذه.
+    مسؤول عن تنفيذ قرارات التداول
+    وإدارة الصفقات المفتوحة.
     """
 
     def __init__(
@@ -75,103 +78,59 @@ class ExecutionEngine:
         self.risk_engine = risk_engine
 
     # ==========================================================
-    # Execute
+    # Recovery Coins
     # ==========================================================
 
-    def execute(
+    RECOVERY_SYMBOLS = {
 
-        self,
+        "BTCUSDT",
 
-        symbol,
+        "ETHUSDT",
 
-        current_price,
+        "BNBUSDT",
 
-        decision: StrategyDecision,
+        "SOLUSDT",
 
-    ):
+    }
 
-        if decision.signal != TradeSignal.BUY:
+    # ==========================================================
+    # Helpers
+    # ==========================================================
 
-            return ExecutionResult(
+    @staticmethod
+    def recovery_allowed(
 
-                success=False,
+        symbol: str,
 
-                message="NO_BUY_SIGNAL",
+    ) -> bool:
 
-                symbol=symbol,
-
-                signal=decision.signal,
-
-                trade_type=None,
-
-                quantity=0,
-
-                entry_price=0,
-
-                stop_loss=0,
-
-                take_profit=0,
-
-                confidence=decision.confidence,
-
-                execution_time=datetime.now(
-                    timezone.utc,
-                ),
-
-            )
-
-        if self.portfolio.has_position(
+        return (
 
             symbol
 
-        ):
+            in
 
-            return ExecutionResult(
+            ExecutionEngine.RECOVERY_SYMBOLS
 
-                success=False,
+        )
 
-                message="POSITION_ALREADY_EXISTS",
-
-                symbol=symbol,
-
-                signal=TradeSignal.HOLD,
-
-                trade_type=None,
-
-                quantity=0,
-
-                entry_price=0,
-
-                stop_loss=0,
-
-                take_profit=0,
-
-                confidence=0,
-
-                execution_time=datetime.now(
-                    timezone.utc,
-                ),
-
-            )
-                # ==========================================================
-    # POSITION SIZE
+    # ==========================================================
+    # Position Size
     # ==========================================================
 
-    def _calculate_quantity(
+    def calculate_quantity(
 
         self,
 
-        symbol,
+        capital: float,
 
-        entry_price,
+        entry_price: float,
 
-        stop_loss,
+        stop_loss: float,
 
-    ):
+    ) -> float:
 
-        capital = self.portfolio.balance
-
-        position_size = (
+        position_value = (
 
             self.risk_engine.calculate_position_size(
 
@@ -185,9 +144,13 @@ class ExecutionEngine:
 
         )
 
-        quantity = (
+        if position_value <= 0:
 
-            position_size
+            return 0.0
+
+        return (
+
+            position_value
 
             /
 
@@ -195,58 +158,143 @@ class ExecutionEngine:
 
         )
 
-        return max(
+    # ==========================================================
+    # Split Position
+    # ==========================================================
 
-            quantity,
+    def split_position(
 
-            0.0,
+        self,
+
+        quantity: float,
+
+        trade_type: TradeType,
+
+    ):
+
+        if trade_type == TradeType.SCALPING:
+
+            return (
+
+                quantity,
+
+                0.0,
+
+            )
+
+        if trade_type == TradeType.SWING:
+
+            return (
+
+                0.0,
+
+                quantity,
+
+            )
+
+        return (
+
+            quantity * 0.40,
+
+            quantity * 0.60,
 
         )
 
     # ==========================================================
-    # RECOVERY COINS
+    # Build Position
     # ==========================================================
 
-    @staticmethod
-    def recovery_allowed(
+    def build_position(
 
-        symbol,
+        self,
 
-    ):
+        symbol: str,
 
-        recovery_symbols = {
+        decision: StrategyDecision,
 
-            "BTCUSDT",
+        quantity: float,
 
-            "ETHUSDT",
+        entry_price: float,
 
-            "BNBUSDT",
+    ) -> Position:
 
-            "SOLUSDT",
+        scalp_qty, swing_qty = self.split_position(
 
-        }
+            quantity,
 
-        return symbol in recovery_symbols
+            decision.trade_type,
+
+        )
+
+        position = Position(
+
+            symbol=symbol,
+
+            quantity=quantity,
+
+            entry_price=entry_price,
+
+            highest_price=entry_price,
+
+            stop_loss=decision.stop_loss,
+
+            take_profit=decision.take_profit,
+
+            atr_stop=decision.stop_loss,
+
+            confidence=decision.confidence,
+
+            trade_type=decision.trade_type,
+
+            recovery_mode=self.recovery_allowed(
+
+                symbol,
+
+            ),
+
+        )
+
+        runtime = PositionRuntime()
+
+        runtime.scalp_quantity = scalp_qty
+
+        runtime.swing_quantity = swing_qty
+
+        runtime.remaining_quantity = quantity
+
+        runtime.last_price = entry_price
+
+        runtime.trailing_stop_price = (
+
+            decision.stop_loss
+
+        )
+
+        position.runtime = runtime
+
+        return position
 
     # ==========================================================
-    # OPEN POSITION
+    # Open Position
     # ==========================================================
 
     def open_position(
 
         self,
 
-        symbol,
+        symbol: str,
 
-        current_price,
+        current_price: float,
 
-        decision,
+        decision: StrategyDecision,
 
-    ):
+    ) -> ExecutionResult:
 
-        quantity = self._calculate_quantity(
+        capital = self.portfolio.balance
 
-            symbol,
+        quantity = self.calculate_quantity(
+
+            capital,
 
             current_price,
 
@@ -268,13 +316,13 @@ class ExecutionEngine:
 
                 trade_type=None,
 
-                quantity=0,
+                quantity=0.0,
 
-                entry_price=0,
+                entry_price=0.0,
 
-                stop_loss=0,
+                stop_loss=0.0,
 
-                take_profit=0,
+                take_profit=0.0,
 
                 confidence=decision.confidence,
 
@@ -286,39 +334,69 @@ class ExecutionEngine:
 
             )
 
-        self.portfolio.open_position(
+        position = self.build_position(
 
-            symbol=symbol,
+            symbol,
 
-            quantity=quantity,
+            decision,
 
-            entry_price=current_price,
+            quantity,
 
-            atr_stop=decision.stop_loss,
+            current_price,
 
         )
 
-        position = self.portfolio.get_position(
+        self.portfolio.open_position(
+
+            symbol=position.symbol,
+
+            quantity=position.quantity,
+
+            entry_price=position.entry_price,
+
+            atr_stop=position.atr_stop,
+
+        )
+
+        stored = self.portfolio.get_position(
 
             symbol,
 
         )
 
-        position.trailing_active = False
+        stored.stop_loss = (
 
-        position.recovery_mode = (
-
-            self.recovery_allowed(
-
-                symbol,
-
-            )
+            position.stop_loss
 
         )
 
-        position.highest_price = (
+        stored.take_profit = (
 
-            current_price
+            position.take_profit
+
+        )
+
+        stored.trade_type = (
+
+            position.trade_type
+
+        )
+
+        stored.confidence = (
+
+            position.confidence
+
+        )
+
+        stored.recovery_mode = (
+
+            position.recovery_mode
+
+        )
+
+        stored.runtime = (
+
+            position.runtime
 
         )
 
@@ -350,17 +428,19 @@ class ExecutionEngine:
 
             ),
 
-           # ==========================================================
-    # UPDATE OPEN POSITION
+        )
+
+    # ==========================================================
+    # Update Position
     # ==========================================================
 
     def update_position(
 
         self,
 
-        symbol,
+        symbol: str,
 
-        current_price,
+        current_price: float,
 
     ):
 
@@ -374,41 +454,93 @@ class ExecutionEngine:
 
             return None
 
-        self.portfolio.update_highest_price(
+        runtime = position.runtime
 
-            symbol,
+        runtime.last_price = current_price
 
-            current_price,
+        # -----------------------------------------
+        # Highest Price
+        # -----------------------------------------
 
-        )
+        if current_price > position.highest_price:
 
-        # --------------------------------------------------
-        # Activate Trailing Stop
-        # --------------------------------------------------
+            position.highest_price = current_price
 
-        if (
+        # -----------------------------------------
+        # Unrealized Profit
+        # -----------------------------------------
 
-            not position.trailing_active
-
-            and
+        runtime.unrealized_profit = (
 
             current_price
 
-            >=
+            -
 
-            position.entry_price * 1.02
+            position.entry_price
+
+        ) * position.quantity
+
+        profit_percent = (
+
+            (
+
+                current_price
+
+                -
+
+                position.entry_price
+
+            )
+
+            /
+
+            position.entry_price
+
+        ) * 100
+
+        runtime.highest_profit_percent = max(
+
+            runtime.highest_profit_percent,
+
+            profit_percent,
+
+        )
+
+        # -----------------------------------------
+        # Break Even
+        # -----------------------------------------
+
+        if (
+
+            not runtime.break_even_enabled
+
+            and
+
+            profit_percent >= 2.0
 
         ):
 
-            position.trailing_active = True
+            runtime.break_even_enabled = True
 
-        # --------------------------------------------------
-        # Trailing Stop Exit
-        # --------------------------------------------------
+            runtime.break_even_price = (
 
-        if position.trailing_active:
+                position.entry_price
 
-            trailing_stop = (
+            )
+
+            position.stop_loss = (
+
+                position.entry_price
+
+            )
+
+        # -----------------------------------------
+        # Trailing Stop
+        # -----------------------------------------
+
+        if profit_percent >= 3:
+
+            trailing = (
 
                 position.highest_price
 
@@ -416,37 +548,51 @@ class ExecutionEngine:
 
             )
 
-            if current_price <= trailing_stop:
+            if (
 
-                return self.close_position(
+                trailing
 
-                    symbol,
+                >
 
-                    current_price,
+                runtime.trailing_stop_price
 
-                    "TRAILING_STOP",
+            ):
+
+                runtime.trailing_stop_price = (
+
+                    trailing
 
                 )
 
-        # --------------------------------------------------
-        # Take Profit
-        # --------------------------------------------------
-
         if (
 
-            hasattr(
+            runtime.trailing_stop_price > 0
 
-                position,
+            and
 
-                "take_profit",
+            current_price
+
+            <=
+
+            runtime.trailing_stop_price
+
+        ):
+
+            return self.close_position(
+
+                symbol,
+
+                current_price,
+
+                "TRAILING_STOP",
 
             )
 
-            and
+        # -----------------------------------------
+        # Take Profit
+        # -----------------------------------------
 
-            position.take_profit > 0
-
-            and
+        if (
 
             current_price
 
@@ -466,25 +612,11 @@ class ExecutionEngine:
 
             )
 
-        # --------------------------------------------------
+        # -----------------------------------------
         # Stop Loss
-        # --------------------------------------------------
+        # -----------------------------------------
 
         if (
-
-            hasattr(
-
-                position,
-
-                "stop_loss",
-
-            )
-
-            and
-
-            position.stop_loss > 0
-
-            and
 
             current_price
 
@@ -511,7 +643,7 @@ class ExecutionEngine:
         return None
 
     # ==========================================================
-    # CLOSE POSITION
+    # Close Position
     # ==========================================================
 
     def close_position(
@@ -520,32 +652,30 @@ class ExecutionEngine:
 
         symbol,
 
-        current_price,
+        exit_price,
 
         reason,
 
     ):
 
-        pnl = self.portfolio.close_position(
+        return self.portfolio.close_position(
 
             symbol=symbol,
 
-            exit_price=current_price,
+            exit_price=exit_price,
 
-            fees=0,
+            fees=0.0,
 
             exit_reason=reason,
 
-            strategy_version="V3",
+            strategy_version="Shadow_V3",
 
             run_id="LIVE",
 
         )
 
-        return pnl
-
     # ==========================================================
-    # EXECUTE DECISION
+    # Process
     # ==========================================================
 
     def process(
@@ -574,6 +704,10 @@ class ExecutionEngine:
 
             )
 
+        if decision.signal != TradeSignal.BUY:
+
+            return None
+
         return self.open_position(
 
             symbol,
@@ -582,4 +716,5 @@ class ExecutionEngine:
 
             decision,
 
-        ) 
+        )
+        
