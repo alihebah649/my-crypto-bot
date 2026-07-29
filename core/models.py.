@@ -83,7 +83,9 @@ class Position:
     entry_time: datetime = field(
         default_factory=lambda:
         datetime.now(timezone.utc)
-    )# ==========================================================
+    )
+
+# ==========================================================
 # Market Trend
 # ==========================================================
 
@@ -205,6 +207,8 @@ class RecoveryInfo:
     started_at: Optional[datetime] = None
 
     last_update: Optional[datetime] = None
+
+
 # ==========================================================
 # Position Runtime Data
 # ==========================================================
