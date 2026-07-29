@@ -117,6 +117,8 @@ class PositionRuntime:
 
     remaining_quantity: float = 0.0
 
+    average_entry_price: float = 0.0
+
     realized_profit: float = 0.0
 
     unrealized_profit: float = 0.0
@@ -136,6 +138,14 @@ class PositionRuntime:
     trailing_stop_price: float = 0.0
 
     partial_exit_done: bool = False
+
+    last_partial_exit_price: float = 0.0
+
+    last_partial_exit_time: Optional[datetime] = None
+
+    entry_completed: bool = False
+
+    exit_completed: bool = False
 
     recovery_attempts: int = 0
 
@@ -177,6 +187,16 @@ class Position:
     confidence: float
 
     trade_type: TradeType
+
+    trade_id: str = ""
+
+    strategy_name: str = ""
+
+    strategy_version: str = ""
+
+    run_id: str = ""
+
+    exit_reason: str = ""
 
     # -------------------------
     # Runtime
@@ -320,6 +340,12 @@ class TradeStatistics:
 
     current_streak: int = 0
 
+    roi: float = 0.0
+
+    sharpe_ratio: float = 0.0
+
+    average_trade_duration: float = 0.0
+
 
 # ==========================================================
 # Trade Context
@@ -450,6 +476,10 @@ class PortfolioSnapshot:
     open_positions: int = 0
 
     closed_positions: int = 0
+
+    reserved_for_recovery: float = 0.0
+
+    free_balance: float = 0.0
 
 
 # ==========================================================
