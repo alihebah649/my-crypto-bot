@@ -70,7 +70,9 @@ class Position:
 
     recovery_mode: bool = False
 
-    trailing_active: bool = False
+runtime: Optional["PositionRuntime"] = None
+
+trailing_active: bool = False
 
     is_open: bool = True
 
