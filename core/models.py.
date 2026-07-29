@@ -205,3 +205,115 @@ class RecoveryInfo:
     started_at: Optional[datetime] = None
 
     last_update: Optional[datetime] = None
+# ==========================================================
+# Position Runtime Data
+# ==========================================================
+
+@dataclass
+class PositionRuntime:
+
+    scalp_quantity: float = 0.0
+
+    swing_quantity: float = 0.0
+
+    remaining_quantity: float = 0.0
+
+    realized_profit: float = 0.0
+
+    unrealized_profit: float = 0.0
+
+    highest_profit_percent: float = 0.0
+
+    lowest_profit_percent: float = 0.0
+
+    break_even_enabled: bool = False
+
+    break_even_price: float = 0.0
+
+    trailing_stop_price: float = 0.0
+
+    partial_exit_done: bool = False
+
+    last_price: float = 0.0
+
+    last_update: datetime = field(
+        default_factory=lambda:
+        datetime.now(timezone.utc)
+    )
+
+
+# ==========================================================
+# Trade Context
+# ==========================================================
+
+@dataclass
+class TradeContext:
+
+    strategy_name: str = "Shadow Trading System V3"
+
+    strategy_version: str = "3.0"
+
+    exchange: str = "BINANCE"
+
+    timeframe: str = ""
+
+    higher_timeframe: str = ""
+
+    market_trend: MarketTrend = MarketTrend.NEUTRAL
+
+    confidence: float = 0.0
+
+    score: int = 0
+
+    notes: str = ""
+
+
+# ==========================================================
+# Bot Information
+# ==========================================================
+
+@dataclass
+class BotInfo:
+
+    state: BotState = BotState.STARTING
+
+    started_at: datetime = field(
+        default_factory=lambda:
+        datetime.now(timezone.utc)
+    )
+
+    last_cycle: Optional[datetime] = None
+
+    total_cycles: int = 0
+
+    monitored_symbols: int = 0
+
+    active_positions: int = 0
+
+    available_balance: float = 0.0
+
+    total_equity: float = 0.0
+
+
+# ==========================================================
+# Global Configuration Snapshot
+# ==========================================================
+
+@dataclass
+class ConfigSnapshot:
+
+    risk_profile: RiskProfile = RiskProfile.MEDIUM
+
+    recovery_enabled: bool = True
+
+    trailing_stop_enabled: bool = True
+
+    break_even_enabled: bool = True
+
+    max_open_positions: int = 10
+
+    risk_per_trade: float = 0.02
+
+    max_daily_loss: float = 0.05
+
+    max_total_exposure: float = 0.50
