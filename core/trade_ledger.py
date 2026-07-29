@@ -14,7 +14,6 @@ class TradeLedger:
     """
 
     def __init__(self):
-
         self.closed_trades: List[ClosedTrade] = []
 
     # ==========================================================
@@ -25,9 +24,7 @@ class TradeLedger:
         self,
         trade: ClosedTrade,
     ) -> ClosedTrade:
-
         self.closed_trades.append(trade)
-
         return trade
 
     # ==========================================================
@@ -35,7 +32,6 @@ class TradeLedger:
     # ==========================================================
 
     def total_trades(self) -> int:
-
         return len(self.closed_trades)
 
     # ==========================================================
@@ -43,13 +39,9 @@ class TradeLedger:
     # ==========================================================
 
     def total_net_profit(self) -> float:
-
         return sum(
-
             trade.net_profit
-
             for trade in self.closed_trades
-
         )
 
     # ==========================================================
@@ -57,13 +49,9 @@ class TradeLedger:
     # ==========================================================
 
     def total_fees(self) -> float:
-
         return sum(
-
             trade.fees
-
             for trade in self.closed_trades
-
         )
 
     # ==========================================================
@@ -71,15 +59,10 @@ class TradeLedger:
     # ==========================================================
 
     def winning_trades(self) -> int:
-
         return sum(
-
             1
-
             for trade in self.closed_trades
-
             if trade.net_profit > 0
-
         )
 
     # ==========================================================
@@ -87,15 +70,10 @@ class TradeLedger:
     # ==========================================================
 
     def losing_trades(self) -> int:
-
         return sum(
-
             1
-
             for trade in self.closed_trades
-
             if trade.net_profit <= 0
-
         )
 
     # ==========================================================
@@ -103,19 +81,12 @@ class TradeLedger:
     # ==========================================================
 
     def win_rate(self) -> float:
-
         total = self.total_trades()
-
         if total == 0:
-
             return 0.0
-
         return (
-
             self.winning_trades()
-
             / total
-
         ) * 100
 
     # ==========================================================
@@ -123,17 +94,11 @@ class TradeLedger:
     # ==========================================================
 
     def largest_win(self) -> float:
-
         if not self.closed_trades:
-
             return 0.0
-
         return max(
-
             trade.net_profit
-
             for trade in self.closed_trades
-
         )
 
     # ==========================================================
@@ -141,37 +106,25 @@ class TradeLedger:
     # ==========================================================
 
     def largest_loss(self) -> float:
-
         if not self.closed_trades:
-
             return 0.0
-
         return min(
-
             trade.net_profit
-
             for trade in self.closed_trades
+        )
 
-        )    # ==========================================================
+    # ==========================================================
     # متوسط الربح
     # ==========================================================
 
     def average_win(self) -> float:
-
         wins = [
-
             trade.net_profit
-
             for trade in self.closed_trades
-
             if trade.net_profit > 0
-
         ]
-
         if not wins:
-
             return 0.0
-
         return sum(wins) / len(wins)
 
     # ==========================================================
@@ -179,21 +132,13 @@ class TradeLedger:
     # ==========================================================
 
     def average_loss(self) -> float:
-
         losses = [
-
             trade.net_profit
-
             for trade in self.closed_trades
-
             if trade.net_profit <= 0
-
         ]
-
         if not losses:
-
             return 0.0
-
         return sum(losses) / len(losses)
 
     # ==========================================================
@@ -204,13 +149,9 @@ class TradeLedger:
         self,
         trade_id: str,
     ) -> Optional[ClosedTrade]:
-
         for trade in self.closed_trades:
-
             if trade.trade_id == trade_id:
-
                 return trade
-
         return None
 
     # ==========================================================
@@ -221,31 +162,20 @@ class TradeLedger:
         self,
         filename: str,
     ):
-
         with open(
             filename,
             "w",
             encoding="utf-8",
         ) as f:
-
             json.dump(
-
                 [
-
                     asdict(t)
-
                     for t in self.closed_trades
-
                 ],
-
                 f,
-
                 indent=4,
-
                 default=str,
-
                 ensure_ascii=False,
-
             )
 
     # ==========================================================
@@ -256,47 +186,26 @@ class TradeLedger:
         self,
         filename: str,
     ):
-
         if not self.closed_trades:
-
             return
-
         with open(
-
             filename,
-
             "w",
-
             newline="",
-
             encoding="utf-8",
-
         ) as f:
-
             writer = csv.DictWriter(
-
                 f,
-
                 fieldnames=list(
-
                     asdict(
-
                         self.closed_trades[0]
-
                     ).keys()
-
                 ),
-
             )
-
             writer.writeheader()
-
             for trade in self.closed_trades:
-
                 writer.writerow(
-
                     asdict(trade)
-
                 )
 
     # ==========================================================
@@ -304,7 +213,6 @@ class TradeLedger:
     # ==========================================================
 
     def clear(self):
-
         self.closed_trades.clear()
 
     # ==========================================================
@@ -312,11 +220,8 @@ class TradeLedger:
     # ==========================================================
 
     def last_trade(self) -> Optional[ClosedTrade]:
-
         if not self.closed_trades:
-
             return None
-
         return self.closed_trades[-1]
 
     # ==========================================================
@@ -324,5 +229,4 @@ class TradeLedger:
     # ==========================================================
 
     def all_trades(self) -> List[ClosedTrade]:
-
         return self.closed_trades
