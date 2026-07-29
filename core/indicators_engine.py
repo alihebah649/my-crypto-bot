@@ -4,7 +4,8 @@ import pandas as pd
 
 class IndicatorEngine:
     """
-    محرك حساب المؤشرات الفنية.
+    Shadow Trading System V3
+    Indicator Engine
 
     يعتمد على DataFrame يحتوي الأعمدة:
 
@@ -20,10 +21,13 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def ema(series, period):
+    def ema(
+        series,
+        period,
+    ):
         return series.ewm(
             span=period,
-            adjust=False
+            adjust=False,
         ).mean()
 
     # ==========================================================
@@ -31,47 +35,115 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def rsi(close, period=14):
+    def rsi(
+        close,
+        period=14,
+    ):
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
         avg_gain = gain.ewm(
             alpha=1 / period,
-            adjust=False
+            adjust=False,
         ).mean()
         avg_loss = loss.ewm(
             alpha=1 / period,
-            adjust=False
+            adjust=False,
         ).mean()
         rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (
+            100 / (1 + rs)
+        )
+        return rsi
+
+    # ==========================================================
+    # STOCHASTIC RSI
+    # ==========================================================
+
+    @staticmethod
+    def stochastic_rsi(
+        close,
+        rsi_period=14,
+        stoch_period=14,
+    ):
+        rsi = IndicatorEngine.rsi(
+            close,
+            rsi_period,
+        )
+        lowest = rsi.rolling(
+            stoch_period,
+        ).min()
+        highest = rsi.rolling(
+            stoch_period,
+        ).max()
+        denominator = (
+            highest - lowest
+        ).replace(
+            0,
+            np.nan,
+        )
+        stoch = (
+            (
+                rsi - lowest
+            )
+            /
+            denominator
+        ) * 100
+        return stoch
+
+    # ==========================================================
+    # RATE OF CHANGE
+    # ==========================================================
+
+    @staticmethod
+    def roc(
+        close,
+        period=10,
+    ):
+        return (
+            close.pct_change(period)
+        ) * 100
 
     # ==========================================================
     # ATR
     # ==========================================================
 
     @staticmethod
-    def atr(df, period=14):
-        prev_close = df["close"].shift(1)
+    def atr(
+        df,
+        period=14,
+    ):
+        previous_close = (
+            df["close"].shift(1)
+        )
         tr = pd.concat(
             [
                 df["high"] - df["low"],
-                (df["high"] - prev_close).abs(),
-                (df["low"] - prev_close).abs(),
+                (
+                    df["high"]
+                    - previous_close
+                ).abs(),
+                (
+                    df["low"]
+                    - previous_close
+                ).abs(),
             ],
             axis=1,
         ).max(axis=1)
-        return tr.ewm(
+        atr = tr.ewm(
             alpha=1 / period,
             adjust=False,
         ).mean()
+        return atr
 
     # ==========================================================
     # MACD
     # ==========================================================
 
     @staticmethod
-    def macd(close):
+    def macd(
+        close,
+    ):
         ema12 = IndicatorEngine.ema(
             close,
             12,
@@ -85,11 +157,17 @@ class IndicatorEngine:
             span=9,
             adjust=False,
         ).mean()
-        hist = macd - signal
-        return macd, signal, hist
+        histogram = (
+            macd - signal
+        )
+        return (
+            macd,
+            signal,
+            histogram,
+        )
 
     # ==========================================================
-    # Bollinger Bands
+    # BOLLINGER BANDS
     # ==========================================================
 
     @staticmethod
@@ -98,30 +176,35 @@ class IndicatorEngine:
         period=20,
         std=2,
     ):
-        ma = close.rolling(period).mean()
-        sigma = close.rolling(period).std()
-        upper = ma + sigma * std
-        lower = ma - sigma * std
-        return upper, ma, lower
-
-    # ==========================================================
-    # Volume Ratio
-    # ==========================================================
-
-    @staticmethod
-    def volume_ratio(
-        volume,
-        period=20,
-    ):
-        avg = volume.rolling(period).mean()
-        return volume / avg
+        middle = close.rolling(
+            period,
+        ).mean()
+        sigma = close.rolling(
+            period,
+        ).std()
+        upper = (
+            middle
+            + sigma * std
+        )
+        lower = (
+            middle
+            - sigma * std
+        )
+        return (
+            upper,
+            middle,
+            lower,
+        )
 
     # ==========================================================
     # ADX
     # ==========================================================
 
     @staticmethod
-    def adx(df, period=14):
+    def adx(
+        df,
+        period=14,
+    ):
         high = df["high"]
         low = df["low"]
         close = df["close"]
@@ -130,12 +213,14 @@ class IndicatorEngine:
         minus_dm = -low.diff()
 
         plus_dm = plus_dm.where(
-            (plus_dm > minus_dm) & (plus_dm > 0),
+            (plus_dm > minus_dm)
+            & (plus_dm > 0),
             0.0,
         )
 
         minus_dm = minus_dm.where(
-            (minus_dm > plus_dm) & (minus_dm > 0),
+            (minus_dm > plus_dm)
+            & (minus_dm > 0),
             0.0,
         )
 
@@ -162,10 +247,17 @@ class IndicatorEngine:
             / atr
         )
 
+        denominator = (
+            plus_di + minus_di
+        ).replace(
+            0,
+            np.nan,
+        )
+
         dx = (
             (plus_di - minus_di).abs()
             /
-            (plus_di + minus_di)
+            denominator
         ) * 100
 
         return dx.rolling(period).mean()
@@ -175,15 +267,20 @@ class IndicatorEngine:
     # ==========================================================
 
     @staticmethod
-    def vwap(df):
-        tp = (
+    def vwap(
+        df,
+    ):
+        typical_price = (
             df["high"]
             + df["low"]
             + df["close"]
         ) / 3
 
         return (
-            (tp * df["volume"]).cumsum()
+            (
+                typical_price
+                * df["volume"]
+            ).cumsum()
             /
             df["volume"].cumsum()
         )
@@ -197,8 +294,10 @@ class IndicatorEngine:
         volume,
         period=20,
     ):
-        avg_volume = volume.rolling(period).mean()
-        return volume / avg_volume
+        average = volume.rolling(
+            period
+        ).mean()
+        return volume / average
 
     # ==========================================================
     # Donchian Channel
@@ -209,10 +308,24 @@ class IndicatorEngine:
         df,
         period=20,
     ):
-        upper = df["high"].rolling(period).max()
-        lower = df["low"].rolling(period).min()
-        middle = (upper + lower) / 2
-        return upper, middle, lower
+        upper = (
+            df["high"]
+            .rolling(period)
+            .max()
+        )
+        lower = (
+            df["low"]
+            .rolling(period)
+            .min()
+        )
+        middle = (
+            upper + lower
+        ) / 2
+        return (
+            upper,
+            middle,
+            lower,
+        )
 
     # ==========================================================
     # SuperTrend
@@ -224,22 +337,44 @@ class IndicatorEngine:
         period=10,
         multiplier=3.0,
     ):
-        atr = IndicatorEngine.atr(df, period)
+        atr = IndicatorEngine.atr(
+            df,
+            period,
+        )
         hl2 = (
             df["high"]
             + df["low"]
         ) / 2
-        upperband = hl2 + multiplier * atr
-        lowerband = hl2 - multiplier * atr
+        upperband = (
+            hl2 + multiplier * atr
+        ).copy()
+        lowerband = (
+            hl2 - multiplier * atr
+        ).copy()
         trend = [True]
-        supertrend = [lowerband.iloc[0]]
-        for i in range(1, len(df)):
-            if df["close"].iloc[i] > upperband.iloc[i - 1]:
+        supertrend = [
+            lowerband.iloc[0]
+        ]
+        for i in range(
+            1,
+            len(df),
+        ):
+            if (
+                df["close"].iloc[i]
+                >
+                upperband.iloc[i - 1]
+            ):
                 trend.append(True)
-            elif df["close"].iloc[i] < lowerband.iloc[i - 1]:
+            elif (
+                df["close"].iloc[i]
+                <
+                lowerband.iloc[i - 1]
+            ):
                 trend.append(False)
             else:
-                trend.append(trend[-1])
+                trend.append(
+                    trend[-1]
+                )
                 if trend[-1]:
                     lowerband.iloc[i] = max(
                         lowerband.iloc[i],
@@ -325,6 +460,12 @@ class IndicatorEngine:
         result["rsi"] = IndicatorEngine.rsi(
             df["close"]
         )
+        result["stoch_rsi"] = IndicatorEngine.stochastic_rsi(
+            df["close"]
+        )
+        result["roc"] = IndicatorEngine.roc(
+            df["close"]
+        )
         result["atr"] = IndicatorEngine.atr(
             df
         )
@@ -341,7 +482,7 @@ class IndicatorEngine:
         result["bb_middle"] = middle
         result["bb_lower"] = lower
         result["volume_ratio"] = (
-            IndicatorEngine.volume_ratio(
+            IndicatorEngine.relative_volume(
                 df["volume"]
             )
         )
