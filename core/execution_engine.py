@@ -1,588 +1,354 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+import time
 from datetime import datetime, timezone
+from typing import Optional
 
-from core.models import (
-    TradeSignal,
-    TradeType,
+from core.execution_models import (
+    ExecutionRequest,
+    ExecutionResult,
+    ExecutionStatistics,
 )
 
-from core.strategy_engine import (
-    StrategyDecision,
+from core.execution_validator import (
+    ExecutionValidator,
 )
 
-from core.portfolio_engine import (
-    PortfolioEngine,
+from core.execution_adapter import (
+    ExecutionAdapter,
 )
 
-from core.risk_engine import (
-    RiskEngine,
+from core.execution_exceptions import (
+    ExecutionError,
+    ExchangeConnectionError,
+    NetworkError,
+    TimeoutError,
 )
 
 
-@dataclass
-class ExecutionResult:
-    """
-    نتيجة تنفيذ الصفقة.
-    """
-
-    success: bool
-
-    message: str
-
-    symbol: str
-
-    signal: TradeSignal
-
-    trade_type: TradeType | None
-
-    quantity: float
-
-    entry_price: float
-
-    stop_loss: float
-
-    take_profit: float
-
-    confidence: float
-
-    execution_time: datetime
-
+# ==========================================================
+# Execution Engine
+# ==========================================================
 
 class ExecutionEngine:
     """
-    مسؤول عن تنفيذ قرارات التداول.
+    القلب الرئيسي لطبقة Execution.
 
-    لا يحسب المؤشرات.
+    مسؤول عن:
 
-    لا يحسب المخاطرة.
+    Strategy
+        ↓
+    Validation
+        ↓
+    Exchange Adapter
+        ↓
+    Execution Result
 
-    وإنما يستقبل القرار النهائي
-    ثم ينفذه.
+    دون أن يعرف أي شيء عن الاستراتيجية أو إدارة المخاطر.
     """
 
     def __init__(
-
         self,
+        adapter: ExecutionAdapter,
+        validator: Optional[
+            ExecutionValidator
+        ] = None,
+    ) -> None:
 
-        portfolio: PortfolioEngine,
+        self._adapter = adapter
 
-        risk_engine: RiskEngine,
+        self._validator = (
+            validator
+            if validator is not None
+            else ExecutionValidator()
+        )
 
-    ):
+        self._statistics = (
+            ExecutionStatistics()
+        )
 
-        self.portfolio = portfolio
+        self._started_at = datetime.now(
+            timezone.utc
+        )
 
-        self.risk_engine = risk_engine
+        self._connected = False
 
-    # ==========================================================
+    # ======================================================
+    # Properties
+    # ======================================================
+
+    @property
+    def adapter(self) -> ExecutionAdapter:
+
+        return self._adapter
+
+    @property
+    def validator(self) -> ExecutionValidator:
+
+        return self._validator
+
+    @property
+    def statistics(
+        self,
+    ) -> ExecutionStatistics:
+
+        return self._statistics
+
+    @property
+    def is_connected(self) -> bool:
+
+        return (
+            self._connected
+            and
+            self._adapter.is_connected()
+        )
+
+    # ======================================================
+    # Connection
+    # ======================================================
+
+    def connect(self) -> None:
+
+        if self.is_connected:
+            return
+
+        self._adapter.connect()
+
+        # الاعتماد على حالة الـ Adapter الحقيقية للتأكد من نجاح الاتصال
+        self._connected = self._adapter.is_connected()
+
+    def disconnect(self) -> None:
+
+        if not self._connected:
+            return
+
+        self._adapter.disconnect()
+
+        self._connected = False
+
+    def ensure_connection(self) -> None:
+
+        if self.is_connected:
+            return
+
+        raise ExchangeConnectionError(
+            "Execution adapter is not connected."
+        )
+
+    # ======================================================
     # Execute
-    # ==========================================================
+    # ======================================================
 
     def execute(
-
         self,
+        request: ExecutionRequest,
+    ) -> ExecutionResult:
+        """
+        تنفيذ طلب واحد.
 
-        symbol,
+        Workflow:
 
-        current_price,
+        Request
+            ↓
+        Connection
+            ↓
+        Validation
+            ↓
+        Adapter
+            ↓
+        Statistics
+            ↓
+        Result
+        """
 
-        decision: StrategyDecision,
+        self.ensure_connection()
 
-    ):
+        self._validator.validate_or_raise(
+            request
+        )
 
-        if decision.signal != TradeSignal.BUY:
+        request.mark_validated()
 
-            return ExecutionResult(
+        request.mark_submitted()
 
-                success=False,
+        result = self._adapter.execute(
+            request
+        )
 
-                message="NO_BUY_SIGNAL",
+        self._statistics.register(
+            result
+        )
 
-                symbol=symbol,
+        return result
 
-                signal=decision.signal,
+    # ======================================================
+    # Safe Execute
+    # ======================================================
 
-                trade_type=None,
-
-                quantity=0,
-
-                entry_price=0,
-
-                stop_loss=0,
-
-                take_profit=0,
-
-                confidence=decision.confidence,
-
-                execution_time=datetime.now(
-                    timezone.utc,
-                ),
-
-            )
-
-        if self.portfolio.has_position(
-
-            symbol
-
-        ):
-
-            return ExecutionResult(
-
-                success=False,
-
-                message="POSITION_ALREADY_EXISTS",
-
-                symbol=symbol,
-
-                signal=TradeSignal.HOLD,
-
-                trade_type=None,
-
-                quantity=0,
-
-                entry_price=0,
-
-                stop_loss=0,
-
-                take_profit=0,
-
-                confidence=0,
-
-                execution_time=datetime.now(
-                    timezone.utc,
-                ),
-
-            )
-
-    # ==========================================================
-    # POSITION SIZE
-    # ==========================================================
-
-    def _calculate_quantity(
-
+    def safe_execute(
         self,
+        request: ExecutionRequest,
+    ) -> ExecutionResult:
+        """
+        تنفيذ آمن.
 
-        symbol,
+        يعيد تمرير استثناءات ExecutionError مباشرة للأعلى ليتم التعامل معها،
+        بينما يقوم بالتقاط أي استثناءات غير متوقعة أخرى وتغليفها داخل ExecutionError.
+        """
 
-        entry_price,
+        try:
 
-        stop_loss,
-
-    ):
-
-        capital = self.portfolio.balance
-
-        position_size = (
-
-            self.risk_engine.calculate_position_size(
-
-                capital=capital,
-
-                entry_price=entry_price,
-
-                stop_loss=stop_loss,
-
+            return self.execute(
+                request
             )
 
-        )
+        except ExecutionError:
 
-        quantity = (
+            raise
 
-            position_size
+        except Exception as exc:
 
-            /
+            raise ExecutionError(
+                message=str(exc),
+                code="EXECUTION_ERROR",
+                request_id=request.request_id,
+            ) from exc
 
-            entry_price
+    # ======================================================
+    # Execute With Retry
+    # ======================================================
 
-        )
-
-        return max(
-
-            quantity,
-
-            0.0,
-
-        )
-
-    # ==========================================================
-    # RECOVERY COINS
-    # ==========================================================
-
-    @staticmethod
-    def recovery_allowed(
-
-        symbol,
-
-    ):
-
-        recovery_symbols = {
-
-            "BTCUSDT",
-
-            "ETHUSDT",
-
-            "BNBUSDT",
-
-            "SOLUSDT",
-
-        }
-
-        return symbol in recovery_symbols
-
-    # ==========================================================
-    # OPEN POSITION
-    # ==========================================================
-
-    def open_position(
-
+    def execute_with_retry(
         self,
+        request: ExecutionRequest,
+    ) -> ExecutionResult:
+        """
+        تنفيذ الطلب مع إعادة المحاولة
+        حسب RetryPolicy الموجود داخل الطلب.
+        """
 
-        symbol,
+        policy = request.retry_policy
 
-        current_price,
+        if not policy.enabled:
+            return self.execute(request)
 
-        decision,
+        retries = 0
 
-    ):
+        delay = policy.retry_delay
 
-        quantity = self._calculate_quantity(
+        while True:
 
-            symbol,
+            try:
 
-            current_price,
-
-            decision.stop_loss,
-
-        )
-
-        if quantity <= 0:
-
-            return ExecutionResult(
-
-                success=False,
-
-                message="INVALID_POSITION_SIZE",
-
-                symbol=symbol,
-
-                signal=TradeSignal.HOLD,
-
-                trade_type=None,
-
-                quantity=0,
-
-                entry_price=0,
-
-                stop_loss=0,
-
-                take_profit=0,
-
-                confidence=decision.confidence,
-
-                execution_time=datetime.now(
-
-                    timezone.utc,
-
-                ),
-
-            )
-
-        self.portfolio.open_position(
-
-            symbol=symbol,
-
-            quantity=quantity,
-
-            entry_price=current_price,
-
-            atr_stop=decision.stop_loss,
-
-        )
-
-        position = self.portfolio.get_position(
-
-            symbol,
-
-        )
-
-        position.trailing_active = False
-
-        position.recovery_mode = (
-
-            self.recovery_allowed(
-
-                symbol,
-
-            )
-
-        )
-
-        position.highest_price = (
-
-            current_price
-
-        )
-
-        return ExecutionResult(
-
-            success=True,
-
-            message="POSITION_OPENED",
-
-            symbol=symbol,
-
-            signal=TradeSignal.BUY,
-
-            trade_type=decision.trade_type,
-
-            quantity=quantity,
-
-            entry_price=current_price,
-
-            stop_loss=decision.stop_loss,
-
-            take_profit=decision.take_profit,
-
-            confidence=decision.confidence,
-
-            execution_time=datetime.now(
-
-                timezone.utc,
-
-            ),
-
-        )
-
-    # ==========================================================
-    # UPDATE OPEN POSITION
-    # ==========================================================
-
-    def update_position(
-
-        self,
-
-        symbol,
-
-        current_price,
-
-    ):
-
-        position = self.portfolio.get_position(
-
-            symbol,
-
-        )
-
-        if position is None:
-
-            return None
-
-        self.portfolio.update_highest_price(
-
-            symbol,
-
-            current_price,
-
-        )
-
-        # --------------------------------------------------
-        # Activate Trailing Stop
-        # --------------------------------------------------
-
-        if (
-
-            not position.trailing_active
-
-            and
-
-            current_price
-
-            >=
-
-            position.entry_price * 1.02
-
-        ):
-
-            position.trailing_active = True
-
-        # --------------------------------------------------
-        # Trailing Stop Exit
-        # --------------------------------------------------
-
-        if position.trailing_active:
-
-            trailing_stop = (
-
-                position.highest_price
-
-                * 0.995
-
-            )
-
-            if current_price <= trailing_stop:
-
-                return self.close_position(
-
-                    symbol,
-
-                    current_price,
-
-                    "TRAILING_STOP",
-
+                return self.execute(
+                    request
                 )
 
-        # --------------------------------------------------
-        # Take Profit
-        # --------------------------------------------------
+            except (ExchangeConnectionError, NetworkError, TimeoutError):
+                # إعادة المحاولة فقط مع الأخطاء الشبكية المؤقتة التي يمكن حلها بالانتظار
+                retries += 1
 
-        if (
+                if retries > policy.max_retry:
+                    raise
 
-            hasattr(
+                time.sleep(delay)
 
-                position,
+                if (
+                    policy.exponential_backoff
+                ):
+                    delay = min(
+                        delay * 2.0,
+                        policy.max_delay,
+                    )
 
-                "take_profit",
+    # ======================================================
+    # Statistics
+    # ======================================================
 
-            )
-
-            and
-
-            position.take_profit > 0
-
-            and
-
-            current_price
-
-            >=
-
-            position.take_profit
-
-        ):
-
-            return self.close_position(
-
-                symbol,
-
-                current_price,
-
-                "TAKE_PROFIT",
-
-            )
-
-        # --------------------------------------------------
-        # Stop Loss
-        # --------------------------------------------------
-
-        if (
-
-            hasattr(
-
-                position,
-
-                "stop_loss",
-
-            )
-
-            and
-
-            position.stop_loss > 0
-
-            and
-
-            current_price
-
-            <=
-
-            position.stop_loss
-
-        ):
-
-            if position.recovery_mode:
-
-                return None
-
-            return self.close_position(
-
-                symbol,
-
-                current_price,
-
-                "STOP_LOSS",
-
-            )
-
-        return None
-
-    # ==========================================================
-    # CLOSE POSITION
-    # ==========================================================
-
-    def close_position(
-
+    def reset_statistics(
         self,
+    ) -> None:
 
-        symbol,
+        self._statistics.reset()
 
-        current_price,
+    # ======================================================
+    # Information
+    # ======================================================
 
-        reason,
+    @property
+    def started_at(self):
 
-    ):
+        return self._started_at
 
-        pnl = self.portfolio.close_position(
+    @property
+    def uptime_seconds(
+        self,
+    ) -> float:
 
-            symbol=symbol,
+        return (
 
-            exit_price=current_price,
+            datetime.now(
+                timezone.utc
+            )
 
-            fees=0,
+            -
 
-            exit_reason=reason,
+            self._started_at
 
-            strategy_version="V3",
+        ).total_seconds()
 
-            run_id="LIVE",
+    # ======================================================
+    # Shutdown
+    # ======================================================
 
+    def shutdown(self) -> None:
+        """
+        إيقاف Execution Engine بشكل آمن.
+        """
+
+        if self.is_connected:
+            self.disconnect()
+
+    # ======================================================
+    # Context Manager
+    # ======================================================
+
+    def __enter__(self):
+
+        self.connect()
+
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc,
+        tb,
+    ) -> None:
+
+        self.shutdown()
+
+    # ======================================================
+    # Convenience
+    # ======================================================
+
+    def __call__(
+        self,
+        request: ExecutionRequest,
+    ) -> ExecutionResult:
+
+        return self.execute_with_retry(
+            request
         )
 
-        return pnl
-
-    # ==========================================================
-    # EXECUTE DECISION
-    # ==========================================================
-
-    def process(
-
+    def __repr__(
         self,
+    ) -> str:
 
-        symbol,
-
-        current_price,
-
-        decision,
-
-    ):
-
-        if self.portfolio.has_position(
-
-            symbol,
-
-        ):
-
-            return self.update_position(
-
-                symbol,
-
-                current_price,
-
-            )
-
-        return self.open_position(
-
-            symbol,
-
-            current_price,
-
-            decision,
-
+        return (
+            f"{self.__class__.__name__}("
+            f"exchange="
+            f"{self.adapter.exchange_name}, "
+            f"connected="
+            f"{self.is_connected})"
         )
