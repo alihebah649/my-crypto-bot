@@ -360,37 +360,3 @@ class OrderStateError(ExecutionError):
 # ==========================================================
 # Factory Helper
 # ==========================================================
-
-_EXCEPTION_MAP: dict[str, type[ExecutionError]] = {
-    "VALIDATION_ERROR": ValidationError,
-    "EXCHANGE_ERROR": ExchangeError,
-    "NETWORK_ERROR": NetworkError,
-    "TIMEOUT": TimeoutError,
-    "INSUFFICIENT_BALANCE": InsufficientBalanceError,
-    "SLIPPAGE_EXCEEDED": SlippageExceededError,
-    "RISK_REJECTED": RiskRejectedError,
-}
-
-
-def exception_from_code(
-    code: str,
-    message: str,
-    request_id: Optional[str] = None,
-) -> ExecutionError:
-    """
-    إنشاء Exception مناسب انطلاقًا من Error Code.
-    """
-
-    cls = _EXCEPTION_MAP.get(
-        code,
-        ExecutionError,
-    )
-
-    if cls is ExecutionError:
-        return cls(
-            message=message,
-            code=code,
-            request_id=request_id,
-        )
-
-    return cls(message, request_id)  # type: ignore[arg-type]
