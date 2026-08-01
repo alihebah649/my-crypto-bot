@@ -5,256 +5,288 @@ import csv
 import threading
 import pandas as pd
 import numpy as np
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, timezone
 import websockets
 import requests
 from flask import Flask
 import time
 
-app = Flask(__name__)
+# ==========================================
+# 1. QUANT ENGINES (V2.2.1 FIXED RISK)
+# ==========================================
 
-@app.route('/')
-def home():
-    return {"status": "healthy", "engine": "running", "timestamp": datetime.now(UTC).isoformat()}, 200
+class DynamicRiskEngine:
+    def __init__(self, risk_per_trade_pct=0.01, max_exposure_pct=0.25):
+        self.risk_per_trade_pct = risk_per_trade_pct # 1% مخاطرة فعلية من رأس المال
+        self.max_exposure_pct = max_exposure_pct
 
-def run_flask():
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    def calculate_position_size(self, current_equity, entry_price, atr, stop_loss_multiplier=2.0, remaining_exposure=0, cash_available=0):
+        if pd.isna(atr) or atr <= 0: 
+            # قيد أمان صارم: إذا كان ال ATR غير متوفر، لا تستخدم كامل الرصيد، بل استخدم نسبة ثابتة آمنة (مثلاً 5% من الكاش) كحد أدنى أو ارفض
+            return min(current_equity * 0.05, cash_available)
+        
+        # 1. حساب الحجم بناءً على مخاطرة الـ ATR
+        risk_amount = current_equity * self.risk_per_trade_pct
+        risk_per_share = atr * stop_loss_multiplier
+        ideal_shares = risk_amount / risk_per_share
+        ideal_position_usd = ideal_shares * entry_price
+        
+        # 2. قيود صارمة جداً لمنع دخول كامل الرصيد بأي شكل من الأشكال:
+        # ألا يتجاوز حجم الصفقة الحد الأقصى المسموح للمخاطرة (مثلاً 5% من إجمالي المحفظة كقيمة أسمية للصفقة الواحدة لضمان التنوع)
+        max_notional_per_trade = current_equity * 0.05 
+        
+        actual_position_usd = min(ideal_position_usd, max_notional_per_trade, remaining_exposure, cash_available)
+        
+        return max(actual_position_usd, 0.0)
 
-TELEGRAM_TOKEN = os.getenv("TOKEN", "8672887924:AAGaLFIEbk_2MHq9gMb5ja2FJhVj-oG3M0I")
-TELEGRAM_CHAT_ID = "199325566"
-telegram_cooldown_until = 0.0
-
-def send_telegram_message(message: str):
-    global telegram_cooldown_until
-    if time.time() < telegram_cooldown_until:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, json=payload, timeout=5)
-        if response.status_code == 429:
-            try:
-                res_data = response.json()
-                retry_after = int(res_data.get("parameters", {}).get("retry_after", 300))
-            except Exception:
-                retry_after = 300
-            telegram_cooldown_until = time.time() + retry_after
-            print(f"⚠️ تجميد مؤقت بسبب قيود تليجرام لـ {retry_after} ثانية.")
-        elif response.status_code != 200:
-            print(f"⚠️ فشل تلجرام: {response.text}")
-    except Exception as e:
-        print(f"⚠️ خطأ تلجرام: {e}")
-
-class AlphaSignalEngine:
-    def __init__(self, rsi_period=14, ema_period=9):
-        self.rsi_period = rsi_period
-        self.ema_period = ema_period
-        self.prices = {}
-
-    def update_price(self, symbol: str, price: float):
-        if symbol not in self.prices: self.prices[symbol] = []
-        self.prices[symbol].append(price)
-        if len(self.prices[symbol]) > 100: self.prices[symbol].pop(0)
-
-    def calculate_indicators(self, symbol: str):
-        if symbol not in self.prices or len(self.prices[symbol]) < self.rsi_period + 1: return None, None
-        df = pd.DataFrame(self.prices[symbol], columns=["price"])
-        df["ema"] = df["price"].ewm(span=self.ema_period, adjust=False).mean()
-        delta = df["price"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-        rs = gain / (loss + 1e-9)
-        rsi = 100 - (100 / (1 + rs))
-        return round(df["ema"].iloc[-1], 2), round(rsi.iloc[-1], 2)
-
-    def get_signal(self, rsi):
-        if rsi is None: return "HOLD"
-        if rsi < 30: return "BUY"
-        elif rsi > 70: return "SELL"
-        return "HOLD"
-
-class MultiPortfolioTracker:
+class GlobalPortfolioTracker:
     def __init__(self, initial_balance=10000.0, analytics_dir="analytics"):
         self.initial_balance = initial_balance
+        self.cash = initial_balance
+        self.positions = {}
         self.analytics_dir = analytics_dir
         os.makedirs(self.analytics_dir, exist_ok=True)
-        self.portfolios = {}
-        self.recent_trades = []
+        self.trade_history = []
+
+    def get_current_equity(self, current_prices):
+        equity = self.cash
+        for sym, pos in self.positions.items():
+            equity += pos["crypto_held"] * current_prices.get(sym, pos["entry_price"])
+        return equity
+
+    def get_current_exposure(self, current_prices):
+        exposure = 0.0
+        for sym, pos in self.positions.items():
+            exposure += pos["crypto_held"] * current_prices.get(sym, pos["entry_price"])
+        return exposure
+
+    def execute_buy(self, symbol, executed_price, position_size_usd, atr):
+        if position_size_usd > self.cash or position_size_usd <= 0:
+            return False
+            
+        crypto_amount = position_size_usd / executed_price
+        self.cash -= position_size_usd
         
-    def _init_symbol(self, symbol):
-        if symbol not in self.portfolios:
-            self.portfolios[symbol] = {
-                "balance": self.initial_balance, "crypto_held": 0.0, "last_buy_price": 0.0,
-                "has_position": False, "total_trades": 0, "winning_trades": 0, "total_pnl": 0.0
+        self.positions[symbol] = {
+            "crypto_held": crypto_amount,
+            "entry_price": executed_price,
+            "highest_price": executed_price,
+            "atr_at_entry": atr,
+            "hard_stop": executed_price - (atr * 2.0),
+            "trailing_stop": executed_price - (atr * 2.5)
+        }
+        return True
+
+    def execute_sell(self, symbol, executed_price, exit_reason="SIGNAL"):
+        if symbol not in self.positions: return False, 0, 0
+        
+        pos = self.positions.pop(symbol)
+        revenue = pos["crypto_held"] * executed_price
+        invested = pos["crypto_held"] * pos["entry_price"]
+        pnl = revenue - invested
+        pnl_pct = (pnl / invested) * 100
+        
+        self.cash += revenue
+        return True, round(pnl, 2), round(pnl_pct, 2)
+
+    def update_trailing_stops(self, symbol, current_price):
+        if symbol in self.positions:
+            pos = self.positions[symbol]
+            if current_price > pos["highest_price"]:
+                pos["highest_price"] = current_price
+                new_trail = current_price - (pos["atr_at_entry"] * 2.5)
+                if new_trail > pos["trailing_stop"]:
+                    pos["trailing_stop"] = new_trail
+
+    def check_exits(self, symbol, current_price):
+        if symbol not in self.positions: return None
+        pos = self.positions[symbol]
+        if current_price <= pos["hard_stop"]: return "HARD_STOP"
+        if current_price <= pos["trailing_stop"]: return "TRAILING_STOP"
+        return None
+
+# ==========================================
+# 2. MARKET DATA & INDICATORS ENGINE
+# ==========================================
+
+class OHLCVResampler:
+    def __init__(self, timeframe_seconds=60):
+        self.tf = timeframe_seconds
+        self.current_candles = {}
+        self.history = {}
+
+    def process_tick(self, symbol, price, volume, timestamp):
+        minute_ts = int(timestamp // self.tf) * self.tf
+        if symbol not in self.history: self.history[symbol] = []
+            
+        if symbol not in self.current_candles or self.current_candles[symbol]['ts'] != minute_ts:
+            if symbol in self.current_candles:
+                self.history[symbol].append(self.current_candles[symbol])
+                if len(self.history[symbol]) > 200: self.history[symbol].pop(0)
+            
+            self.current_candles[symbol] = {
+                'ts': minute_ts, 'open': price, 'high': price, 'low': price, 'close': price, 'volume': volume
             }
+        else:
+            c = self.current_candles[symbol]
+            c['high'] = max(c['high'], price)
+            c['low'] = min(c['low'], price)
+            c['close'] = price
+            c['volume'] += volume
 
-    def process_trade(self, symbol, side, executed_price, rsi_value):
-        self._init_symbol(symbol)
-        p = self.portfolios[symbol]
-        pnl, pnl_pct, total_equity, used_amount = 0.0, 0.0, 0.0, 0.0
+    def get_dataframe(self, symbol):
+        if symbol not in self.history or len(self.history[symbol]) < 2:
+            return pd.DataFrame()
+        return pd.DataFrame(self.history[symbol])
 
-        if side == "BUY" and not p["has_position"]:
-            used_amount = p["balance"]
-            p["crypto_held"] = p["balance"] / executed_price
-            p["last_buy_price"] = executed_price
-            p["balance"] = 0.0
-            p["has_position"] = True
-            p["total_trades"] += 1
-            
-        elif side == "SELL" and p["has_position"]:
-            revenue = p["crypto_held"] * executed_price
-            pnl = revenue - (p["crypto_held"] * p["last_buy_price"])
-            pnl_pct = (pnl / (p["crypto_held"] * p["last_buy_price"])) * 100
-            p["balance"] = revenue
-            p["crypto_held"] = 0.0
-            p["has_position"] = False
-            p["total_trades"] += 1
-            p["total_pnl"] += pnl
-            is_win = 1 if pnl > 0 else 0
-            if pnl > 0: p["winning_trades"] += 1
-            
-            self.recent_trades.append({
-                "timestamp": datetime.now(UTC), "symbol": symbol, "win": is_win, "loss": 1 - is_win, "pnl": pnl
-            })
-            
-        total_equity = p["crypto_held"] * executed_price if p["has_position"] else p["balance"]
-        return pnl, pnl_pct, total_equity, used_amount
+class QuantIndicators:
+    @staticmethod
+    def calculate_all(df, rsi_period=14, ema_period=100, atr_period=14):
+        if len(df) < max(rsi_period, ema_period, atr_period) + 1:
+            return None, None, None
 
-    def save_to_csv(self, record):
-        csv_file_path = os.path.join(self.analytics_dir, "shadow_trades_log.csv")
-        file_exists = os.path.isfile(csv_file_path)
-        with open(csv_file_path, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(record.keys()))
-            if not file_exists: writer.writeheader()
-            writer.writerow(record)
+        df['ema100'] = df['close'].ewm(span=ema_period, adjust=False).mean()
 
-    def generate_harvest_report(self, title_type: str, delta_days: int):
-        now = datetime.now(UTC)
-        cutoff_time = now - timedelta(days=delta_days)
-        filtered_trades = [t for t in self.recent_trades if t["timestamp"] >= cutoff_time]
-        current_date_str = now.strftime("%Y-%m-%d")
-        header = f"📊 حصاد {title_type} الشامل 📊\n📅 التاريخ المنتهي: {current_date_str}\n\n"
+        delta = df['close'].diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        ema_up = up.ewm(alpha=1/rsi_period, adjust=False).mean()
+        ema_down = down.ewm(alpha=1/rsi_period, adjust=False).mean()
+        rs = ema_up / ema_down
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        df['prev_close'] = df['close'].shift(1)
+        df['tr1'] = df['high'] - df['low']
+        df['tr2'] = (df['high'] - df['prev_close']).abs()
+        df['tr3'] = (df['low'] - df['prev_close']).abs()
+        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        df['atr'] = df['tr'].ewm(alpha=1/atr_period, adjust=False).mean()
+
+        last_row = df.iloc[-1]
+        return last_row['ema100'], last_row['rsi'], last_row['atr']
+
+class ScoreEngine:
+    @staticmethod
+    def evaluate(current_price, ema100, rsi):
+        if pd.isna(ema100) or pd.isna(rsi): return "HOLD"
+        score = 0
+        if current_price > ema100: score += 50
+        if rsi < 40: score += 30
+        if rsi > 70: score -= 50
         
-        if not filtered_trades:
-            header += "🚫 لا توجد صفقات مسجلة في هذه الفترة بعد."
-            send_telegram_message(header)
-            return
+        if score >= 80: return "BUY"
+        if score <= -50: return "SELL"
+        return "HOLD"
 
-        summary = {}
-        for t in filtered_trades:
-            sym = t["symbol"].split("-")[0]
-            if sym not in summary: summary[sym] = {"win": 0, "loss": 0, "net": 0.0}
-            summary[sym]["win"] += t["win"]
-            summary[sym]["loss"] += t["loss"]
-            summary[sym]["net"] += t["pnl"]
-            
-        report_msg = header
-        report_msg += "COIN      | WIN | LOSS | NET (FEES)\n"
-        report_msg += "--------------------------------------\n"
-        total_win, total_loss, total_net = 0, 0, 0.0
-        
-        for coin, data in summary.items():
-            total_win += data["win"]
-            total_loss += data["loss"]
-            total_net += data["net"]
-            report_msg += f"{coin:<9} | {data['win']:<3} | {data['loss']:<4} | {data['net']:.2f}$\n"
-            
-        report_msg += "--------------------------------------\n"
-        report_msg += f"TOTAL     | {total_win:<3} | {total_loss:<4} | {total_net:.2f}$"
-        send_telegram_message(report_msg)
+# ==========================================
+# 3. INFRASTRUCTURE & FLASK
+# ==========================================
+
+app = Flask(__name__)
+@app.route('/')
+def home(): return {"status": "healthy v2.2.1"}, 200
+
+def run_flask(): app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "199325566")
+
+def send_telegram_message(message: str):
+    if not TELEGRAM_TOKEN: return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
+    except: pass
+
+# ==========================================
+# 4. LIVE TRADING LOOP
+# ==========================================
 
 ISLAMIC_ASSETS = ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "MATIC-USD"]
-portfolio = MultiPortfolioTracker()
-engine = AlphaSignalEngine(rsi_period=14, ema_period=9)
-last_trade_time = {asset: 0 for asset in ISLAMIC_ASSETS}
+
+portfolio = GlobalPortfolioTracker(initial_balance=10000.0)
+resampler = OHLCVResampler(timeframe_seconds=60)
+risk_engine = DynamicRiskEngine(risk_per_trade_pct=0.01, max_exposure_pct=0.25)
+current_prices = {}
 
 async def start_live_shadow_engine():
-    send_telegram_message("🤖 تم تشغيل الإصدار الجديد والمطور! نظام كبح جماح التنبيهات مفعّل.")
+    send_telegram_message("🤖 بوت V2.2.1 يعمل: تم فرض قيود صارمة على حجم الصفقات ومنع دخول كامل الرصيد.")
+    
     while True:
         try:
-            async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20, ping_timeout=20) as ws:
-                subscribe_msg = {"type": "subscribe", "product_ids": ISLAMIC_ASSETS, "channels": ["ticker"]}
-                await ws.send(json.dumps(subscribe_msg))
+            async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20) as ws:
+                await ws.send(json.dumps({"type": "subscribe", "product_ids": ISLAMIC_ASSETS, "channels": ["ticker"]}))
+                
                 while True:
                     response = await ws.recv()
                     data = json.loads(response)
-                    if data.get("type") != "ticker" or "price" not in data: continue
+                    if data.get("type") != "ticker": continue
+                    
                     symbol = data.get("product_id")
                     if symbol not in ISLAMIC_ASSETS: continue
                     
-                    live_price = float(data['price'])
-                    live_volume = float(data.get('last_size', 0))
-                    engine.update_price(symbol, live_price)
-                    ema, rsi = engine.calculate_indicators(symbol)
-                    if rsi is None: continue
+                    price = float(data['price'])
+                    current_prices[symbol] = price
+                    timestamp = time.time()
                     
-                    signal = engine.get_signal(rsi)
-                    portfolio._init_symbol(symbol)
-                    has_pos = portfolio.portfolios[symbol]["has_position"]
-                    if (signal == "BUY" and has_pos) or (signal == "SELL" and not has_pos): continue
+                    resampler.process_tick(symbol, price, float(data.get('last_size', 0)), timestamp)
+                    
+                    portfolio.update_trailing_stops(symbol, price)
+                    exit_reason = portfolio.check_exits(symbol, price)
+                    
+                    if exit_reason:
+                        success, pnl, pct = portfolio.execute_sell(symbol, price, exit_reason)
+                        if success:
+                            eq = portfolio.get_current_equity(current_prices)
+                            send_telegram_message(f"🔴 إغلاق آلي ({exit_reason})\nالعملة: {symbol}\nالربح/خسارة: {pct}%\nالرصيد: ${eq:.2f}")
+                        continue
+
+                    df = resampler.get_dataframe(symbol)
+                    if df.empty: continue
+                    
+                    ema100, rsi, atr = QuantIndicators.calculate_all(df)
+                    signal = ScoreEngine.evaluate(price, ema100, rsi)
+                    
+                    if signal == "SELL" and symbol in portfolio.positions:
+                        success, pnl, pct = portfolio.execute_sell(symbol, price, "SIGNAL")
+                        if success:
+                            eq = portfolio.get_current_equity(current_prices)
+                            send_telegram_message(f"🔴 بيع استراتيجي\nالعملة: {symbol}\nالربح: {pct}%\nالرصيد: ${eq:.2f}")
+                            
+                    elif signal == "BUY" and symbol not in portfolio.positions:
+                        current_equity = portfolio.get_current_equity(current_prices)
+                        current_exposure = portfolio.get_current_exposure(current_prices)
+                        max_allowed_exposure = current_equity * risk_engine.max_exposure_pct
+                        remaining_exp = max_allowed_exposure - current_exposure
                         
-                    if signal in ["BUY", "SELL"]:
-                        current_timestamp = time.time()
-                        if current_timestamp - last_trade_time[symbol] < 1800: continue
-                        last_trade_time[symbol] = current_timestamp
+                        if remaining_exp <= 50: continue
                         
-                        start_time = datetime.now(UTC)
-                        await asyncio.sleep(np.random.uniform(0.02, 0.08))
-                        latency = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-                        slippage = round(np.random.uniform(0.3, 2.5), 2)
-                        factor = (1 + (slippage / 10000)) if signal == "BUY" else (1 - (slippage / 10000))
-                        executed_price = round(live_price * factor, 2)
+                        # حساب حجم الدخول الآمن مع تمرير السيولة المتاحة (Cash)
+                        size_usd = risk_engine.calculate_position_size(
+                            current_equity=current_equity, 
+                            entry_price=price, 
+                            atr=atr, 
+                            remaining_exposure=remaining_exp,
+                            cash_available=portfolio.cash
+                        )
                         
-                        pnl, pnl_pct, total_equity, used_amount = portfolio.process_trade(symbol, signal, executed_price, rsi)
-                        record = {
-                            "timestamp": datetime.now(UTC).isoformat(), "symbol": symbol, "side": signal, "live_price": live_price,
-                            "executed_price": executed_price, "volume": live_volume, "latency_ms": latency,
-                            "slippage_bps": slippage, "rsi": rsi, "pnl": pnl, "portfolio_equity": total_equity
-                        }
-                        portfolio.save_to_csv(record)
-                        clean_symbol = symbol.split("-")[0]
-                        
-                        if signal == "BUY":
-                            msg = "🟢 **صفقة شراء جديدة**\n"
-                            msg += f"1️⃣ **المبلغ المستخدم لشراء الصفقة:** ${used_amount}\n"
-                            msg += f"2️⃣ **اسم العملة:** {clean_symbol}\n"
-                            msg += f"3️⃣ **سبب الشراء:** هبوط مؤشر الـ RSI إلى {rsi} (منطقة ذروة البيع ولحظة ارتداد فني)."
-                        else:
-                            msg = "🔴 **صفقة بيع جديدة**\n"
-                            msg += f"1️⃣ **الربح والخسارة الناتجة:** {pnl}$ ({pnl_pct}%)\n"
-                            msg += f"2️⃣ **سبب الإغلاق:** صعود مؤشر الـ RSI إلى {rsi} (منطقة ذروة الشراء وبدء جني الأرباح).\n"
-                            msg += f"3️⃣ **اسم العملة:** {clean_symbol}\n"
-                            msg += f"📊 إجمالي المحفظة الحالي: ${total_equity}"
-                        send_telegram_message(msg)
+                        if size_usd >= 10: # الحد الأدنى المسموح للصفقة
+                            if portfolio.execute_buy(symbol, price, size_usd, atr):
+                                eq = portfolio.get_current_equity(current_prices)
+                                clean_name = symbol.split("-")[0]
+                                send_telegram_message(
+                                    f"=== صفقة شراء جديدة V2.2.1 ===\n"
+                                    f"العملة: {clean_name}\n"
+                                    f"المبلغ المستخدم: ${size_usd:.2f}\n"
+                                    f"سعر الدخول: ${price:.2f}\n"
+                                    f"الرصيد الكلي: ${eq:.2f}\n"
+                                    f"RSI: {rsi:.1f}"
+                                )
+                                
         except Exception as e:
-            print(f"⚠️ خطأ اتصال: {e}")
+            print(f"WS Error: {e}")
             await asyncio.sleep(5)
 
-def advanced_report_scheduler():
-    ONE_DAY, ONE_WEEK, ONE_MONTH = 86400, 86400 * 7, 86400 * 30
-    start_time = time.time()
-    last_day = last_week = last_month = start_time
-    while True:
-        time.sleep(60)
-        current_time = time.time()
-        if current_time - last_day >= ONE_DAY:
-            try: portfolio.generate_harvest_report("اليوم", 1)
-            except Exception: pass
-            last_day = current_time
-        if current_time - last_week >= ONE_WEEK:
-            try: portfolio.generate_harvest_report("الأسبوع", 7)
-            except Exception: pass
-            last_week = current_time
-        if current_time - last_month >= ONE_MONTH:
-            try: portfolio.generate_harvest_report("الشهر", 30)
-            except Exception: pass
-            last_month = current_time
-
-def start_trading_loop():
-    asyncio.run(start_live_shadow_engine())
-
 if __name__ == "__main__":
-    threading.Thread(target=start_trading_loop, daemon=True).start()
-    threading.Thread(target=advanced_report_scheduler, daemon=True).start()
+    threading.Thread(target=lambda: asyncio.run(start_live_shadow_engine()), daemon=True).start()
     run_flask()
