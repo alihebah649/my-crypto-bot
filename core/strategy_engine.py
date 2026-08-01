@@ -186,15 +186,18 @@ class StrategyEngine:
 
         indicators,
 
+        trend_strength: int,
+
+        momentum_score: int,
+
     ):
 
         score = 0
 
         reason = []
 
-        if (
-            indicators["trend_strength"] >= 3
-        ):
+        # التعديل: الاعتماد المباشر على المتغيرات المحلية الممررة
+        if trend_strength >= 3:
 
             score += 20
 
@@ -202,9 +205,7 @@ class StrategyEngine:
                 "TREND"
             )
 
-        if (
-            indicators["momentum_score"] >= 3
-        ):
+        if momentum_score >= 3:
 
             score += 20
 
@@ -369,6 +370,174 @@ class StrategyEngine:
         )
 
     # ==========================================================
+    # MARKET REGIME FILTER
+    # ==========================================================
+
+    def market_regime_filter(
+        self,
+        trend_strength: int,
+    ):
+
+        # التعديل: استقبال القيمة كـ int مباشرة
+        if trend_strength >= 4:
+            return "STRONG_TREND"
+
+        if trend_strength == 3:
+            return "TREND"
+
+        if trend_strength == 2:
+            return "RANGE"
+
+        return "WEAK"
+
+    # ==========================================================
+    # VOLATILITY FILTER
+    # ==========================================================
+
+    def volatility_filter(
+        self,
+        indicators,
+    ):
+
+        atr = indicators["atr"].iloc[-1]
+
+        close = indicators["ema20"].iloc[-1]
+
+        if close <= 0:
+            return False
+
+        volatility = atr / close
+
+        return (
+
+            0.003
+
+            <=
+
+            volatility
+
+            <=
+
+            0.08
+
+        )
+
+    # ==========================================================
+    # LIQUIDITY FILTER
+    # ==========================================================
+
+    def liquidity_filter(
+        self,
+        indicators,
+    ):
+
+        volume = indicators[
+            "relative_volume"
+        ].iloc[-1]
+
+        return volume >= 1.10
+
+    # ==========================================================
+    # TREND QUALITY FILTER
+    # ==========================================================
+
+    def trend_quality_filter(
+        self,
+        indicators,
+    ):
+
+        ema20 = indicators["ema20"].iloc[-1]
+
+        ema50 = indicators["ema50"].iloc[-1]
+
+        ema200 = indicators["ema200"].iloc[-1]
+
+        adx = indicators["adx"].iloc[-1]
+
+        if adx < 20:
+            return False
+
+        if not (
+
+            ema20
+
+            >
+
+            ema50
+
+            >
+
+            ema200
+
+        ):
+
+            return False
+
+        return True
+
+    # ==========================================================
+    # MOMENTUM FILTER
+    # ==========================================================
+
+    def momentum_filter(
+        self,
+        indicators,
+    ):
+
+        return (
+
+            indicators["macd_hist"].iloc[-1] > 0
+
+            and
+
+            indicators["roc"].iloc[-1] > 0
+
+            and
+
+            indicators["rsi"].iloc[-1] > 55
+
+        )
+
+    # ==========================================================
+    # RISK / REWARD FILTER
+    # ==========================================================
+
+    def risk_reward_filter(
+        self,
+        entry_price,
+        stop_loss,
+        take_profit,
+        minimum_rr=2.0,
+    ):
+
+        risk = (
+
+            entry_price
+
+            -
+
+            stop_loss
+
+        )
+
+        reward = (
+
+            take_profit
+
+            -
+
+            entry_price
+
+        )
+
+        if risk <= 0:
+            return False
+
+        rr = reward / risk
+
+        return rr >= minimum_rr
+
+    # ==========================================================
     # STOP LOSS
     # ==========================================================
 
@@ -412,9 +581,17 @@ class StrategyEngine:
 
             rr = 2.0
 
-        else:
+        elif trade_type == TradeType.SWING:
 
             rr = 3.0
+
+        elif trade_type == TradeType.SCALPING_SWING:
+
+            rr = 4.0
+
+        else:
+
+            rr = 2.5
 
         return (
 
@@ -447,17 +624,153 @@ class StrategyEngine:
     ):
 
         # -------------------------------
+        # التعديل الرئيسي: استخراج القيم الفردية مرة واحدة في البداية
+        # -------------------------------
+        trend_strength = int(indicators["trend_strength"].iloc[-1])
+        momentum_score = int(indicators["momentum_score"].iloc[-1])
+
+        # -------------------------------
         # BTC FILTER
         # -------------------------------
 
         market = self.btc_market_filter(
-
             btc_indicators,
-
         )
 
         # -------------------------------
-        # MULTI TF
+        # MARKET REGIME
+        # -------------------------------
+
+        regime = self.market_regime_filter(
+            trend_strength,
+        )
+
+        if regime == "WEAK":
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=0.0,
+
+                score=0,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="WEAK_MARKET",
+
+            )
+
+        # -------------------------------
+        # VOLATILITY FILTER
+        # -------------------------------
+
+        if not self.volatility_filter(
+            indicators,
+        ):
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=0.0,
+
+                score=0,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="LOW_VOLATILITY",
+
+            )
+
+        # -------------------------------
+        # LIQUIDITY FILTER
+        # -------------------------------
+
+        if not self.liquidity_filter(
+            indicators,
+        ):
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=0.0,
+
+                score=0,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="LOW_LIQUIDITY",
+
+            )
+
+        # -------------------------------
+        # TREND QUALITY
+        # -------------------------------
+
+        if not self.trend_quality_filter(
+            indicators,
+        ):
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=0.0,
+
+                score=0,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="BAD_TREND",
+
+            )
+
+        # -------------------------------
+        # MOMENTUM FILTER
+        # -------------------------------
+
+        if not self.momentum_filter(
+            indicators,
+        ):
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=0.0,
+
+                score=0,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="WEAK_MOMENTUM",
+
+            )
+
+        # -------------------------------
+        # MULTI TIMEFRAME
         # -------------------------------
 
         timeframe_score = (
@@ -476,22 +789,122 @@ class StrategyEngine:
         # MAIN SCORE
         # -------------------------------
 
-        score, reasons = (
+        score = 0
+
+        reasons = []
+
+        base_score, base_reasons = (
 
             self.smart_trade_filter(
 
                 indicators,
 
+                trend_strength,
+
+                momentum_score,
+
             )
 
         )
 
+        score += base_score
+
+        reasons.extend(base_reasons)
+
+        # -------------------------------
+        # Multi Timeframe Bonus
+        # -------------------------------
+
         score += timeframe_score * 5
 
-        confidence = self.confidence(
+        # -------------------------------
+        # Strong Trend Bonus
+        # -------------------------------
 
-            score,
+        # التعديل: مقارنة المتغير المحلي النظيف
+        if trend_strength >= 4:
 
+            score += 10
+
+            reasons.append(
+                "STRONG_TREND"
+            )
+
+        elif trend_strength == 3:
+
+            score += 5
+
+        # -------------------------------
+        # Strong Momentum Bonus
+        # -------------------------------
+
+        # التعديل: مقارنة المتغير المحلي النظيف
+        if momentum_score >= 4:
+
+            score += 10
+
+            reasons.append(
+                "STRONG_MOMENTUM"
+            )
+
+        elif momentum_score == 3:
+
+            score += 5
+
+        # -------------------------------
+        # High ADX Bonus
+        # -------------------------------
+
+        adx = indicators["adx"].iloc[-1]
+
+        if adx >= 40:
+
+            score += 10
+
+            reasons.append(
+                "ADX40"
+            )
+
+        elif adx >= 30:
+
+            score += 5
+
+        # -------------------------------
+        # High Volume Bonus
+        # -------------------------------
+
+        rv = indicators [
+            "relative_volume"
+        ].iloc[-1]
+
+        if rv >= 2.0:
+
+            score += 10
+
+            reasons.append(
+                "HIGH_VOLUME"
+            )
+
+        elif rv >= 1.5:
+
+            score += 5
+
+        # -------------------------------
+        # SuperTrend Bonus
+        # -------------------------------
+
+        if indicators [
+            "supertrend_trend"
+        ].iloc[-1]:
+
+            score += 5
+
+        # -------------------------------
+        # Confidence
+        # -------------------------------
+
+        current_confidence = self.confidence(
+            score
         )
 
         # -------------------------------
@@ -504,7 +917,7 @@ class StrategyEngine:
 
             and
 
-            confidence
+            current_confidence
 
             <
 
@@ -518,7 +931,7 @@ class StrategyEngine:
 
                 trade_type=None,
 
-                confidence=confidence,
+                confidence=current_confidence,
 
                 score=score,
 
@@ -536,7 +949,7 @@ class StrategyEngine:
 
         if (
 
-            confidence
+            current_confidence
 
             <
 
@@ -550,7 +963,7 @@ class StrategyEngine:
 
                 trade_type=None,
 
-                confidence=confidence,
+                confidence=current_confidence,
 
                 score=score,
 
@@ -580,7 +993,7 @@ class StrategyEngine:
 
                 trade_type=None,
 
-                confidence=confidence,
+                confidence=current_confidence,
 
                 score=score,
 
@@ -593,20 +1006,21 @@ class StrategyEngine:
             )
 
         # -------------------------------
-        # Strong Signal
+        # Strong Signal (تعديل الـ Scalping Swing)
         # -------------------------------
 
+        # التعديل: استخدام المتغيرات المحلية النظيفة هنا أيضاً
         if (
 
-            confidence >= 90
+            current_confidence >= 90
 
             and
 
-            indicators["trend_strength"] >= 4
+            trend_strength >= 4
 
             and
 
-            indicators["momentum_score"] >= 4
+            momentum_score >= 4
 
         ):
 
@@ -645,6 +1059,52 @@ class StrategyEngine:
         )
 
         # -------------------------------
+        # Risk / Reward Validation
+        # -------------------------------
+
+        minimum_rr = (
+
+            2.5
+
+            if trade_type == TradeType.SWING
+
+            else
+
+            2.0
+
+        )
+
+        if not self.risk_reward_filter(
+
+            entry_price,
+
+            stop_loss,
+
+            take_profit,
+
+            minimum_rr,
+
+        ):
+
+            return StrategyDecision(
+
+                signal=TradeSignal.HOLD,
+
+                trade_type=None,
+
+                confidence=current_confidence,
+
+                score=score,
+
+                stop_loss=0,
+
+                take_profit=0,
+
+                reason="LOW_RISK_REWARD",
+
+            )
+
+        # -------------------------------
         # FINAL BUY
         # -------------------------------
 
@@ -654,7 +1114,7 @@ class StrategyEngine:
 
             trade_type=trade_type,
 
-            confidence=confidence,
+            confidence=current_confidence,
 
             score=score,
 
