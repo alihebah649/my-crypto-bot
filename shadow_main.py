@@ -12,7 +12,7 @@ from flask import Flask
 import time
 
 # ==========================================
-# 1. QUANT ENGINES (V2.2.1 FIXED RISK)
+# 1. QUANT ENGINES (V2.2.2 FIXED RISK)
 # ==========================================
 
 class DynamicRiskEngine:
@@ -184,19 +184,25 @@ class ScoreEngine:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return {"status": "healthy v2.2.1"}, 200
+def home(): return {"status": "healthy v2.2.2"}, 200
 
 def run_flask(): app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# قراءة اسم المتغير TOKEN أو TELEGRAM_TOKEN لدعم جميع بيئات التشغيل
+TELEGRAM_TOKEN = os.getenv("TOKEN") or os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "199325566")
 
 def send_telegram_message(message: str):
-    if not TELEGRAM_TOKEN: return
+    if not TELEGRAM_TOKEN:
+        print("⚠️ لم يتم العثور على TELEGRAM_TOKEN أو TOKEN في متغيرات البيئة.")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
-    except: pass
+        res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5)
+        if res.status_code != 200:
+            print(f"⚠️ فشل إرسال تلجرام (كود {res.status_code}): {res.text}")
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء الإرسال لتلجرام: {e}")
 
 # ==========================================
 # 4. LIVE TRADING LOOP
@@ -210,7 +216,7 @@ risk_engine = DynamicRiskEngine(risk_per_trade_pct=0.01, max_exposure_pct=0.25)
 current_prices = {}
 
 async def start_live_shadow_engine():
-    send_telegram_message("🤖 بوت V2.2.1 يعمل: تم فرض قيود صارمة على حجم الصفقات ومنع دخول كامل الرصيد.")
+    send_telegram_message("🤖 بوت V2.2.2 يعمل بنجاح: تم دعم متغير TOKEN وتحسين إشعارات تلجرام!")
     
     while True:
         try:
@@ -275,7 +281,7 @@ async def start_live_shadow_engine():
                                 eq = portfolio.get_current_equity(current_prices)
                                 clean_name = symbol.split("-")[0]
                                 send_telegram_message(
-                                    f"=== صفقة شراء جديدة V2.2.1 ===\n"
+                                    f"=== صفقة شراء جديدة V2.2.2 ===\n"
                                     f"العملة: {clean_name}\n"
                                     f"المبلغ المستخدم: ${size_usd:.2f}\n"
                                     f"سعر الدخول: ${price:.2f}\n"
