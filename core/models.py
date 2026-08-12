@@ -55,6 +55,13 @@ class RiskProfile(str, Enum):
     HIGH = "HIGH"
 
 
+class RiskLevel(str, Enum):
+    """Risk level used by RiskEngine decisions."""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
 @dataclass
 class PositionRuntime:
     scalp_quantity: float = 0.0
