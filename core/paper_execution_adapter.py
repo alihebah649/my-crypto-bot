@@ -1,29 +1,22 @@
-"""
-Paper Execution Adapter
-=======================
-
-Safe execution adapter for paper trading.
-
-This adapter NEVER sends orders to Binance or any live broker. It simulates
-order execution against a supplied market price and maintains a virtual cash
-balance. It supports the project's SCALPING / SWING / SCALPING_SWING trade
-modes through metadata; execution itself remains strategy-agnostic.
-"""
+"""Safe paper-trading execution adapter for Shadow Trading Bot."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
+from core.execution_adapter import ExecutionAdapter
 from core.execution_models import (
+    ExecutionRequest,
     ExecutionResult,
     ExecutionSource,
     OrderFees,
-    OrderRequest,
     OrderSide,
     OrderStatus,
+    RejectReason,
+    SlippageInfo,
 )
 from core.models import TradeType
 
@@ -35,19 +28,29 @@ class PaperBalance:
     assets: dict[str, float] = field(default_factory=dict)
 
 
-class PaperExecutionAdapter:
-    """Deterministic, exchange-free execution adapter for paper trading."""
+class PaperExecutionAdapter(ExecutionAdapter):
+    """Exchange-free execution adapter used only for paper trading."""
 
     def __init__(self, initial_cash: float = 1000.0, fee_rate: float = 0.001) -> None:
+        super().__init__("PAPER")
         if initial_cash < 0:
             raise ValueError("initial_cash must be non-negative")
         if fee_rate < 0:
             raise ValueError("fee_rate must be non-negative")
-
         self.fee_rate = float(fee_rate)
         self.balance = PaperBalance(cash=float(initial_cash))
         self.orders: dict[str, ExecutionResult] = {}
         self.market_prices: dict[str, float] = {}
+        self._connected = False
+
+    def connect(self) -> None:
+        self._connected = True
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def set_market_price(self, symbol: str, price: float) -> None:
         price = float(price)
@@ -61,21 +64,15 @@ class PaperExecutionAdapter:
         except KeyError as exc:
             raise ValueError(f"No paper market price for {symbol}") from exc
 
-    def execute(
-        self,
-        request: OrderRequest,
-        *,
-        market_price: Optional[float] = None,
-        trade_type: TradeType = TradeType.SCALPING_SWING,
-    ) -> ExecutionResult:
+    def execute(self, request: ExecutionRequest) -> ExecutionResult:
         symbol = request.symbol.upper()
-        price = float(market_price) if market_price is not None else self.get_market_price(symbol)
-        quantity = float(request.requested_quantity)
+        price = request.price if request.price is not None else self.get_market_price(symbol)
+        quantity = float(request.quantity)
 
         if quantity <= 0:
-            return self._rejected(request, "INVALID_QUANTITY")
+            return self._rejected(request, RejectReason.INVALID_QUANTITY)
         if price <= 0:
-            return self._rejected(request, "INVALID_PRICE")
+            return self._rejected(request, RejectReason.INVALID_PRICE)
 
         gross = price * quantity
         fee = gross * self.fee_rate
@@ -83,23 +80,25 @@ class PaperExecutionAdapter:
         if request.side == OrderSide.BUY:
             total_cost = gross + fee
             if total_cost > self.balance.cash + 1e-12:
-                return self._rejected(request, "INSUFFICIENT_BALANCE")
+                return self._rejected(request, RejectReason.INSUFFICIENT_BALANCE)
             self.balance.cash -= total_cost
             self.balance.assets[symbol] = self.balance.assets.get(symbol, 0.0) + quantity
         elif request.side == OrderSide.SELL:
             held = self.balance.assets.get(symbol, 0.0)
             if quantity > held + 1e-12:
-                return self._rejected(request, "INSUFFICIENT_BALANCE")
+                return self._rejected(request, RejectReason.INSUFFICIENT_BALANCE)
             self.balance.assets[symbol] = max(0.0, held - quantity)
             self.balance.cash += gross - fee
         else:
-            return self._rejected(request, "UNKNOWN")
+            return self._rejected(request, RejectReason.UNKNOWN)
 
         now = datetime.now(timezone.utc)
+        trade_type = request.context.metadata.get("trade_type", TradeType.SCALPING_SWING.value)
+        order_id = f"PAPER-{uuid4().hex[:16]}"
         result = ExecutionResult(
             request_id=request.request_id,
             client_order_id=request.client_order_id,
-            exchange_order_id=f"PAPER-{uuid4().hex[:16]}",
+            exchange_order_id=order_id,
             symbol=symbol,
             side=request.side,
             order_type=request.order_type,
@@ -110,21 +109,40 @@ class PaperExecutionAdapter:
             executed_quantity=quantity,
             remaining_quantity=0.0,
             average_price=price,
-            fees=OrderFees(total=fee),
-            message=f"Paper execution: {trade_type.value}",
+            fees=OrderFees(exchange_fee=fee),
+            slippage=SlippageInfo(requested_price=price, executed_price=price),
+            message=f"Paper execution: {trade_type}",
             created_at=now,
             submitted_at=now,
             completed_at=now,
-            exchange="PAPER",
-            raw_response={
-                "source": ExecutionSource.PAPER.value,
-                "trade_type": trade_type.value,
-            },
+            exchange=self.exchange_name,
+            raw_response={"source": ExecutionSource.PAPER.value, "trade_type": trade_type},
         )
-        self.orders[request.client_order_id] = result
+        self.orders[order_id] = result
         return result
 
-    def _rejected(self, request: OrderRequest, reason: str) -> ExecutionResult:
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        result = self.orders.get(order_id)
+        if result is None or result.symbol != symbol.upper():
+            return False
+        return result.status in (OrderStatus.CREATED, OrderStatus.PENDING, OrderStatus.SUBMITTED)
+
+    def get_order(self, symbol: str, order_id: str) -> dict[str, Any]:
+        result = self.orders.get(order_id)
+        if result is None or result.symbol != symbol.upper():
+            return {}
+        return {
+            "orderId": result.exchange_order_id,
+            "clientOrderId": result.client_order_id,
+            "symbol": result.symbol,
+            "side": result.side.value,
+            "status": result.status.value,
+            "price": result.executed_price,
+            "executedQty": result.executed_quantity,
+            "source": ExecutionSource.PAPER.value,
+        }
+
+    def _rejected(self, request: ExecutionRequest, reason: RejectReason) -> ExecutionResult:
         now = datetime.now(timezone.utc)
         result = ExecutionResult(
             request_id=request.request_id,
@@ -133,16 +151,16 @@ class PaperExecutionAdapter:
             side=request.side,
             order_type=request.order_type,
             status=OrderStatus.REJECTED,
-            requested_price=request.requested_price,
-            requested_quantity=request.requested_quantity,
+            requested_price=request.price,
+            requested_quantity=request.quantity,
             reject_reason=reason,
-            message=f"Paper order rejected: {reason}",
+            message=f"Paper order rejected: {reason.value}",
             created_at=now,
             completed_at=now,
-            exchange="PAPER",
+            exchange=self.exchange_name,
             raw_response={"source": ExecutionSource.PAPER.value},
         )
-        self.orders[request.client_order_id] = result
+        self.orders[f"REJECTED-{uuid4().hex[:16]}"] = result
         return result
 
     def snapshot(self) -> dict[str, Any]:
