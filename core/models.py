@@ -1,0 +1,225 @@
+"""Canonical shared domain models for Shadow Trading Bot core."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, Optional
+
+
+class TradeSignal(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+
+
+class TradeType(str, Enum):
+    SCALPING = "SCALPING"
+    SWING = "SWING"
+    SCALPING_SWING = "SCALPING_SWING"
+
+
+class PositionStatus(str, Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    RECOVERY = "RECOVERY"
+    PAUSED = "PAUSED"
+
+
+class MarketTrend(str, Enum):
+    BULL = "BULL"
+    BEAR = "BEAR"
+    SIDEWAYS = "SIDEWAYS"
+    NEUTRAL = "NEUTRAL"
+
+
+class RecoveryState(str, Enum):
+    DISABLED = "DISABLED"
+    WAITING = "WAITING"
+    ACTIVE = "ACTIVE"
+    FINISHED = "FINISHED"
+
+
+class BotState(str, Enum):
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
+
+
+class RiskProfile(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+@dataclass
+class PositionRuntime:
+    scalp_quantity: float = 0.0
+    swing_quantity: float = 0.0
+    remaining_quantity: float = 0.0
+    average_entry_price: float = 0.0
+    realized_profit: float = 0.0
+    unrealized_profit: float = 0.0
+    highest_profit_percent: float = 0.0
+    lowest_profit_percent: float = 0.0
+    highest_price_seen: float = 0.0
+    break_even_enabled: bool = False
+    break_even_price: float = 0.0
+    trailing_enabled: bool = False
+    trailing_stop_price: float = 0.0
+    partial_exit_done: bool = False
+    last_partial_exit_price: float = 0.0
+    last_partial_exit_time: Optional[datetime] = None
+    entry_completed: bool = False
+    exit_completed: bool = False
+    recovery_attempts: int = 0
+    last_price: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class Position:
+    symbol: str
+    quantity: float
+    entry_price: float
+    highest_price: float = 0.0
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    atr_stop: float = 0.0
+    confidence: float = 0.0
+    trade_type: TradeType = TradeType.SCALPING_SWING
+    trade_id: str = ""
+    strategy_name: str = ""
+    strategy_version: str = ""
+    run_id: str = ""
+    exit_reason: str = ""
+    runtime: PositionRuntime = field(default_factory=PositionRuntime)
+    recovery_mode: bool = False
+    recovery_state: RecoveryState = RecoveryState.DISABLED
+    recovery_target_price: float = 0.0
+    recovery_start_time: Optional[datetime] = None
+    trailing_active: bool = False
+    break_even_active: bool = False
+    partial_exit_done: bool = False
+    is_open: bool = True
+    status: PositionStatus = PositionStatus.OPEN
+    realized_profit: float = 0.0
+    unrealized_profit: float = 0.0
+    fees_paid: float = 0.0
+    last_stop_time: float = 0.0
+    entry_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class RecoveryInfo:
+    state: RecoveryState = RecoveryState.DISABLED
+    attempts: int = 0
+    max_attempts: int = 3
+    last_entry_price: float = 0.0
+    target_price: float = 0.0
+    expected_exit_price: float = 0.0
+    started_at: Optional[datetime] = None
+    last_update: Optional[datetime] = None
+    note: str = ""
+
+
+@dataclass
+class TradeStatistics:
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    net_profit: float = 0.0
+    total_fees: float = 0.0
+    average_profit: float = 0.0
+    average_loss: float = 0.0
+    win_rate: float = 0.0
+    profit_factor: float = 0.0
+    expectancy: float = 0.0
+    max_drawdown: float = 0.0
+    largest_win: float = 0.0
+    largest_loss: float = 0.0
+    consecutive_wins: int = 0
+    consecutive_losses: int = 0
+    current_streak: int = 0
+    roi: float = 0.0
+    sharpe_ratio: float = 0.0
+    average_trade_duration: float = 0.0
+
+
+@dataclass
+class TradeContext:
+    strategy_name: str = "Shadow Trading System V3"
+    strategy_version: str = "3.0"
+    exchange: str = "BINANCE"
+    timeframe: str = ""
+    higher_timeframe: str = ""
+    market_trend: MarketTrend = MarketTrend.NEUTRAL
+    confidence: float = 0.0
+    score: float = 0.0
+    notes: str = ""
+
+
+@dataclass
+class BotInfo:
+    state: BotState = BotState.STARTING
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_cycle: Optional[datetime] = None
+    total_cycles: int = 0
+    monitored_symbols: int = 0
+    active_positions: int = 0
+    available_balance: float = 0.0
+    reserved_balance: float = 0.0
+    invested_balance: float = 0.0
+    total_equity: float = 0.0
+    today_profit: float = 0.0
+    today_loss: float = 0.0
+    total_profit: float = 0.0
+    total_loss: float = 0.0
+    max_drawdown: float = 0.0
+    cpu_usage: float = 0.0
+    memory_usage: float = 0.0
+
+
+@dataclass
+class ConfigSnapshot:
+    risk_profile: RiskProfile = RiskProfile.MEDIUM
+    recovery_enabled: bool = True
+    trailing_stop_enabled: bool = True
+    break_even_enabled: bool = True
+    partial_exit_enabled: bool = True
+    scalping_enabled: bool = True
+    swing_enabled: bool = True
+    max_open_positions: int = 10
+    risk_per_trade: float = 0.02
+    max_daily_loss: float = 0.05
+    max_total_exposure: float = 0.50
+    fee_rate: float = 0.001
+    slippage_rate: float = 0.0005
+
+
+@dataclass
+class PortfolioSnapshot:
+    balance: float = 0.0
+    equity: float = 0.0
+    invested: float = 0.0
+    unrealized_profit: float = 0.0
+    realized_profit: float = 0.0
+    open_positions: int = 0
+    closed_positions: int = 0
+    reserved_for_recovery: float = 0.0
+    free_balance: float = 0.0
+
+
+@dataclass
+class EngineState:
+    bot: BotInfo = field(default_factory=BotInfo)
+    statistics: TradeStatistics = field(default_factory=TradeStatistics)
+    portfolio: PortfolioSnapshot = field(default_factory=PortfolioSnapshot)
+    config: ConfigSnapshot = field(default_factory=ConfigSnapshot)
