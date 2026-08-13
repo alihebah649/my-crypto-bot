@@ -6,6 +6,7 @@ on:
     paths:
       - "core/**"
       - "tests/test_paper_execution.py"
+      - "requirements.txt"
       - ".github/workflows/paper-execution-test.yml"
 
 jobs:
