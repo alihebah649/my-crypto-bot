@@ -18,40 +18,22 @@ from core.models import TradeType
 from core.paper_execution_adapter import PaperExecutionAdapter
 
 
-def make_request(
-    symbol: str,
-    side: OrderSide,
-    quantity: float,
-    client_order_id: str,
-    trade_type: TradeType,
-) -> ExecutionRequest:
+def make_request(symbol: str, side: OrderSide, quantity: float, client_order_id: str, trade_type: TradeType) -> ExecutionRequest:
     return ExecutionRequest(
         symbol=symbol,
         side=side,
         order_type=OrderType.MARKET,
         quantity=quantity,
         client_order_id=client_order_id,
-        context=ExecutionContext(
-            metadata={"trade_type": trade_type.value}
-        ),
+        context=ExecutionContext(metadata={"trade_type": trade_type.value}),
     )
 
 
 def test_scalping_buy_price_rise_scalping_sell_with_fees():
-    """Primary path: BUY as SCALPING, price rises, then SELL as SCALPING."""
     adapter = PaperExecutionAdapter(initial_cash=1000.0, fee_rate=0.001)
 
-    # Primary trade mode: SCALPING.
     adapter.set_market_price("BTCUSDT", 100.0)
-    buy = adapter.execute(
-        make_request(
-            "BTCUSDT",
-            OrderSide.BUY,
-            5.0,
-            "paper-scalp-buy-001",
-            TradeType.SCALPING,
-        )
-    )
+    buy = adapter.execute(make_request("BTCUSDT", OrderSide.BUY, 5.0, "paper-scalp-buy-001", TradeType.SCALPING))
 
     assert buy.status.value == "FILLED"
     assert buy.executed_price == pytest.approx(100.0)
@@ -61,17 +43,8 @@ def test_scalping_buy_price_rise_scalping_sell_with_fees():
     assert adapter.balance.cash == pytest.approx(499.50)
     assert adapter.balance.assets["BTCUSDT"] == pytest.approx(5.0)
 
-    # Price rises. The normal outcome is still a SCALPING exit.
     adapter.set_market_price("BTCUSDT", 110.0)
-    sell = adapter.execute(
-        make_request(
-            "BTCUSDT",
-            OrderSide.SELL,
-            5.0,
-            "paper-scalp-sell-001",
-            TradeType.SCALPING,
-        )
-    )
+    sell = adapter.execute(make_request("BTCUSDT", OrderSide.SELL, 5.0, "paper-scalp-sell-001", TradeType.SCALPING))
 
     assert sell.status.value == "FILLED"
     assert sell.executed_price == pytest.approx(110.0)
@@ -85,46 +58,20 @@ def test_scalping_buy_price_rise_scalping_sell_with_fees():
 
 
 def test_recovery_position_can_exit_as_swing():
-    """Execution-layer check for an already-converted recovery position.
-
-    The Trade Manager must decide whether a losing SCALPING position is
-    eligible for recovery/SWING. This test intentionally does not implement
-    that decision; it verifies that, once such a decision exists, the paper
-    execution layer can execute the SWING exit and preserve its trade type.
-    """
     adapter = PaperExecutionAdapter(initial_cash=1000.0, fee_rate=0.001)
 
-    # Position starts as the normal SCALPING trade.
     adapter.set_market_price("ETHUSDT", 100.0)
-    buy = adapter.execute(
-        make_request(
-            "ETHUSDT",
-            OrderSide.BUY,
-            5.0,
-            "paper-recovery-buy-001",
-            TradeType.SCALPING,
-        )
-    )
+    buy = adapter.execute(make_request("ETHUSDT", OrderSide.BUY, 5.0, "paper-recovery-buy-001", TradeType.SCALPING))
 
     assert buy.status.value == "FILLED"
     assert adapter.balance.assets["ETHUSDT"] == pytest.approx(5.0)
 
-    # Simulate market weakness: price falls below entry.
     adapter.set_market_price("ETHUSDT", 96.0)
     assert adapter.get_market_price("ETHUSDT") < buy.executed_price
 
-    # The Trade Manager is responsible for deciding whether this strong asset
-    # should enter recovery/SWING. Here we only test the resulting execution.
+    # Trade Manager decides whether recovery/SWING is appropriate.
     adapter.set_market_price("ETHUSDT", 112.0)
-    sell = adapter.execute(
-        make_request(
-            "ETHUSDT",
-            OrderSide.SELL,
-            5.0,
-            "paper-recovery-sell-001",
-            TradeType.SWING,
-        )
-    )
+    sell = adapter.execute(make_request("ETHUSDT", OrderSide.SELL, 5.0, "paper-recovery-sell-001", TradeType.SWING))
 
     assert sell.status.value == "FILLED"
     assert sell.executed_price == pytest.approx(112.0)
@@ -133,23 +80,15 @@ def test_recovery_position_can_exit_as_swing():
     assert sell.fees.total == pytest.approx(0.56)
     assert adapter.balance.assets["ETHUSDT"] == pytest.approx(0.0)
 
-    # Final cash = 1000 - 500 - 0.50 + 560 - 0.56 = 1059.94.
-    assert adapter.balance.cash == pytest.approx(1059.94)
+    # Final cash = 1000 - 500 - 0.50 + 560 - 0.56 = 1058.94.
+    assert adapter.balance.cash == pytest.approx(1058.94)
 
 
 def test_paper_order_is_rejected_without_sufficient_cash():
     adapter = PaperExecutionAdapter(initial_cash=100.0, fee_rate=0.001)
     adapter.set_market_price("BTCUSDT", 100.0)
 
-    result = adapter.execute(
-        make_request(
-            "BTCUSDT",
-            OrderSide.BUY,
-            2.0,
-            "paper-buy-rejected",
-            TradeType.SCALPING,
-        )
-    )
+    result = adapter.execute(make_request("BTCUSDT", OrderSide.BUY, 2.0, "paper-buy-rejected", TradeType.SCALPING))
 
     assert result.status.value == "REJECTED"
     assert result.reject_reason.value == "INSUFFICIENT_BALANCE"
