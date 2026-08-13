@@ -2,6 +2,6 @@ flask
 requests
 numpy
 pandas
-requests
 pyarrow
 websockets>=12.0
+python-binance
