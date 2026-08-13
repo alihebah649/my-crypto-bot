@@ -8,7 +8,7 @@ from .history import PositionHistoryService
 from .metrics import PositionMetrics, PositionMetricsService
 from .models import Position, PositionCloseReason, PositionSide, PositionStatus
 from .repository import PositionRepository
-from .risk_manager import PositionExitDecision, PositionRiskManager
+from .risk_manager import PositionExitDecision, PositionExitReason, PositionRiskManager
 from .synchronizer import ExchangePositionAdapter, PositionSynchronizer, SynchronizationResult
 
 
@@ -40,10 +40,8 @@ class PositionManagementFacade:
 
     def close_position(self, position_id: str, exit_price: float,
                        reason: PositionCloseReason = PositionCloseReason.MANUAL) -> Optional[Position]:
-        decision = PositionExitDecision(True, __import__(
-            "trade_manager.risk_manager", fromlist=["PositionExitReason"]
-        ).PositionExitReason.REVIEW_REQUIRED, exit_price, f"Manual close: {reason.name}")
-        # Controller maps this generic manual request to MANUAL unless it is a risk reason.
+        decision = PositionExitDecision(True, PositionExitReason.REVIEW_REQUIRED,
+                                        exit_price, f"Manual close: {reason.name}")
         position = self.controller.execute_exit_decision(position_id, decision, self.calculator)
         if position:
             position.close_reason = reason
@@ -56,7 +54,11 @@ class PositionManagementFacade:
         return self.controller.evaluate_positions()
 
     def execute_decision(self, position_id: str, decision: PositionExitDecision) -> Optional[Position]:
-        return self.controller.execute_exit_decision(position_id, decision, self.calculator)
+        position = self.controller.execute_exit_decision(position_id, decision, self.calculator)
+        if position and position.status == PositionStatus.CLOSED:
+            self.history_service.record_closed_position(position)
+            self.metrics.refresh()
+        return position
 
     def archive_closed_position(self, position_id: str) -> Optional[Position]:
         position = self.repository.get(position_id)
