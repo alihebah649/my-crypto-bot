@@ -52,8 +52,8 @@ def test_scalping_buy_price_rise_scalping_sell_with_fees():
     assert sell.fees.total == pytest.approx(0.55)
     assert sell.raw_response["trade_type"] == TradeType.SCALPING.value
 
-    # Final cash = 1000 - 500 - 0.50 + 550 - 0.55 = 1049.95.
-    assert adapter.balance.cash == pytest.approx(1049.95)
+    # Final cash = 1000 - 500 - 0.50 + 550 - 0.55 = 1048.95.
+    assert adapter.balance.cash == pytest.approx(1048.95)
     assert adapter.balance.assets["BTCUSDT"] == pytest.approx(0.0)
 
 
