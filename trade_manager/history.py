@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import threading
 import time
 from typing import Dict, List, Optional
-from .models import Position, PositionSide, PositionStatus
+from .models import Position, PositionCloseReason, PositionSide, PositionStatus
 
 
 @dataclass(slots=True)
@@ -42,10 +42,12 @@ class PositionHistoryRepository:
         self._lock = threading.RLock()
 
     def add_record(self, record: PositionHistoryRecord) -> None:
-        with self._lock: self._records[record.position_id] = record
+        with self._lock:
+            self._records[record.position_id] = record
 
     def get_all_records(self) -> List[PositionHistoryRecord]:
-        with self._lock: return list(self._records.values())
+        with self._lock:
+            return list(self._records.values())
 
 
 class PositionHistoryService:
@@ -83,8 +85,8 @@ class PositionHistoryService:
                 current_price=r.exit_price, stop_loss=r.stop_loss, take_profit=r.take_profit,
                 highest_price=r.highest_price, lowest_price=r.lowest_price,
                 max_profit_percent=r.max_profit_percent, max_drawdown_percent=r.max_drawdown_percent,
-                opened_at=r.opened_at, closed_at=r.closed_at, close_reason=__import__(
-                    "trade_manager.models", fromlist=["PositionCloseReason"]).PositionCloseReason[r.close_reason],
+                opened_at=r.opened_at, closed_at=r.closed_at,
+                close_reason=PositionCloseReason[r.close_reason],
                 gross_pnl=r.gross_pnl, realized_pnl=r.realized_pnl, total_fees=r.total_fees,
                 entry_fee=r.entry_fee, exit_fee=r.exit_fee,
                 entry_metadata=dict(r.entry_metadata), exit_metadata=dict(r.exit_metadata),
