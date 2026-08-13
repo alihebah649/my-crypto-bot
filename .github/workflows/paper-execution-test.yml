@@ -3,11 +3,16 @@ name: Paper Execution Test
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "core/**"
-      - "tests/test_paper_execution.py"
+      - "tests/**"
       - "requirements.txt"
-      - ".github/workflows/paper-execution-test.yml"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
 
 jobs:
   paper-execution-test:
@@ -15,6 +20,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Show tested commit
+        run: |
+          echo "Testing commit: $(git rev-parse HEAD)"
+          git log -1 --oneline
 
       - name: Set up Python
         uses: actions/setup-python@v5
