@@ -63,10 +63,14 @@ This file records integration issues explicitly instead of hiding them inside ad
 13. **Review-required semantics**
    - `REVIEW_REQUIRED` is a state requiring explicit human/system review and is not treated as an automatic sell.
 
+14. **Trade Manager -> core Paper Execution lifecycle**
+   - Added integration coverage proving BUY execution through `CoreExecutionGateway`, Position creation in the Trade Manager facade, successful SELL/close through the same gateway, fee/P&L propagation, and preservation of an OPEN Position when the exit execution fails.
+   - GitHub Actions run `31765679521` passed both Paper Execution and Trade Manager integration smoke tests.
+
 ## Remaining validation work (not a code contradiction)
 
-### A. End-to-end Paper Trading composition
-The repository contains the core paper adapter and the Trade Manager contracts, but the full application composition (strategy -> risk approval -> execution -> Position commit -> ledger/reporting) still requires an end-to-end test run on the branch.
+### A. Full application-level Paper Trading composition
+The Trade Manager -> core Paper Execution lifecycle is now covered. The remaining end-to-end validation is the complete application composition: strategy/signal generation -> Part-6 risk approval -> Trade Manager entry -> execution -> Position/ledger synchronization -> reporting. This must be verified before treating the branch as the final Paper Trading baseline.
 
 ### B. Exchange-specific execution details
 The Part-7 document contains broker-specific skeletons. Concrete Binance/REST details remain owned by `core.execution_adapter`; they must not be reimplemented in Trade Manager.
