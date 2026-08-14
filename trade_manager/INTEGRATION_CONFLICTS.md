@@ -72,16 +72,26 @@ This file records integration issues explicitly instead of hiding them inside ad
    - It now runs the Part 6/7 contract tests, Trade Manager integration tests, and the Trade Manager -> core Paper Execution end-to-end tests on every push to `tm-integration-work`.
    - GitHub Actions run `31766326362` passed all four test stages.
 
+16. **Application-level strategy -> Trade Manager boundary**
+   - `core/trade_manager_composition.py` is now the explicit application composition boundary.
+   - It accepts a normalized `EntrySignal`, obtains account inputs through an injected provider, requests authoritative Part-6 sizing/approval, and only then calls the Part-8 facade.
+   - It does not implement strategy logic, risk math, broker calls, or Position mutation.
+   - The facade remains the final execution gate and Position owner.
+   - The legacy `bot.py` and `shadow_main.py` are not silently redirected yet; they remain separately identified legacy runtimes until their actual entry paths are audited and tested.
+
 ## Remaining validation work (not a code contradiction)
 
 ### A. Full application-level Paper Trading composition
-The Trade Manager -> core Paper Execution lifecycle is now covered. The remaining end-to-end validation is the complete application composition: strategy/signal generation -> Part-6 risk approval -> Trade Manager entry -> execution -> Position/ledger synchronization -> reporting. This must be verified before treating the branch as the final Paper Trading baseline.
+The explicit composition boundary now exists. The remaining end-to-end validation is wiring the real strategy/signal provider and real account/market providers into this boundary, then testing strategy/signal generation -> Part-6 risk approval -> Trade Manager entry -> execution -> Position/ledger synchronization -> reporting. This must be verified before treating the branch as the final Paper Trading baseline.
 
 ### B. Exchange-specific execution details
 The Part-7 document contains broker-specific skeletons. Concrete Binance/REST details remain owned by `core.execution_adapter`; they must not be reimplemented in Trade Manager.
 
 ### C. Legacy Part-5 variants
 The original Parts 1-5 document contains overlapping simple/advanced protection, exit, recovery and monitor variants. The repository keeps one canonical implementation per responsibility and records the source variants here rather than duplicating them.
+
+### D. Legacy runtime migration
+`bot.py` and `shadow_main.py` still contain independent runtime state/execution models. They must not be modified merely to make tests green; their live entry paths need an explicit migration decision and integration test.
 
 ## Rule for future integration
 
