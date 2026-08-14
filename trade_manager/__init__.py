@@ -9,7 +9,11 @@ from .models import (
     ProtectionDecision, ProtectionAction, ExitReason,
     Position, PositionStatus, PositionSide, PositionCloseReason,
 )
-from .risk import RiskConfig, RiskManager, RiskEvaluation
+from .risk import (
+    RiskConfig, RiskManager, RiskEvaluation, LossTracker, LossStatistics,
+    DailyRiskManager, WeeklyRiskManager, MonthlyRiskManager,
+    RiskLockManager, RiskLockState,
+)
 from .protection import ProtectionLogicEvaluator
 from .execution import ExecutionOrder, ExecutionResult, ExecutionPipeline, OrderSide, OrderType
 from .recovery import RecoveryManager, RecoveryReport
@@ -22,8 +26,10 @@ from .risk_manager import PositionRiskManager, PositionExitDecision, PositionExi
 __all__ = [
     "TradeManagerConfig", "ManagedPosition", "TradeContext", "TradeStatistics",
     "ProtectionDecision", "ProtectionAction", "ExitReason", "RiskConfig",
-    "RiskManager", "RiskEvaluation", "ProtectionLogicEvaluator", "ExecutionOrder",
-    "ExecutionResult", "ExecutionPipeline", "OrderSide", "OrderType",
+    "RiskManager", "RiskEvaluation", "LossTracker", "LossStatistics",
+    "DailyRiskManager", "WeeklyRiskManager", "MonthlyRiskManager",
+    "RiskLockManager", "RiskLockState", "ProtectionLogicEvaluator",
+    "ExecutionOrder", "ExecutionResult", "ExecutionPipeline", "OrderSide", "OrderType",
     "RecoveryManager", "RecoveryReport", "TradeManager", "CloseResult",
     "PositionManagementFacade", "PositionRepository", "PositionCalculator",
     "PositionCalculationResult", "Position", "PositionStatus", "PositionSide",
@@ -31,4 +37,4 @@ __all__ = [
     "PositionExitReason",
 ]
 
-__version__ = "1.1.0-integrated"
+__version__ = "1.2.0-integrated"
