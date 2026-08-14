@@ -39,8 +39,8 @@ def test_losing_position_enters_hold_before_review_deadline():
     position = facade.open_position("BTCUSDT", 5.0, 100.0, 96.0)
     assert position is not None
 
-    paper.set_market_price("BTCUSDT", 98.0)
-    position.current_price = 98.0
+    paper.set_market_price("BTCUSDT", 99.0)
+    position.current_price = 99.0
     decision = risk.evaluate(position)
 
     assert decision.should_exit is False
@@ -53,8 +53,8 @@ def test_review_required_is_not_automatic_exit():
     position = facade.open_position("BTCUSDT", 5.0, 100.0, 96.0)
     assert position is not None
 
-    paper.set_market_price("BTCUSDT", 98.0)
-    position.current_price = 98.0
+    paper.set_market_price("BTCUSDT", 99.0)
+    position.current_price = 99.0
     risk.evaluate(position)
     assert position.status is PositionStatus.HOLD
 
@@ -65,7 +65,7 @@ def test_review_required_is_not_automatic_exit():
     assert position.status is PositionStatus.REVIEW_REQUIRED
 
     # Only an explicit close request may turn REVIEW_REQUIRED into CLOSED.
-    closed = facade.close_position(position.position_id, 98.0)
+    closed = facade.close_position(position.position_id, 99.0)
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
     assert paper.balance.assets.get("BTCUSDT", 0.0) == 0.0
