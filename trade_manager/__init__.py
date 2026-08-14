@@ -22,6 +22,7 @@ from .facade import PositionManagementFacade
 from .repository import PositionRepository
 from .calculator import PositionCalculator, PositionCalculationResult
 from .risk_manager import PositionRiskManager, PositionExitDecision, PositionExitReason
+from .core_bridge import CorePositionBridge, from_core_position, apply_to_core_position
 
 __all__ = [
     "TradeManagerConfig", "ManagedPosition", "TradeContext", "TradeStatistics",
@@ -34,7 +35,8 @@ __all__ = [
     "PositionManagementFacade", "PositionRepository", "PositionCalculator",
     "PositionCalculationResult", "Position", "PositionStatus", "PositionSide",
     "PositionCloseReason", "PositionRiskManager", "PositionExitDecision",
-    "PositionExitReason",
+    "PositionExitReason", "CorePositionBridge", "from_core_position",
+    "apply_to_core_position",
 ]
 
-__version__ = "1.2.0-integrated"
+__version__ = "1.3.0-integrated"
