@@ -1,16 +1,12 @@
 """Part-6 risk gateway used by the application composition layer.
 
-This module is an adapter, not a second risk engine.  ``RiskController`` and
-``PositionSizeCalculator`` remain the owners of Part-6 decisions and sizing.
-The adapter only converts core/application snapshots into the Part-6 contract.
-
-The gateway is fail-closed: missing or invalid account/market data produces a
-rejection rather than silently inventing values.
+This module is an adapter, not a second risk engine. RiskController and
+PositionSizeCalculator remain the owners of Part-6 decisions and sizing.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Optional
+from typing import Any, Optional, Protocol
 
 from .integration_contracts import RiskSizingApproval, RiskSizingRequest
 from .part6_risk import (
@@ -23,29 +19,23 @@ from .part6_risk import (
 
 
 class PortfolioSnapshotProvider(Protocol):
-    """Supplies the canonical core portfolio snapshot."""
-
     def snapshot(self) -> Any:
         ...
 
 
 class MarketContextProvider(Protocol):
-    """Supplies a Part-6-compatible market context for one symbol."""
-
     def get_context(self, symbol: str) -> MarketContext:
         ...
 
 
 class SymbolExposureProvider(Protocol):
-    """Optional provider for current symbol exposure."""
-
     def get_exposure(self, symbol: str) -> Optional[SymbolExposure]:
         ...
 
 
 @dataclass(slots=True)
 class CoreRiskGateway:
-    """Concrete ``RiskGateway`` backed by the existing Part-6 components."""
+    """Concrete RiskGateway backed by the existing Part-6 components."""
 
     controller: RiskController
     position_sizer: PositionSizeCalculator
@@ -81,10 +71,7 @@ class CoreRiskGateway:
                 symbol_exposure=exposure,
             )
             if gate.decision is not RiskDecision.APPROVED:
-                return self._reject(
-                    gate.reject_reason.name,
-                    metadata=gate.metadata,
-                )
+                return self._reject(gate.reject_reason.name, metadata=gate.metadata)
 
             sizing = self.position_sizer.calculate(
                 account_equity=request.account_equity,
@@ -107,9 +94,24 @@ class CoreRiskGateway:
                 return self._reject("INVALID_POSITION_SIZE")
 
             position_value = quantity * request.entry_price
+            config = self.position_sizer.config.position_sizing
+            if position_value < config.minimum_position_size:
+                return self._reject("POSITION_TOO_SMALL")
+            if position_value > config.maximum_position_size:
+                return self._reject("MAX_POSITION_EXCEEDED")
+
             capital_required = position_value
-            if capital_required > request.free_balance:
-                return self._reject("INSUFFICIENT_BALANCE")
+            total_required = capital_required + max(request.estimated_fee, 0.0) + max(request.maintenance_margin, 0.0)
+            if total_required > request.free_balance:
+                return self._reject(
+                    "INSUFFICIENT_BALANCE",
+                    metadata={
+                        "capital_required": capital_required,
+                        "estimated_fee": max(request.estimated_fee, 0.0),
+                        "maintenance_margin": max(request.maintenance_margin, 0.0),
+                        "free_balance": request.free_balance,
+                    },
+                )
 
             return RiskSizingApproval(
                 approved=True,
@@ -123,21 +125,15 @@ class CoreRiskGateway:
                 metadata={
                     "risk_percent": self.position_sizer.config.position_sizing.risk_per_trade_percent,
                     "source": "TradeManager.Part6",
+                    "estimated_fee": max(request.estimated_fee, 0.0),
                 },
             )
         except Exception as exc:
-            return self._reject(
-                "RISK_GATE_ERROR",
-                metadata={"error": str(exc)},
-            )
+            return self._reject("RISK_GATE_ERROR", metadata={"error": str(exc)})
 
     @staticmethod
     def _reject(reason: str, metadata: Optional[dict[str, Any]] = None) -> RiskSizingApproval:
-        return RiskSizingApproval(
-            approved=False,
-            reason=reason,
-            metadata=dict(metadata or {}),
-        )
+        return RiskSizingApproval(approved=False, reason=reason, metadata=dict(metadata or {}))
 
 
 __all__ = [
