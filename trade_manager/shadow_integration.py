@@ -1,14 +1,15 @@
 """Application composition for Shadow Trading Bot -> Trade Manager.
 
-This module owns wiring only.  It does not implement strategy, risk formulas,
-or exchange execution.  Strategy data is supplied by ``update_market`` and
-execution is delegated to the existing core paper/live adapter through
+This module owns wiring only. It does not implement strategy, risk formulas,
+or exchange execution. Strategy data is supplied by ``update_market`` and
+execution is delegated to the existing core execution adapter through
 ``CoreExecutionGateway``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import threading
+import time
 from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
@@ -20,17 +21,16 @@ from .core_execution_gateway import CoreExecutionGateway
 from .core_risk_gateway import CoreRiskGateway
 from .facade import PositionManagementFacade
 from .integration_contracts import RiskSizingRequest
-from .models import Position
+from .models import Position, PositionStatus
 from .part6_risk import (
     LossTracker,
     MarketContext,
+    PortfolioSnapshot,
     PositionSizeCalculator,
-    PositionSizeNormalizer,
     RiskConfig,
     RiskController,
     SymbolExposure,
 )
-from .protection import ProtectionLogicEvaluator
 from .repository import PositionRepository
 from .risk_manager import PositionRiskManager
 
@@ -86,7 +86,7 @@ class ShadowMarketState:
                 atr=self.atr.get(symbol, 0.0),
                 volume=self.volume_usdt.get(symbol, 0.0),
                 volatility=self.volatility.get(symbol, 0.0),
-                timestamp=__import__("time").time(),
+                timestamp=time.time(),
             )
 
 
@@ -96,7 +96,7 @@ class _PortfolioProvider:
         self.repository = repository
         self.market = market
 
-    def snapshot(self):
+    def snapshot(self) -> PortfolioSnapshot:
         balance = getattr(self.adapter, "balance", None)
         cash = float(getattr(balance, "cash", 0.0))
         assets = dict(getattr(balance, "assets", {}))
@@ -105,14 +105,13 @@ class _PortfolioProvider:
             for symbol, quantity in assets.items()
         )
         equity = cash + asset_value
-        return __import__("trade_manager.part6_risk", fromlist=["PortfolioSnapshot"]).PortfolioSnapshot(
+        cost_basis = sum(p.entry_price * p.quantity for p in self.repository.get_open_positions())
+        return PortfolioSnapshot(
             account_balance=equity,
             account_equity=equity,
             used_margin=asset_value,
             free_margin=cash,
-            floating_pnl=asset_value - sum(
-                p.entry_price * p.quantity for p in self.repository.get_open_positions()
-            ),
+            floating_pnl=asset_value - cost_basis,
             daily_pnl=0.0,
             weekly_pnl=0.0,
             monthly_pnl=0.0,
@@ -135,12 +134,14 @@ class _ExposureProvider:
 
     def get_exposure(self, symbol: str) -> SymbolExposure:
         symbol = symbol.upper()
-        positions = [p for p in self.repository.get_by_symbol(symbol) if p.status.value in {
-            "OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"
-        }]
+        active = {
+            PositionStatus.OPEN,
+            PositionStatus.HOLD,
+            PositionStatus.REVIEW_REQUIRED,
+            PositionStatus.PARTIALLY_CLOSED,
+        }
+        positions = [p for p in self.repository.get_by_symbol(symbol) if p.status in active]
         total_value = sum(p.quantity * self.market.price.get(symbol, p.current_price) for p in positions)
-        snapshot = _PortfolioProvider.__new__(_PortfolioProvider)
-        # Avoid coupling this small provider to a second portfolio implementation.
         return SymbolExposure(
             symbol=symbol,
             exposure_percent=0.0,
@@ -171,21 +172,19 @@ class ShadowTradeManagerRuntime:
         self.risk_config = risk_config or RiskConfig()
         self.risk_controller = RiskController(self.risk_config, self.loss_tracker)
         self.position_sizer = PositionSizeCalculator(self.risk_config)
+        self.portfolio_provider = _PortfolioProvider(self.execution_adapter, self.repository, self.market)
 
-        # Spot paper execution has no exchange lot-filter provider.  Quantity
-        # normalization is therefore deliberately left disabled until a real
-        # exchange-info provider is wired; the risk gateway still enforces all
-        # non-exchange-dependent risk constraints.
+        # Paper mode has no exchange lot-filter provider. A real exchange-info
+        # provider can be injected later without changing the contract.
         self.risk_gateway = CoreRiskGateway(
             controller=self.risk_controller,
             position_sizer=self.position_sizer,
-            portfolio_provider=_PortfolioProvider(self.execution_adapter, self.repository, self.market),
+            portfolio_provider=self.portfolio_provider,
             market_provider=_MarketProvider(self.market),
             exposure_provider=_ExposureProvider(self.repository, self.market),
             quantity_normalizer=None,
         )
         self.execution_gateway = CoreExecutionGateway(self.execution_adapter)
-
         self.calculator = PositionCalculator()
         self.position_risk = PositionRiskManager(
             market_context_provider=self._position_market_context,
@@ -218,24 +217,8 @@ class ShadowTradeManagerRuntime:
             self.execution_adapter.set_market_price(symbol, kwargs["price"])
         self.controller.update_market_price(symbol, kwargs["price"])
 
-    def approve_entry(self, symbol: str, entry_price: float, stop_loss: float) -> bool:
-        provider = _PortfolioProvider(self.execution_adapter, self.repository, self.market)
-        account = provider.snapshot()
-        result = self.risk_gateway.approve(
-            RiskSizingRequest(
-                symbol=symbol,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                account_equity=account.account_equity,
-                free_balance=account.free_margin,
-                leverage=1.0,
-            )
-        )
-        return result.approved
-
     def open_position(self, symbol: str, entry_price: float, stop_loss: float) -> Optional[Position]:
-        provider = _PortfolioProvider(self.execution_adapter, self.repository, self.market)
-        account = provider.snapshot()
+        account = self.portfolio_provider.snapshot()
         approval = self.risk_gateway.approve(
             RiskSizingRequest(
                 symbol=symbol,
@@ -259,15 +242,16 @@ class ShadowTradeManagerRuntime:
 
     def evaluate_position(self, symbol: str) -> None:
         for position in self.repository.get_by_symbol(symbol):
-            if position.status.value not in {"OPEN", "HOLD"}:
+            if position.status not in {PositionStatus.OPEN, PositionStatus.HOLD}:
                 continue
             decision = self.position_risk.evaluate(position)
             self.facade.execute_decision(position.position_id, decision)
 
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
         state = self.market.get(symbol)
+        ema = self.market.ema100.get(symbol, 0.0)
         return {
-            "market": {"overall": "BULLISH" if state.last_price > self.market.ema100.get(symbol, 0.0) else "NEUTRAL"},
+            "market": {"overall": "BULLISH" if ema and state.last_price > ema else "NEUTRAL"},
             "volatility": "NORMAL",
         }
 
