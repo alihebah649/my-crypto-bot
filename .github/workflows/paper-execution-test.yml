@@ -5,8 +5,10 @@ on:
   push:
     branches:
       - main
+      - tm-integration-work
     paths:
       - "core/**"
+      - "trade_manager/**"
       - "tests/**"
       - "requirements.txt"
       - ".github/workflows/**"
@@ -18,14 +20,15 @@ jobs:
   paper-execution-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout tested ref
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 1
 
       - name: Show tested commit
         run: |
+          echo "Testing ref: ${{ github.ref }}"
           echo "Testing commit: $(git rev-parse HEAD)"
           git log -1 --oneline
 
@@ -42,3 +45,6 @@ jobs:
 
       - name: Run isolated Paper Execution test
         run: python -m pytest -q tests/test_paper_execution.py
+
+      - name: Run Trade Manager integration smoke tests
+        run: python -m pytest -q tests/test_trade_manager_integration.py
