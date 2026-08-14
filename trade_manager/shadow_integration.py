@@ -8,6 +8,7 @@ execution is delegated to the existing core execution adapter through
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -47,19 +48,10 @@ class ShadowMarketState:
     ema100: Dict[str, float] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
-    def update(
-        self,
-        symbol: str,
-        *,
-        price: float,
-        bid: Optional[float] = None,
-        ask: Optional[float] = None,
-        spread_percent: float = 0.0,
-        atr: float = 0.0,
-        volume_usdt: float = 0.0,
-        volatility: float = 0.0,
-        ema100: float = 0.0,
-    ) -> None:
+    def update(self, symbol: str, *, price: float, bid: Optional[float] = None,
+               ask: Optional[float] = None, spread_percent: float = 0.0,
+               atr: float = 0.0, volume_usdt: float = 0.0,
+               volatility: float = 0.0, ema100: float = 0.0) -> None:
         symbol = symbol.upper()
         if price <= 0:
             raise ValueError("market price must be positive")
@@ -134,12 +126,8 @@ class _ExposureProvider:
 
     def get_exposure(self, symbol: str) -> SymbolExposure:
         symbol = symbol.upper()
-        active = {
-            PositionStatus.OPEN,
-            PositionStatus.HOLD,
-            PositionStatus.REVIEW_REQUIRED,
-            PositionStatus.PARTIALLY_CLOSED,
-        }
+        active = {PositionStatus.OPEN, PositionStatus.HOLD,
+                  PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED}
         positions = [p for p in self.repository.get_by_symbol(symbol) if p.status in active]
         total_value = sum(p.quantity * self.market.price.get(symbol, p.current_price) for p in positions)
         return SymbolExposure(
@@ -151,31 +139,56 @@ class _ExposureProvider:
         )
 
 
+class _PaperLossPeriodLedger:
+    """Feeds closed-trade net P&L into the Part-6 loss gate by calendar period."""
+
+    def __init__(self, tracker: LossTracker) -> None:
+        self.tracker = tracker
+        self._closed_ids: set[str] = set()
+        self._daily: Dict[str, float] = {}
+        self._weekly: Dict[str, float] = {}
+        self._monthly: Dict[str, float] = {}
+        self._lock = threading.RLock()
+
+    def sync(self, positions: list[Position]) -> None:
+        now = datetime.now(timezone.utc)
+        day_key = now.strftime("%Y-%m-%d")
+        week_key = now.strftime("%G-W%V")
+        month_key = now.strftime("%Y-%m")
+        with self._lock:
+            for position in positions:
+                if position.status is not PositionStatus.CLOSED or position.position_id in self._closed_ids:
+                    continue
+                pnl = float(position.realized_pnl)
+                self._closed_ids.add(position.position_id)
+                self._daily[day_key] = self._daily.get(day_key, 0.0) + pnl
+                self._weekly[week_key] = self._weekly.get(week_key, 0.0) + pnl
+                self._monthly[month_key] = self._monthly.get(month_key, 0.0) + pnl
+
+            self.tracker.update(
+                daily_pnl=self._daily.get(day_key, 0.0),
+                weekly_pnl=self._weekly.get(week_key, 0.0),
+                monthly_pnl=self._monthly.get(month_key, 0.0),
+            )
+
+
 class ShadowTradeManagerRuntime:
     """Fully composed Trade Manager runtime used by ``shadow_main.py``."""
 
-    def __init__(
-        self,
-        *,
-        initial_cash: float = 1000.0,
-        fee_rate: float = 0.001,
-        execution_adapter: Optional[ExecutionAdapter] = None,
-        risk_config: Optional[RiskConfig] = None,
-    ) -> None:
+    def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
+                 execution_adapter: Optional[ExecutionAdapter] = None,
+                 risk_config: Optional[RiskConfig] = None) -> None:
         self.market = ShadowMarketState()
         self.repository = PositionRepository()
         self.execution_adapter = execution_adapter or PaperExecutionAdapter(
-            initial_cash=initial_cash,
-            fee_rate=fee_rate,
+            initial_cash=initial_cash, fee_rate=fee_rate,
         )
         self.loss_tracker = LossTracker()
+        self.loss_ledger = _PaperLossPeriodLedger(self.loss_tracker)
         self.risk_config = risk_config or RiskConfig()
         self.risk_controller = RiskController(self.risk_config, self.loss_tracker)
         self.position_sizer = PositionSizeCalculator(self.risk_config)
         self.portfolio_provider = _PortfolioProvider(self.execution_adapter, self.repository, self.market)
-
-        # Paper mode has no exchange lot-filter provider. A real exchange-info
-        # provider can be injected later without changing the contract.
         self.risk_gateway = CoreRiskGateway(
             controller=self.risk_controller,
             position_sizer=self.position_sizer,
@@ -194,11 +207,7 @@ class ShadowTradeManagerRuntime:
             break_even_trigger_percent=1.5,
             max_holding_days=7.0,
         )
-        self.controller = PositionController(
-            self.position_risk,
-            self.repository,
-            self.execution_gateway,
-        )
+        self.controller = PositionController(self.position_risk, self.repository, self.execution_gateway)
         self.facade = PositionManagementFacade(
             repository=self.repository,
             controller=self.controller,
@@ -207,7 +216,6 @@ class ShadowTradeManagerRuntime:
             execution_gateway=self.execution_gateway,
             risk_gateway=self.risk_gateway,
         )
-
         if hasattr(self.execution_adapter, "connect"):
             self.execution_adapter.connect()
 
@@ -216,27 +224,22 @@ class ShadowTradeManagerRuntime:
         if hasattr(self.execution_adapter, "set_market_price"):
             self.execution_adapter.set_market_price(symbol, kwargs["price"])
         self.controller.update_market_price(symbol, kwargs["price"])
+        self.loss_ledger.sync(self.repository.get_closed_positions())
 
     def open_position(self, symbol: str, entry_price: float, stop_loss: float) -> Optional[Position]:
         account = self.portfolio_provider.snapshot()
         approval = self.risk_gateway.approve(
             RiskSizingRequest(
-                symbol=symbol,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                account_equity=account.account_equity,
-                free_balance=account.free_margin,
+                symbol=symbol, entry_price=entry_price, stop_loss=stop_loss,
+                account_equity=account.account_equity, free_balance=account.free_margin,
                 leverage=1.0,
             )
         )
         if not approval.approved:
             return None
         return self.facade.open_position(
-            symbol=symbol,
-            quantity=approval.quantity,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            account_equity=account.account_equity,
+            symbol=symbol, quantity=approval.quantity, entry_price=entry_price,
+            stop_loss=stop_loss, account_equity=account.account_equity,
             free_balance=account.free_margin,
         )
 
@@ -246,14 +249,13 @@ class ShadowTradeManagerRuntime:
                 continue
             decision = self.position_risk.evaluate(position)
             self.facade.execute_decision(position.position_id, decision)
+        self.loss_ledger.sync(self.repository.get_closed_positions())
 
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
         state = self.market.get(symbol)
         ema = self.market.ema100.get(symbol, 0.0)
-        return {
-            "market": {"overall": "BULLISH" if ema and state.last_price > ema else "NEUTRAL"},
-            "volatility": "NORMAL",
-        }
+        return {"market": {"overall": "BULLISH" if ema and state.last_price > ema else "NEUTRAL"},
+                "volatility": "NORMAL"}
 
     def _atr_percent(self, symbol: str) -> Optional[float]:
         price = self.market.price.get(symbol, 0.0)
