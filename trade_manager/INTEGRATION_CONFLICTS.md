@@ -60,7 +60,7 @@ This file records integration issues explicitly instead of hiding them inside ad
    - The existing paper execution adapter remains the execution implementation; Trade Manager only adapts to it.
 
 15. **Typed Part-6 risk boundary**
-   - `PositionManagementFacade` now accepts `RiskGateway` and sends a `RiskSizingRequest` before entry.
+   - `PositionManagementFacade` accepts `RiskGateway` and sends a `RiskSizingRequest` before entry.
    - The approved quantity returned by Part 6 is the quantity passed to execution.
    - Legacy boolean approval is retained only as a compatibility fallback and does not perform sizing.
 
@@ -80,14 +80,19 @@ This file records integration issues explicitly instead of hiding them inside ad
    - `bot.py` was deleted from `tm-integration-work` because `shadow_main.py` is now the canonical application entry point.
    - No Trade Manager logic depends on `bot.py`.
 
+19. **Paper loss-period accounting**
+   - Resolved for the Shadow/Paper composition by adding `_PaperLossPeriodLedger` in `trade_manager/shadow_integration.py`.
+   - Closed Position `realized_pnl` is now fed into Part-6 daily/weekly/monthly `LossTracker` snapshots exactly once per position.
+   - A regression test verifies that a loss crossing the configured daily limit rejects the next risk approval.
+
 ## Remaining validation work (not a hidden contradiction)
 
 ### A. Full application-level Paper Trading validation
-The application-level composition now exists. The remaining work is runtime validation of:
+The application-level composition now exists and has focused contract coverage for:
 
-`Coinbase market data -> indicators/signal -> Part-6 risk -> Trade Manager entry -> core paper execution -> Position management -> Smart Hold/Recovery -> exit -> metrics/reporting`.
+`strategy signal -> Part-6 risk -> Trade Manager entry -> core paper execution -> Position management -> Smart Hold -> REVIEW_REQUIRED -> explicit exit -> fee-aware P&L -> Part-6 loss feedback`.
 
-This must be tested before calling the branch the final Paper Trading baseline.
+The full GitHub regression suite still needs to execute successfully before calling the branch the final Paper Trading baseline.
 
 ### B. Exchange-specific execution details
 Part-7 broker-specific REST skeletons remain non-authoritative. Concrete exchange execution stays in `core.execution_adapter` and its adapters.
@@ -95,10 +100,7 @@ Part-7 broker-specific REST skeletons remain non-authoritative. Concrete exchang
 ### C. Exchange filter provider
 Part 6 contains `PositionSizeNormalizer`, but the paper composition intentionally has no exchange lot-filter provider. Before live Binance execution, the real exchange-info provider must be wired into the Part-6 gateway.
 
-### D. Loss-period accounting provider
-The current shadow composition starts the Part-6 `LossTracker` at zero. Closed-trade P&L must be connected to the canonical ledger/statistics provider before relying on daily/weekly/monthly loss locks in a long-running Paper Trading session.
-
-### E. Strategy signal ownership
+### D. Strategy signal ownership
 `shadow_main.py` still owns the existing EMA/RSI signal calculation because that code is application/strategy logic, not Trade Manager logic. It must not directly mutate positions or execute orders.
 
 ## Rule for future integration
