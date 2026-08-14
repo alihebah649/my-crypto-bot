@@ -32,6 +32,7 @@ MARKET = dict(
 def build_runtime() -> ShadowTradeManagerRuntime:
     runtime = ShadowTradeManagerRuntime(initial_cash=1000.0, fee_rate=0.001)
     runtime.update_market("BTCUSDT", price=100.0, **MARKET)
+    runtime.update_market("ETHUSDT", price=100.0, **MARKET)
     return runtime
 
 
@@ -106,7 +107,12 @@ def test_failed_sell_preserves_owned_position_and_does_not_record_closed_pnl():
     assert position is not None
 
     runtime.execution_adapter.balance.assets["BTCUSDT"] = 0.0
-    runtime.update_market("BTCUSDT", price=90.0, ema100=95.0, **{k: v for k, v in MARKET.items() if k != "ema100"})
+    runtime.update_market(
+        "BTCUSDT",
+        price=90.0,
+        ema100=95.0,
+        **{k: v for k, v in MARKET.items() if k != "ema100"},
+    )
     runtime.evaluate_position("BTCUSDT")
 
     stored = runtime.repository.get(position.position_id)
