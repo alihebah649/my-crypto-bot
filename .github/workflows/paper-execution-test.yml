@@ -56,6 +56,9 @@ jobs:
       - name: Run Trade Manager paper end-to-end tests
         run: python -m pytest -q tests/test_trade_manager_paper_e2e.py
 
+      - name: Run final Paper Trading lifecycle path tests
+        run: python -m pytest -q tests/test_trade_manager_paper_final_path.py
+
       - name: Run Part 6 application composition tests
         run: python -m pytest -q tests/test_trade_manager_part6_composition.py
 
