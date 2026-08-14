@@ -21,6 +21,8 @@ from .part3_state import TradeStateManager
 from .part4_monitor import MarketSnapshot, PositionMonitor, PositionMonitorThread
 from .part5_exit import ExitReason, ExitResult, ExitValidator, SpotExitService
 from .part5_recovery import RecoveryRecord, RecoveryComparisonMatrix, RecoveryReport, RecoveryManager
+from .core_execution_gateway import CoreExecutionGateway
+from .core_position_adapter import core_to_trade_manager, trade_manager_to_core
 
 __all__ = [
     "Position", "PositionStatus", "PositionSide", "PositionCloseReason",
@@ -34,5 +36,6 @@ __all__ = [
     "RuntimeStatistics", "TradeManagerRuntime", "TradeStateManager", "MarketSnapshot",
     "PositionMonitor", "PositionMonitorThread", "ExitReason", "ExitResult",
     "ExitValidator", "SpotExitService", "RecoveryRecord", "RecoveryComparisonMatrix",
-    "RecoveryReport", "RecoveryManager",
+    "RecoveryReport", "RecoveryManager", "CoreExecutionGateway",
+    "core_to_trade_manager", "trade_manager_to_core",
 ]
