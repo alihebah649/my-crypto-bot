@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .execution import ExecutionOrder, ExecutionPipeline, ExecutionResult, OrderSide
-from .models import (ExitReason, ManagedPosition, ProtectionAction, TradeContext,
-                     TradeManagerConfig, TradeStatistics)
+from .models import (ExitReason, ManagedPosition, ProtectionAction, TradeManagerConfig,
+                     TradeStatistics)
 from .protection import ProtectionLogicEvaluator
 from .risk import RiskConfig, RiskManager
 
@@ -25,9 +25,14 @@ class CloseResult:
 
 
 class TradeManager:
-    """Unified Part 1-7 state layer with the Section-8 contract boundary."""
+    """Part 1-7 compatibility state manager.
 
-    VERSION = "1.0.0-integrated"
+    Part 8 owns the canonical Position repository/controller lifecycle. This class
+    remains as the stable Parts 1-7 boundary and deliberately does not duplicate
+    Part 8 storage semantics.
+    """
+
+    VERSION = "1.0.1-integrated"
 
     def __init__(self, *, config: TradeManagerConfig | None = None,
                  risk_manager: RiskManager | None = None,
@@ -90,6 +95,8 @@ class TradeManager:
             return position
 
     def update_price(self, symbol: str, price: float, atr: float | None = None):
+        if price <= 0:
+            raise ValueError("price must be positive")
         position = self.get_position_by_symbol(symbol)
         if position is None:
             return None
@@ -99,11 +106,16 @@ class TradeManager:
             position.break_even_done = True
         elif decision.action == ProtectionAction.UPDATE_STOP and decision.new_stop_loss:
             position.stop_loss = max(position.stop_loss, decision.new_stop_loss)
+            position.trailing_active = True
         elif decision.action == ProtectionAction.CLOSE_POSITION:
-            return self.close_position(position.trade_id, price, decision.close_reason or ExitReason.EXTERNAL)
+            return self.close_position(position.trade_id, price,
+                                       decision.close_reason or ExitReason.EXTERNAL)
         elif decision.action == ProtectionAction.REVIEW_REQUIRED:
             self.statistics.total_review_required += 1
-        position.last_update = time.time() if hasattr(position, "last_update") else position.opened_at
+
+        position.current_price = price
+        position.unrealized_pnl = (price - position.entry_price) * position.quantity
+        position.last_update = time.time()
         self.price_cache[symbol] = price
         return decision
 
@@ -120,11 +132,13 @@ class TradeManager:
             execution = None
             if execute:
                 if self.execution is None:
-                    return CloseResult(False, position, None, message="EXECUTION_PIPELINE_NOT_CONFIGURED")
+                    return CloseResult(False, position, None,
+                                       message="EXECUTION_PIPELINE_NOT_CONFIGURED")
                 execution = self.execution.execute(ExecutionOrder(
                     symbol=position.symbol, side=OrderSide.SELL, quantity=position.quantity))
                 if not execution.success:
-                    return CloseResult(False, position, execution, message=execution.message)
+                    return CloseResult(False, position, execution,
+                                       message=execution.message)
                 exit_price = execution.average_price or exit_price
 
             gross = (exit_price - position.entry_price) * position.quantity
@@ -134,10 +148,12 @@ class TradeManager:
             fees = max(actual_fee, entry_fee + exit_fee)
             net = gross - fees
             position.current_price = exit_price
+            position.unrealized_pnl = 0.0
             position.realized_pnl = net
             position.fees_paid = fees
             position.close_reason = reason.value
             position.status = "CLOSED"
+            position.last_update = time.time()
             self._closed.append(position)
             self._positions.pop(trade_id, None)
             self.statistics.total_closed += 1
