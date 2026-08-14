@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from core.execution_adapter import ExecutionAdapter
@@ -29,19 +31,32 @@ class PaperBalance:
 
 
 class PaperExecutionAdapter(ExecutionAdapter):
-    """Exchange-free execution adapter used only for paper trading."""
+    """Exchange-free execution adapter used only for paper trading.
 
-    def __init__(self, initial_cash: float = 1000.0, fee_rate: float = 0.001) -> None:
+    ``state_path`` is optional so existing tests remain isolated. In the real
+    Paper Trading application it is supplied by the application runtime, which
+    makes cash and owned asset quantities survive a process restart.
+    """
+
+    def __init__(
+        self,
+        initial_cash: float = 1000.0,
+        fee_rate: float = 0.001,
+        state_path: Optional[str] = None,
+    ) -> None:
         super().__init__("PAPER")
         if initial_cash < 0:
             raise ValueError("initial_cash must be non-negative")
         if fee_rate < 0:
             raise ValueError("fee_rate must be non-negative")
         self.fee_rate = float(fee_rate)
+        self.state_path = state_path
         self.balance = PaperBalance(cash=float(initial_cash))
         self.orders: dict[str, ExecutionResult] = {}
         self.market_prices: dict[str, float] = {}
         self._connected = False
+        if state_path:
+            self._load_balance()
 
     def connect(self) -> None:
         self._connected = True
@@ -119,6 +134,7 @@ class PaperExecutionAdapter(ExecutionAdapter):
             raw_response={"source": ExecutionSource.PAPER.value, "trade_type": trade_type},
         )
         self.orders[order_id] = result
+        self._persist_balance()
         return result
 
     def cancel_order(self, symbol: str, order_id: str) -> bool:
@@ -172,3 +188,38 @@ class PaperExecutionAdapter(ExecutionAdapter):
             "orders": len(self.orders),
             "fee_rate": self.fee_rate,
         }
+
+    def _persist_balance(self) -> None:
+        if not self.state_path:
+            return
+        directory = os.path.dirname(os.path.abspath(self.state_path))
+        os.makedirs(directory, exist_ok=True)
+        payload = {
+            "version": 1,
+            "cash": self.balance.cash,
+            "reserved": self.balance.reserved,
+            "assets": dict(self.balance.assets),
+            "fee_rate": self.fee_rate,
+        }
+        temporary = f"{self.state_path}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.state_path)
+
+    def _load_balance(self) -> None:
+        if not self.state_path or not os.path.exists(self.state_path):
+            return
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if payload.get("version") != 1:
+                raise ValueError(f"Unsupported paper balance state version: {payload.get('version')}")
+            self.balance = PaperBalance(
+                cash=float(payload["cash"]),
+                reserved=float(payload.get("reserved", 0.0)),
+                assets={str(k): float(v) for k, v in payload.get("assets", {}).items()},
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Unable to restore paper balance from {self.state_path}") from exc
