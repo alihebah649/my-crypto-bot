@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -140,14 +141,10 @@ class _ExposureProvider:
 
 
 class _PaperLossPeriodLedger:
-    """Feeds closed-trade net P&L into the Part-6 loss gate by calendar period."""
+    """Rebuild Part-6 period loss totals from persisted closed positions."""
 
     def __init__(self, tracker: LossTracker) -> None:
         self.tracker = tracker
-        self._closed_ids: set[str] = set()
-        self._daily: Dict[str, float] = {}
-        self._weekly: Dict[str, float] = {}
-        self._monthly: Dict[str, float] = {}
         self._lock = threading.RLock()
 
     def sync(self, positions: list[Position]) -> None:
@@ -155,21 +152,20 @@ class _PaperLossPeriodLedger:
         day_key = now.strftime("%Y-%m-%d")
         week_key = now.strftime("%G-W%V")
         month_key = now.strftime("%Y-%m")
+        daily = weekly = monthly = 0.0
         with self._lock:
             for position in positions:
-                if position.status is not PositionStatus.CLOSED or position.position_id in self._closed_ids:
+                if position.status is not PositionStatus.CLOSED:
                     continue
-                pnl = float(position.realized_pnl)
-                self._closed_ids.add(position.position_id)
-                self._daily[day_key] = self._daily.get(day_key, 0.0) + pnl
-                self._weekly[week_key] = self._weekly.get(week_key, 0.0) + pnl
-                self._monthly[month_key] = self._monthly.get(month_key, 0.0) + pnl
-
-            self.tracker.update(
-                daily_pnl=self._daily.get(day_key, 0.0),
-                weekly_pnl=self._weekly.get(week_key, 0.0),
-                monthly_pnl=self._monthly.get(month_key, 0.0),
-            )
+                closed_at = position.closed_at or position.opened_at
+                closed = datetime.fromtimestamp(closed_at, timezone.utc)
+                if closed.strftime("%Y-%m-%d") == day_key:
+                    daily += float(position.realized_pnl)
+                if closed.strftime("%G-W%V") == week_key:
+                    weekly += float(position.realized_pnl)
+                if closed.strftime("%Y-%m") == month_key:
+                    monthly += float(position.realized_pnl)
+            self.tracker.update(daily_pnl=daily, weekly_pnl=weekly, monthly_pnl=monthly)
 
 
 class ShadowTradeManagerRuntime:
@@ -177,11 +173,19 @@ class ShadowTradeManagerRuntime:
 
     def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
                  execution_adapter: Optional[ExecutionAdapter] = None,
-                 risk_config: Optional[RiskConfig] = None) -> None:
+                 risk_config: Optional[RiskConfig] = None,
+                 persistence_dir: Optional[str] = None) -> None:
         self.market = ShadowMarketState()
-        self.repository = PositionRepository()
+        self.persistence_dir = persistence_dir
+        position_state = None
+        paper_state = None
+        if persistence_dir:
+            os.makedirs(persistence_dir, exist_ok=True)
+            position_state = os.path.join(persistence_dir, "positions.json")
+            paper_state = os.path.join(persistence_dir, "paper_account.json")
+        self.repository = PositionRepository(persistence_path=position_state)
         self.execution_adapter = execution_adapter or PaperExecutionAdapter(
-            initial_cash=initial_cash, fee_rate=fee_rate,
+            initial_cash=initial_cash, fee_rate=fee_rate, state_path=paper_state,
         )
         self.loss_tracker = LossTracker()
         self.loss_ledger = _PaperLossPeriodLedger(self.loss_tracker)
@@ -218,6 +222,7 @@ class ShadowTradeManagerRuntime:
         )
         if hasattr(self.execution_adapter, "connect"):
             self.execution_adapter.connect()
+        self.loss_ledger.sync(self.repository.get_closed_positions())
 
     def update_market(self, symbol: str, **kwargs: Any) -> None:
         self.market.update(symbol, **kwargs)
