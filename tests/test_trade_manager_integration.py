@@ -5,8 +5,15 @@ from core.models import PositionStatus as CorePositionStatus
 from core.paper_execution_adapter import PaperExecutionAdapter
 from trade_manager import (
     CoreExecutionGateway,
-    PositionSide,
+    PositionCalculator,
+    PositionController,
+    PositionManagementFacade,
+    PositionRepository,
+    PositionRiskManager,
     PositionStatus,
+)
+from trade_manager import (
+    PositionSide,
     core_to_trade_manager,
     trade_manager_to_core,
 )
@@ -37,6 +44,85 @@ def test_core_execution_gateway_paper_round_trip() -> None:
     assert closed.outcome is ExecutionOutcome.SUCCESS
     assert closed.executed_quantity == 1.0
     assert adapter.balance.assets.get("BTCUSDT", 0.0) == 0.0
+
+
+def test_trade_manager_facade_commits_state_only_after_paper_execution() -> None:
+    adapter = PaperExecutionAdapter(initial_cash=1000.0, fee_rate=0.001)
+    adapter.connect()
+    adapter.set_market_price("BTCUSDT", 100.0)
+
+    gateway = CoreExecutionGateway(adapter)
+    repository = PositionRepository()
+    calculator = PositionCalculator()
+    risk_manager = PositionRiskManager(calculator=calculator)
+    controller = PositionController(risk_manager, repository, execution_gateway=gateway)
+    facade = PositionManagementFacade(
+        repository,
+        controller,
+        calculator,
+        risk_manager,
+        execution_gateway=gateway,
+        risk_approval=lambda **_: True,
+    )
+
+    position = facade.open_position(
+        symbol="BTCUSDT",
+        quantity=1.0,
+        entry_price=100.0,
+        stop_loss=98.0,
+    )
+
+    assert position is not None
+    assert position.status is PositionStatus.OPEN
+    assert position.quantity == 1.0
+    assert adapter.balance.assets["BTCUSDT"] == 1.0
+
+    # A failed sell must not close or otherwise erase the owned position.
+    adapter.balance.assets["BTCUSDT"] = 0.0
+    failed_close = facade.close_position(position.position_id, exit_price=102.0)
+    assert failed_close is None
+    persisted = repository.get(position.position_id)
+    assert persisted is not None
+    assert persisted.status is PositionStatus.OPEN
+
+
+def test_trade_manager_facade_closes_after_successful_paper_execution() -> None:
+    adapter = PaperExecutionAdapter(initial_cash=1000.0, fee_rate=0.001)
+    adapter.connect()
+    adapter.set_market_price("ETHUSDT", 100.0)
+
+    gateway = CoreExecutionGateway(adapter)
+    repository = PositionRepository()
+    calculator = PositionCalculator()
+    risk_manager = PositionRiskManager(calculator=calculator)
+    controller = PositionController(risk_manager, repository, execution_gateway=gateway)
+    facade = PositionManagementFacade(
+        repository,
+        controller,
+        calculator,
+        risk_manager,
+        execution_gateway=gateway,
+        risk_approval=lambda **_: True,
+    )
+
+    position = facade.open_position(
+        symbol="ETHUSDT",
+        quantity=2.0,
+        entry_price=100.0,
+        stop_loss=98.0,
+    )
+    assert position is not None
+
+    adapter.set_market_price("ETHUSDT", 110.0)
+    closed = facade.close_position(position.position_id, exit_price=110.0)
+
+    assert closed is not None
+    assert closed.status is PositionStatus.CLOSED
+    assert closed.quantity == 2.0
+    assert closed.current_price == 110.0
+    assert closed.exit_fee == 0.22
+    assert closed.realized_pnl > 0.0
+    assert adapter.balance.assets.get("ETHUSDT", 0.0) == 0.0
 
 
 def test_core_position_conversion_preserves_spot_and_pnl_state() -> None:
