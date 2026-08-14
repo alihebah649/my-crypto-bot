@@ -2,8 +2,8 @@
 
 This adapter is intentionally thin: Trade Manager owns the lifecycle contract,
 while ``core.execution_adapter.ExecutionAdapter`` remains the only execution
-implementation.  It supports both paper and live adapters without duplicating
-order logic inside Trade Manager.
+implementation. It supports paper and live adapters without duplicating order
+logic inside Trade Manager.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from .integration_contracts import (
     ExecutionOutcome,
     ExecutionOutcomeRecord,
     ExecutionRequest,
+    ExecutionSide,
 )
 
 
@@ -73,7 +74,7 @@ class CoreExecutionGateway(ExecutionGateway):
                 success=False,
                 outcome=ExecutionOutcome.REJECTED,
                 symbol=symbol.upper(),
-                side=__import__("trade_manager.integration_contracts", fromlist=["ExecutionSide"]).ExecutionSide.SELL,
+                side=ExecutionSide.SELL,
                 requested_quantity=0.0,
                 executed_quantity=0.0,
                 average_price=0.0,
@@ -85,7 +86,7 @@ class CoreExecutionGateway(ExecutionGateway):
                 success=bool(cancelled),
                 outcome=ExecutionOutcome.CANCELLED if cancelled else ExecutionOutcome.FAILED,
                 symbol=symbol.upper(),
-                side=__import__("trade_manager.integration_contracts", fromlist=["ExecutionSide"]).ExecutionSide.SELL,
+                side=ExecutionSide.SELL,
                 requested_quantity=0.0,
                 executed_quantity=0.0,
                 average_price=0.0,
@@ -98,7 +99,7 @@ class CoreExecutionGateway(ExecutionGateway):
                 success=False,
                 outcome=ExecutionOutcome.FAILED,
                 symbol=symbol.upper(),
-                side=__import__("trade_manager.integration_contracts", fromlist=["ExecutionSide"]).ExecutionSide.SELL,
+                side=ExecutionSide.SELL,
                 requested_quantity=0.0,
                 executed_quantity=0.0,
                 average_price=0.0,
@@ -117,7 +118,7 @@ class CoreExecutionGateway(ExecutionGateway):
         return self.submit(
             ExecutionRequest(
                 symbol=symbol,
-                side=__import__("trade_manager.integration_contracts", fromlist=["ExecutionSide"]).ExecutionSide.SELL,
+                side=ExecutionSide.SELL,
                 quantity=quantity,
                 order_type="MARKET",
                 client_order_id=client_order_id,
@@ -158,7 +159,6 @@ class CoreExecutionGateway(ExecutionGateway):
 
     @staticmethod
     def _failed(request: ExecutionRequest, outcome: ExecutionOutcome, message: str) -> ExecutionOutcomeRecord:
-        from .integration_contracts import ExecutionSide
         return ExecutionOutcomeRecord(
             success=False,
             outcome=outcome,
