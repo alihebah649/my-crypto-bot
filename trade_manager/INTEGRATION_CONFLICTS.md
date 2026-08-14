@@ -85,22 +85,29 @@ This file records integration issues explicitly instead of hiding them inside ad
    - Closed Position `realized_pnl` is now fed into Part-6 daily/weekly/monthly `LossTracker` snapshots exactly once per position.
    - A regression test verifies that a loss crossing the configured daily limit rejects the next risk approval.
 
-## Remaining validation work (not a hidden contradiction)
+20. **Final application lifecycle coverage**
+   - Added `tests/test_trade_manager_paper_final_path.py` to exercise the real typed Part-6 gateway, Core/Part-7 paper execution, Part-8 lifecycle, Smart Hold, REVIEW_REQUIRED, explicit close, failed SELL persistence, loss feedback, and spot leverage rejection.
+   - The Paper Execution workflow now runs this test explicitly before the full regression suite.
 
-### A. Full application-level Paper Trading validation
-The application-level composition now exists and has focused contract coverage for:
+## Remaining validation work / blockers
 
-`strategy signal -> Part-6 risk -> Trade Manager entry -> core paper execution -> Position management -> Smart Hold -> REVIEW_REQUIRED -> explicit exit -> fee-aware P&L -> Part-6 loss feedback`.
+### A. GitHub Actions final validation
+The final lifecycle test has been added, but the branch must have a successful GitHub Actions run before the Paper Trading baseline can be declared green.
 
-The full GitHub regression suite still needs to execute successfully before calling the branch the final Paper Trading baseline.
+### B. Restart/state continuity
+`trade_manager.repository.PositionRepository` is currently in-memory only. There is no persistent Position snapshot/store wired into `ShadowTradeManagerRuntime` on this branch.
 
-### B. Exchange-specific execution details
+Therefore restart continuity is **not yet proven**: an application restart currently recreates the repository from scratch. This is an explicit baseline blocker, not something to hide in a compatibility layer.
+
+The existing Part-5 recovery primitives remain observational and require a real persistent source plus broker/execution state before they can reconstruct positions after restart.
+
+### C. Exchange-specific execution details
 Part-7 broker-specific REST skeletons remain non-authoritative. Concrete exchange execution stays in `core.execution_adapter` and its adapters.
 
-### C. Exchange filter provider
+### D. Exchange filter provider
 Part 6 contains `PositionSizeNormalizer`, but the paper composition intentionally has no exchange lot-filter provider. Before live Binance execution, the real exchange-info provider must be wired into the Part-6 gateway.
 
-### D. Strategy signal ownership
+### E. Strategy signal ownership
 `shadow_main.py` still owns the existing EMA/RSI signal calculation because that code is application/strategy logic, not Trade Manager logic. It must not directly mutate positions or execute orders.
 
 ## Rule for future integration
