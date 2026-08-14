@@ -1,29 +1,16 @@
-"""Modular Trade Manager package.
-
-Part 8 is split by responsibility so each component can be reviewed and tested
-independently before integration with the rest of the bot.
-"""
-
-from .models import Position, PositionStatus, PositionSide, PositionCloseReason
-from .calculator import PositionCalculator, PositionCalculationResult
-from .repository import PositionRepository
-from .risk_manager import PositionRiskManager, PositionExitDecision, PositionExitReason
-from .controller import PositionController
-from .history import PositionHistoryService, PositionHistoryRecord, PositionHistoryRepository
-from .metrics import PositionMetrics, PositionMetricsCalculator, PositionMetricsService
-from .synchronizer import (
-    ExchangePosition, ExchangePositionAdapter, MemoryExchangePositionAdapter,
-    PositionSynchronizer, SynchronizationResult, SynchronizationStatus,
-)
-from .facade import PositionManagementFacade
+"""Trade Manager integration package."""
+from .models import TradeManagerConfig, ManagedPosition, TradeContext, TradeStatistics, ProtectionDecision, ProtectionAction, ExitReason
+from .risk import RiskConfig, RiskManager, RiskEvaluation
+from .protection import ProtectionLogicEvaluator
+from .execution import ExecutionOrder, ExecutionResult, ExecutionPipeline
+from .recovery import RecoveryManager, RecoveryReport
+from .manager import TradeManager
 
 __all__ = [
-    "Position", "PositionStatus", "PositionSide", "PositionCloseReason",
-    "PositionCalculator", "PositionCalculationResult", "PositionRepository",
-    "PositionRiskManager", "PositionExitDecision", "PositionExitReason",
-    "PositionController", "PositionHistoryService", "PositionHistoryRecord",
-    "PositionHistoryRepository", "PositionMetrics", "PositionMetricsCalculator",
-    "PositionMetricsService", "ExchangePosition", "ExchangePositionAdapter",
-    "MemoryExchangePositionAdapter", "PositionSynchronizer", "SynchronizationResult",
-    "SynchronizationStatus", "PositionManagementFacade",
+    "TradeManagerConfig", "ManagedPosition", "TradeContext", "TradeStatistics",
+    "ProtectionDecision", "ProtectionAction", "ExitReason", "RiskConfig",
+    "RiskManager", "RiskEvaluation", "ProtectionLogicEvaluator", "ExecutionOrder",
+    "ExecutionResult", "ExecutionPipeline", "RecoveryManager", "RecoveryReport",
+    "TradeManager",
 ]
+__version__ = "1.0.0-integrated"
