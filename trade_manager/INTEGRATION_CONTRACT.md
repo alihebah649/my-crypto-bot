@@ -2,7 +2,7 @@
 
 ## Status
 
-Integration is being stabilized on `main`. Part 7 now has an explicit adapter boundary into the existing core execution layer.
+Integration is being stabilized on `main`. Part 7 now has an explicit adapter boundary into the existing core execution layer, with full-fill semantics protected for position closure.
 
 ## Canonical ownership
 
@@ -38,6 +38,15 @@ Integration is being stabilized on `main`. Part 7 now has an explicit adapter bo
 
 8. **Paper execution already has its own core execution contract.**
    - Fixed the missing integration boundary by adding `CoreExecutionBrokerAdapter`. Part 7 remains broker-neutral and delegates execution-model translation to this adapter.
+
+9. **Part 7 previously treated any positive partial fill as a successful execution.**
+   - Fixed. `trade_manager.execution` now exposes `ExecutionStatus`, `remaining_quantity`, and `fully_filled`. The core adapter marks an execution successful for Trade Manager closure only when status is `FILLED` and no quantity remains. This prevents a partial sell from incorrectly closing the whole position.
+
+10. **Part 7 order-query reconstruction used `executedQty` as the requested quantity.**
+    - Fixed. The adapter now prefers `origQty`, calculates remaining quantity, and calculates average price from `cummulativeQuoteQty / executedQty` when available.
+
+11. **Historical Part 7 source described STOP/STOP_LIMIT while the current core execution boundary supports MARKET/LIMIT.**
+    - Not emulated or hidden. The current integration uses the supported core order types. Stop-loss/trailing decisions remain Trade Manager protection state and must be translated by the higher-level controller into supported execution actions.
 
 ## Current integration sequence
 
