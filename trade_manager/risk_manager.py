@@ -1,9 +1,12 @@
 """8.4 - Position risk, smart-hold/recovery and exit decisions."""
+from __future__ import annotations
+
 import logging
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Callable, Dict, Optional
+
 from .calculator import PositionCalculator
 from .models import Position, PositionStatus
 
@@ -16,6 +19,7 @@ class PositionExitReason(Enum):
     TAKE_PROFIT = auto()
     TRAILING_STOP = auto()
     BREAK_EVEN = auto()
+    MANUAL = auto()
     REVIEW_REQUIRED = auto()
     RECOVERY_FAILED = auto()
 
@@ -32,6 +36,12 @@ class PositionExitDecision:
 
 
 class PositionRiskManager:
+    """Part-8 exit/recovery manager.
+
+    This is deliberately separate from ``risk.RiskManager``: the latter validates
+    new entries, while this class manages an already-open spot position.
+    """
+
     def __init__(self, market_context_provider: Optional[Callable[[str], Dict[str, Any]]] = None,
                  atr_provider: Optional[Callable[[str], Any]] = None,
                  ema_provider: Optional[Callable[[str], Any]] = None,
@@ -63,8 +73,6 @@ class PositionRiskManager:
                 position.stop_loss = be
                 position.metadata["break_even_activated"] = True
 
-        # Review deadline must be checked before HOLD; otherwise a healthy recovery
-        # score would keep a 7-day HOLD alive forever.
         review = self._check_review_required(position)
         if review.review_required:
             return review
@@ -127,6 +135,8 @@ class PositionRiskManager:
             score += 0.125
         atr = context.get("atr")
         volatility = atr.get("volatility") if isinstance(atr, dict) else context.get("volatility")
+        if isinstance(volatility, str):
+            volatility = volatility.upper()
         if volatility == "LOW":
             score += 0.15
         elif volatility == "NORMAL":
@@ -149,7 +159,9 @@ class PositionRiskManager:
         if pnl >= 0:
             if position.status == PositionStatus.HOLD:
                 position.status = PositionStatus.OPEN
+                position.entered_hold_at = None
             return PositionExitDecision(False, PositionExitReason.NONE)
+
         recovery = float(position.hold_context.get("recovery_potential", 0.0))
         loss_factor = 1.0 - min(1.0, abs(pnl) / 10.0)
         adjusted = recovery * (0.7 + 0.3 * loss_factor)
@@ -227,7 +239,7 @@ class PositionRiskManager:
             if isinstance(value, dict):
                 value = value.get("percent", value.get("atr_percent"))
             return float(value) if value is not None else None
-        except (TypeError, ValueError, Exception):
+        except Exception:
             return None
 
     @staticmethod
