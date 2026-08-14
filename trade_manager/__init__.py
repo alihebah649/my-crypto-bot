@@ -26,6 +26,8 @@ from .part7_execution import OrderSide, OrderType, OrderStatus, ExecutionOrder, 
 from .integration_contracts import CONTRACT, IntegrationContract, RiskSizingRequest, RiskSizingApproval, ExecutionRequest, ExecutionOutcomeRecord, ExecutionOutcome, ExecutionSide
 from .core_execution_gateway import CoreExecutionGateway
 from .core_position_adapter import core_to_trade_manager, trade_manager_to_core
+from .core_risk_gateway import CoreRiskGateway
+from .shadow_integration import ShadowMarketState, ShadowTradeManagerRuntime
 
 __all__ = [
     "Position","PositionStatus","PositionSide","PositionCloseReason","PositionCalculator","PositionCalculationResult","PositionRepository",
@@ -36,4 +38,5 @@ __all__ = [
     "RiskDecision","RiskRejectReason","RiskConfig","RiskController","PositionSizeCalculator","PositionSizeNormalizer","PositionFundingValidator","AdvancedCapitalValidator","RiskLockManager","FinalRiskValidator","FinalRiskDecision","Part6EntryApprovalAdapter",
     "OrderSide","OrderType","OrderStatus","ExecutionOrder","ExecutionResultStatus","ExecutionResult","ExecutionError","ExecutionResponse","ExecutionBroker","ExecutionRequestBuilder","ExecutionErrorHandler","BrokerUtilities","TradeManagerExecutionPipeline",
     "CONTRACT","IntegrationContract","RiskSizingRequest","RiskSizingApproval","ExecutionRequest","ExecutionOutcomeRecord","ExecutionOutcome","ExecutionSide","CoreExecutionGateway","core_to_trade_manager","trade_manager_to_core",
+    "CoreRiskGateway","ShadowMarketState","ShadowTradeManagerRuntime",
 ]
