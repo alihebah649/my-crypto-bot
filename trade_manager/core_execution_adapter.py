@@ -18,7 +18,14 @@ from core.execution_models import (
     OrderType as CoreOrderType,
 )
 
-from .execution import ExecutionBroker, ExecutionOrder, ExecutionResult, OrderSide, OrderType
+from .execution import (
+    ExecutionBroker,
+    ExecutionOrder,
+    ExecutionResult,
+    ExecutionStatus,
+    OrderSide,
+    OrderType,
+)
 
 
 class CoreExecutionBrokerAdapter(ExecutionBroker):
@@ -46,24 +53,43 @@ class CoreExecutionBrokerAdapter(ExecutionBroker):
         )
 
     @staticmethod
-    def _result(order: ExecutionOrder, result: Any) -> ExecutionResult:
-        side = order.side.value
-        fees = getattr(getattr(result, "fees", None), "total", 0.0)
-        status = getattr(getattr(result, "status", None), "value", "")
-        success = status == "FILLED" or bool(getattr(result, "executed_quantity", 0.0) > 0)
+    def _status(raw_status: Any) -> ExecutionStatus:
+        value = getattr(raw_status, "value", raw_status)
+        try:
+            return ExecutionStatus(str(value))
+        except ValueError:
+            return ExecutionStatus.UNKNOWN
+
+    @classmethod
+    def _result(cls, order: ExecutionOrder, result: Any) -> ExecutionResult:
+        status = cls._status(getattr(result, "status", "UNKNOWN"))
+        executed = float(getattr(result, "executed_quantity", 0.0) or 0.0)
+        requested = float(order.quantity)
+        remaining = max(0.0, requested - executed)
+        fees = float(getattr(getattr(result, "fees", None), "total", 0.0) or 0.0)
+        average_price = float(
+            getattr(result, "average_price", 0.0)
+            or getattr(result, "executed_price", 0.0)
+            or 0.0
+        )
+        # A partial fill is deliberately NOT a full success for Trade Manager:
+        # close_position must not mark a position CLOSED while quantity remains.
+        success = status is ExecutionStatus.FILLED and remaining <= 0.0
         return ExecutionResult(
             success=success,
             symbol=order.symbol.upper(),
-            side=side,
-            requested_quantity=order.quantity,
-            executed_quantity=float(getattr(result, "executed_quantity", 0.0) or 0.0),
-            average_price=float(getattr(result, "average_price", 0.0) or getattr(result, "executed_price", 0.0) or 0.0),
-            commission=float(fees or 0.0),
+            side=order.side.value,
+            requested_quantity=requested,
+            executed_quantity=executed,
+            average_price=average_price,
+            commission=fees,
             commission_asset="",
             exchange_order_id=getattr(result, "exchange_order_id", None),
             client_order_id=getattr(result, "client_order_id", None) or order.client_order_id,
-            message=getattr(result, "message", "") or status,
+            message=getattr(result, "message", "") or status.value,
             raw=getattr(result, "raw_response", None),
+            status=status,
+            remaining_quantity=remaining,
         )
 
     def submit_order(self, order: ExecutionOrder) -> ExecutionResult:
@@ -78,35 +104,45 @@ class CoreExecutionBrokerAdapter(ExecutionBroker):
         client_order_id: str | None = None,
     ) -> ExecutionResult:
         if not order_id:
-            return ExecutionResult(False, symbol.upper(), "", 0.0, message="ORDER_ID_REQUIRED")
+            return ExecutionResult(False, symbol.upper(), "", 0.0,
+                                   message="ORDER_ID_REQUIRED", status=ExecutionStatus.REJECTED)
         raw = self.adapter.get_order(symbol.upper(), order_id)
         if not raw:
             return ExecutionResult(False, symbol.upper(), "", 0.0,
-                                   exchange_order_id=order_id, message="ORDER_NOT_FOUND")
+                                   exchange_order_id=order_id,
+                                   message="ORDER_NOT_FOUND", status=ExecutionStatus.FAILED)
+
         side = str(raw.get("side", ""))
         try:
             tm_side = OrderSide(side)
         except ValueError:
             return ExecutionResult(False, symbol.upper(), side, 0.0,
-                                   exchange_order_id=order_id, message="INVALID_BROKER_SIDE", raw=raw)
-        order = ExecutionOrder(
-            symbol=symbol.upper(),
-            side=tm_side,
-            quantity=float(raw.get("executedQty", 0.0) or 0.0),
-            price=float(raw.get("price", 0.0) or 0.0) or None,
-            client_order_id=client_order_id or str(raw.get("clientOrderId", "")),
-        )
+                                   exchange_order_id=order_id,
+                                   message="INVALID_BROKER_SIDE", raw=raw,
+                                   status=ExecutionStatus.FAILED)
+
+        status = self._status(raw.get("status", "UNKNOWN"))
+        executed = float(raw.get("executedQty", 0.0) or 0.0)
+        requested = float(raw.get("origQty", executed) or executed)
+        remaining = max(0.0, requested - executed)
+        cumulative = float(raw.get("cummulativeQuoteQty", 0.0) or 0.0)
+        price = float(raw.get("price", 0.0) or 0.0)
+        if cumulative > 0.0 and executed > 0.0:
+            price = cumulative / executed
+
         return ExecutionResult(
-            success=str(raw.get("status", "")) == "FILLED",
-            symbol=order.symbol,
-            side=order.side.value,
-            requested_quantity=order.quantity,
-            executed_quantity=order.quantity,
-            average_price=float(raw.get("price", 0.0) or 0.0),
+            success=status is ExecutionStatus.FILLED and remaining <= 0.0,
+            symbol=symbol.upper(),
+            side=tm_side.value,
+            requested_quantity=requested,
+            executed_quantity=executed,
+            average_price=price,
             exchange_order_id=str(raw.get("orderId", order_id)),
-            client_order_id=order.client_order_id,
+            client_order_id=client_order_id or str(raw.get("clientOrderId", "")),
             message=str(raw.get("status", "")),
             raw=raw,
+            status=status,
+            remaining_quantity=remaining,
         )
 
     def cancel_order(
@@ -116,7 +152,8 @@ class CoreExecutionBrokerAdapter(ExecutionBroker):
         client_order_id: str | None = None,
     ) -> ExecutionResult:
         if not order_id:
-            return ExecutionResult(False, symbol.upper(), "", 0.0, message="ORDER_ID_REQUIRED")
+            return ExecutionResult(False, symbol.upper(), "", 0.0,
+                                   message="ORDER_ID_REQUIRED", status=ExecutionStatus.REJECTED)
         ok = self.adapter.cancel_order(symbol.upper(), order_id)
         return ExecutionResult(
             success=bool(ok),
@@ -126,4 +163,5 @@ class CoreExecutionBrokerAdapter(ExecutionBroker):
             exchange_order_id=order_id,
             client_order_id=client_order_id,
             message="CANCELLED" if ok else "CANCEL_FAILED",
+            status=ExecutionStatus.CANCELLED if ok else ExecutionStatus.FAILED,
         )
