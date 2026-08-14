@@ -13,98 +13,94 @@ This file records integration issues explicitly instead of hiding them inside ad
    - Previous `Kamel-Abdullah/shadow-trading-bot` target was incorrect.
 
 2. **Spot-only vs legacy SHORT logic**
-   - Part-2 protection models previously exposed SHORT behavior.
    - The active integration contract is spot-only (`LONG` owned-asset position).
-   - Protection models/evaluator reject non-LONG state.
 
 3. **Part-1/Part-8 model boundary**
-   - Part-1 runtime bookkeeping uses the canonical Part-8 `trade_manager.models.Position` contract.
-   - No second Position persistence model was introduced.
+   - The canonical Position contract is `trade_manager.models.Position`.
 
 4. **Decision vs mutation boundary**
-   - Part 2 evaluates protection decisions; Part 3 applies state mutations.
-   - Part 3 does not place broker/network orders.
+   - Protection evaluates decisions; state mutation remains downstream.
 
 5. **Monitoring isolation**
-   - Part 4 processes positions independently so one position exception does not stop the cycle.
+   - Monitoring is isolated from execution and persistence.
 
 6. **Exit execution boundary**
-   - Part 5/8 exit flow is routed through `ExecutionGateway.close_spot()`.
-   - The controller refuses to mark a position CLOSED when execution is missing, rejected or failed.
-   - The actual exit price and commission come from the execution result when available.
+   - Exit flow is routed through `ExecutionGateway.close_spot()`.
+   - Failed execution never marks a Position CLOSED.
 
 7. **Recovery transparency**
-   - Part-5 recovery/reconciliation reports missing DB/broker state instead of silently repairing discrepancies.
+   - Recovery/reconciliation reports discrepancies rather than silently hiding them.
 
 8. **Core execution ownership**
-   - `core_execution_gateway.py` remains the single adapter from Trade Manager execution contracts to `core.execution_adapter.ExecutionAdapter`.
-   - Trade Manager does not duplicate Binance/paper order implementation.
+   - `core_execution_gateway.py` is the adapter from Trade Manager execution contracts to `core.execution_adapter.ExecutionAdapter`.
 
 9. **Core Position vs Trade Manager Position**
    - `core_position_adapter.py` remains the explicit conversion boundary.
-   - Negative unrealized P&L is preserved during conversion.
 
 10. **Parts 6 and 7 authoritative source availability**
-   - The complete `trade manager parts 1-7.docx` is now available and was used as the source for `part6_risk.py` and `part7_execution.py`.
-   - The overlapping source helpers were normalized into separate files rather than copied into one conflicting module.
+   - `trade manager parts 1-7.docx` is the source used for Parts 6 and 7.
+   - Overlapping helpers were normalized into separate modules.
    - Part 6 owns pre-entry risk/sizing/limits/locks and never executes orders.
    - Part 7 owns execution contracts/building/error handling/pipeline and never mutates Position state.
 
 11. **Part 6/7 -> Part 8 contract**
-   - Part 6 uses spot-only sizing with leverage fixed to 1.0.
-   - Part 7 maps to the canonical `integration_contracts.ExecutionGateway`.
-   - Part 8 Position state is committed only after a successful execution result.
+   - Spot leverage is fixed at 1.0.
+   - Part 7 maps to `integration_contracts.ExecutionGateway`.
+   - Part 8 commits Position state only after successful execution.
 
 12. **Entry ordering**
-   - `PositionManagementFacade.open_position()` now requires an injected execution gateway and explicit Part-6 risk approval callback before sending BUY.
-   - A failed/rejected execution creates no Position record.
-   - Executed quantity/price/commission become the Position's authoritative entry values.
+   - `PositionManagementFacade.open_position()` now prefers the typed `RiskGateway` contract.
+   - BUY is submitted only after Part-6 approval.
+   - Executed quantity/price/commission are authoritative.
 
 13. **Review-required semantics**
-   - `REVIEW_REQUIRED` is a state requiring explicit human/system review and is not treated as an automatic sell.
+   - `REVIEW_REQUIRED` is not an automatic sell.
 
 14. **Trade Manager -> core Paper Execution lifecycle**
-   - Added integration coverage proving BUY execution through `CoreExecutionGateway`, Position creation in the Trade Manager facade, successful SELL/close through the same gateway, fee/P&L propagation, and preservation of an OPEN Position when the exit execution fails.
-   - GitHub Actions run `31766297912` passed the new end-to-end Trade Manager paper contract tests.
+   - The existing paper execution adapter remains the execution implementation; Trade Manager only adapts to it.
 
-15. **CI coverage gap for Trade Manager integration**
-   - The workflow previously ran only the isolated paper execution test and one integration smoke test.
-   - It now runs the Part 6/7 contract tests, Trade Manager integration tests, and the Trade Manager -> core Paper Execution end-to-end tests on every push to `tm-integration-work`.
-   - GitHub Actions run `31766326362` passed all four test stages before the latest Part-6 composition additions.
+15. **Typed Part-6 risk boundary**
+   - `PositionManagementFacade` now accepts `RiskGateway` and sends a `RiskSizingRequest` before entry.
+   - The approved quantity returned by Part 6 is the quantity passed to execution.
+   - Legacy boolean approval is retained only as a compatibility fallback and does not perform sizing.
 
-16. **Application-level strategy -> Trade Manager boundary**
-   - `core/trade_manager_composition.py` is now the explicit application composition boundary.
-   - It accepts a normalized `EntrySignal`, obtains account inputs through an injected provider, requests authoritative Part-6 sizing/approval, and only then calls the Part-8 facade.
-   - It does not implement strategy logic, risk math, broker calls, or Position mutation.
-   - The facade remains the final execution gate and Position owner.
+16. **Shadow application had a second Portfolio/Risk/Execution stack**
+   - The previous `shadow_main.py` contained its own `GlobalPortfolioTracker`, `DynamicRiskEngine`, stop/trailing logic, and direct BUY/SELL bookkeeping.
+   - This duplicated Trade Manager Parts 6-8 and would have created divergent state.
+   - `shadow_main.py` was replaced with an orchestration-only entry point.
+   - Market data and strategy signals remain in the application layer; lifecycle/risk/execution now flow through `ShadowTradeManagerRuntime`.
 
-17. **Part-6 core-state hand-off**
-   - `trade_manager/core_risk_gateway.py` now adapts the existing Part-6 `RiskController` and `PositionSizeCalculator` to the application `RiskGateway` contract.
-   - `trade_manager/core_risk_providers.py` converts the existing core portfolio snapshot into the exact Part-6 portfolio contract and defines an explicit market-data provider boundary.
-   - No duplicate account or market state is created.
-   - The gateway fails closed on missing/invalid data and enforces spot leverage of 1.0.
-   - A dedicated CI test now verifies Part-6 approval -> Trade Manager -> core Paper Execution.
+17. **Application composition boundary**
+   - Added `trade_manager/shadow_integration.py` as the explicit composition boundary for Shadow Trading.
+   - It wires the Part-6 `RiskController`/sizer, Part-7 `CoreExecutionGateway`, and Part-8 repository/controller/facade.
+   - It provides a single market-state provider used by both entry risk and position management.
+   - It uses the existing `PaperExecutionAdapter` rather than implementing another paper portfolio.
 
-## Remaining validation work (not a code contradiction)
+18. **Legacy entrypoint removal**
+   - `bot.py` was deleted from `tm-integration-work` because `shadow_main.py` is now the canonical application entry point.
+   - No Trade Manager logic depends on `bot.py`.
 
-### A. Full application-level Paper Trading composition
-The explicit composition and Part-6 provider boundaries now exist. The remaining end-to-end validation is wiring the **actual strategy/signal producer** and **actual live/paper market-data provider** into these boundaries, then testing:
+## Remaining validation work (not a hidden contradiction)
 
-`strategy/signal -> Part-6 risk -> Trade Manager entry -> core execution -> Position/ledger synchronization -> reporting`.
+### A. Full application-level Paper Trading validation
+The application-level composition now exists. The remaining work is runtime validation of:
 
-This must be verified before treating the branch as the final Paper Trading baseline.
+`Coinbase market data -> indicators/signal -> Part-6 risk -> Trade Manager entry -> core paper execution -> Position management -> Smart Hold/Recovery -> exit -> metrics/reporting`.
+
+This must be tested before calling the branch the final Paper Trading baseline.
 
 ### B. Exchange-specific execution details
-The Part-7 document contains broker-specific skeletons. Concrete Binance/REST details remain owned by `core.execution_adapter`; they must not be reimplemented in Trade Manager.
+Part-7 broker-specific REST skeletons remain non-authoritative. Concrete exchange execution stays in `core.execution_adapter` and its adapters.
 
-### C. Legacy Part-5 variants
-The original Parts 1-5 document contains overlapping simple/advanced protection, exit, recovery and monitor variants. The repository keeps one canonical implementation per responsibility and records the source variants here rather than duplicating them.
+### C. Exchange filter provider
+Part 6 contains `PositionSizeNormalizer`, but the paper composition intentionally has no exchange lot-filter provider. Before live Binance execution, the real exchange-info provider must be wired into the Part-6 gateway.
 
-### D. Legacy runtime migration
-`bot.py` still contains the legacy V2 runtime with embedded strategy, market-data acquisition, position state and execution bookkeeping. The current `engine/*.py` entry/exit/market files are placeholders. Therefore the real strategy producer is **not yet a reusable provider** for `TradeManagerApplicationCoordinator`.
+### D. Loss-period accounting provider
+The current shadow composition starts the Part-6 `LossTracker` at zero. Closed-trade P&L must be connected to the canonical ledger/statistics provider before relying on daily/weekly/monthly loss locks in a long-running Paper Trading session.
 
-`bot.py` must not be silently rewritten merely to make the new composition appear connected. Its migration requires an explicit extraction/adaptation step followed by integration tests.
+### E. Strategy signal ownership
+`shadow_main.py` still owns the existing EMA/RSI signal calculation because that code is application/strategy logic, not Trade Manager logic. It must not directly mutate positions or execute orders.
 
 ## Rule for future integration
 
-Do not delete or silently bypass an item in this register. Any new resolution must be recorded here with the affected contract, the chosen owner of the behavior, and the commit that resolves it.
+Do not delete or silently bypass an item in this register. Any new resolution must be recorded here with the affected contract, chosen owner of the behavior, and resolving commit.
