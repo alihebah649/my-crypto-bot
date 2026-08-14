@@ -2,12 +2,13 @@
 
 ## Status
 
-Baseline integration pass completed on `main`.
+Integration is being stabilized on `main`. Part 7 now has an explicit adapter boundary into the existing core execution layer.
 
 ## Canonical ownership
 
 - **Part 6 (`trade_manager.risk`)**: pre-entry risk gate, sizing, exposure, market filters, loss limits and risk lock.
 - **Part 7 (`trade_manager.execution`)**: broker-neutral order contract and execution pipeline. It must not contain strategy or portfolio accounting decisions.
+- **`trade_manager.core_execution_adapter`**: the only translation boundary from the Part-7 broker contract to `core.execution_adapter.ExecutionAdapter`.
 - **Part 8.1-8.8 (`trade_manager`)**: canonical open-position lifecycle, Smart Hold/Recovery, P&L/fees, synchronization, metrics and history.
 - **`core.models.Position` / `core.portfolio_engine.PortfolioEngine`**: core portfolio/accounting authority. Trade Manager must not silently replace this accounting state.
 - **`trade_manager.core_bridge`**: the only translation boundary between the core position representation and the Trade Manager Part-8 representation.
@@ -36,14 +37,51 @@ Baseline integration pass completed on `main`.
    - Fixed by adding an explicit `core_bridge` translation layer rather than importing one model into the other.
 
 8. **Paper execution already has its own core execution contract.**
-   - No direct Binance client was added to Trade Manager. Part 7 remains broker-neutral; the next integration step is an explicit adapter between `core.execution_adapter.ExecutionAdapter` and `trade_manager.execution.ExecutionBroker`.
+   - Fixed the missing integration boundary by adding `CoreExecutionBrokerAdapter`. Part 7 remains broker-neutral and delegates execution-model translation to this adapter.
+
+## Current integration sequence
+
+```text
+Signal / Strategy
+       |
+       v
+Part 6 Risk Gate
+       |
+       v
+Trade Manager Facade / Part 8 Lifecycle
+       |
+       v
+Part 7 ExecutionPipeline
+       |
+       v
+CoreExecutionBrokerAdapter
+       |
+       v
+core.execution_adapter.ExecutionAdapter
+       |
+       +---- PaperExecutionAdapter (Paper)
+       +---- BinanceExecutionAdapter (Live, not approved here)
+```
+
+Portfolio accounting remains a separate authority:
+
+```text
+Executed fill -> core PortfolioEngine -> core.models.Position
+                              ^
+                              |
+                   trade_manager.core_bridge
+                              |
+                    Trade Manager Position
+```
+
+The bridge is deliberately explicit so the two `Position` models cannot silently replace each other.
 
 ## Remaining integration work
 
-- Wire `shadow_main.py` to the canonical core engines and this Trade Manager facade.
-- Add the explicit Core Execution Adapter -> Part-7 Broker adapter.
-- Run the new Trade Manager contract tests in GitHub Actions and resolve any environment-specific failures.
-- Only after those checks pass should the system be treated as the Paper Trading baseline.
+- Wire the root `shadow_main.py` to the canonical core engines and Trade Manager facade using the boundaries above.
+- Keep `bot.py` out of the runtime path; it is legacy and is not part of the new entry-point contract.
+- Verify the full runtime path with paper execution, portfolio accounting, synchronization and the main runtime.
+- Run the GitHub Actions contract tests and resolve environment-specific failures before declaring the Paper Trading baseline ready.
 
 ## Safety rule
 
