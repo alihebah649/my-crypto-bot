@@ -1,0 +1,1 @@
+"""Trading pipeline integration package."""
