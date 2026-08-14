@@ -27,12 +27,10 @@ from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ShadowMain")
 
-# -----------------------------------------------------------------------------
-# Application configuration
-# -----------------------------------------------------------------------------
 INITIAL_CASH = float(os.getenv("PAPER_INITIAL_CASH", "1000.0"))
 FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.001"))
 TIMEFRAME_SECONDS = 60
+TRADE_MANAGER_STATE_DIR = os.getenv("TRADE_MANAGER_STATE_DIR", "data/trade_manager")
 
 ISLAMIC_ASSETS = [
     "BTC-USD",
@@ -48,6 +46,7 @@ app = Flask(__name__)
 runtime = ShadowTradeManagerRuntime(
     initial_cash=INITIAL_CASH,
     fee_rate=FEE_RATE,
+    state_dir=TRADE_MANAGER_STATE_DIR,
 )
 
 current_prices: Dict[str, float] = {}
@@ -56,9 +55,6 @@ resampler_history: Dict[str, list[dict]] = {}
 resampler_current: Dict[str, dict] = {}
 
 
-# -----------------------------------------------------------------------------
-# Market aggregation
-# -----------------------------------------------------------------------------
 def process_tick(symbol: str, price: float, volume: float, timestamp: float) -> None:
     bucket = int(timestamp // TIMEFRAME_SECONDS) * TIMEFRAME_SECONDS
     candle = resampler_current.get(symbol)
@@ -130,9 +126,6 @@ def evaluate_signal(price: float, ema100, rsi) -> str:
     return "HOLD"
 
 
-# -----------------------------------------------------------------------------
-# Telegram / HTTP
-# -----------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TOKEN") or os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "199325566")
 
@@ -160,6 +153,7 @@ def home():
             "mode": "PAPER",
             "entrypoint": "shadow_main.py",
             "trade_manager": "modular_parts_1_8",
+            "state_dir": TRADE_MANAGER_STATE_DIR,
             "open_positions": len(positions),
             "symbols": [p.symbol for p in positions],
             "metrics": getattr(metrics, "__dict__", str(metrics)),
@@ -189,9 +183,6 @@ def positions():
     ), 200
 
 
-# -----------------------------------------------------------------------------
-# Live market feed -> Trade Manager
-# -----------------------------------------------------------------------------
 async def start_shadow_engine() -> None:
     send_telegram_message("Shadow Trading Bot started: Trade Manager is now the lifecycle boundary.")
 
@@ -236,8 +227,6 @@ async def start_shadow_engine() -> None:
                     process_tick(symbol, price, last_size, timestamp)
                     ema100, rsi, atr = calculate_indicators(symbol)
 
-                    # The risk layer needs the same market snapshot as the
-                    # strategy. No hidden market data is invented here.
                     runtime.update_market(
                         symbol,
                         price=price,
@@ -256,7 +245,6 @@ async def start_shadow_engine() -> None:
                         "atr": float(atr or 0.0),
                     }
 
-                    # Existing positions are always managed by Trade Manager.
                     runtime.evaluate_position(symbol)
 
                     if ema100 is None or rsi is None or atr is None or atr <= 0:
@@ -281,9 +269,6 @@ async def start_shadow_engine() -> None:
                             )
 
                     elif signal == "SELL" and has_position:
-                        # Part 8 Smart Hold/Recovery remains authoritative.
-                        # A strategy SELL is therefore evaluated by the position
-                        # risk manager rather than directly forcing a sale.
                         logger.info("SELL signal observed for %s; Trade Manager decides exit/hold.", symbol)
 
         except Exception as exc:
