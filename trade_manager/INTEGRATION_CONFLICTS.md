@@ -65,7 +65,12 @@ This file records integration issues explicitly instead of hiding them inside ad
 
 14. **Trade Manager -> core Paper Execution lifecycle**
    - Added integration coverage proving BUY execution through `CoreExecutionGateway`, Position creation in the Trade Manager facade, successful SELL/close through the same gateway, fee/P&L propagation, and preservation of an OPEN Position when the exit execution fails.
-   - GitHub Actions run `31765679521` passed both Paper Execution and Trade Manager integration smoke tests.
+   - GitHub Actions run `31766297912` passed the new end-to-end Trade Manager paper contract tests.
+
+15. **CI coverage gap for Trade Manager integration**
+   - The workflow previously ran only the isolated paper execution test and one integration smoke test.
+   - It now runs the Part 6/7 contract tests, Trade Manager integration tests, and the Trade Manager -> core Paper Execution end-to-end tests on every push to `tm-integration-work`.
+   - GitHub Actions run `31766326362` passed all four test stages.
 
 ## Remaining validation work (not a code contradiction)
 
