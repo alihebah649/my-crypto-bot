@@ -38,6 +38,15 @@ _TM_TO_CORE_STATUS = {
 def core_to_trade_manager(position: CorePosition) -> TradeManagerPosition:
     """Convert a core position into the canonical TM lifecycle model."""
     opened_at = position.entry_time.timestamp()
+    metadata = {
+        "source_model": "core.models.Position",
+        "recovery_state": position.recovery_state.value,
+        "recovery_target_price": position.recovery_target_price,
+        "recovery_mode": position.recovery_mode,
+        "partial_exit_done": position.partial_exit_done,
+        "trailing_active": position.trailing_active,
+        "break_even_active": position.break_even_active,
+    }
     return TradeManagerPosition(
         position_id=position.trade_id or f"CORE-{position.symbol}-{int(opened_at * 1000)}",
         symbol=position.symbol,
@@ -51,8 +60,6 @@ def core_to_trade_manager(position: CorePosition) -> TradeManagerPosition:
         highest_price=position.runtime.highest_price_seen or position.highest_price or position.entry_price,
         max_profit_percent=position.runtime.highest_profit_percent,
         max_drawdown_percent=max(0.0, -position.runtime.lowest_profit_percent),
-        recovery_active=position.recovery_state == RecoveryState.ACTIVE,
-        partial_closed=position.partial_exit_done,
         opened_at=opened_at,
         close_reason=_close_reason(position.exit_reason),
         gross_pnl=position.realized_profit + position.unrealized_profit,
@@ -60,11 +67,7 @@ def core_to_trade_manager(position: CorePosition) -> TradeManagerPosition:
         total_fees=position.fees_paid,
         entry_metadata={"core_trade_id": position.trade_id, "strategy_name": position.strategy_name},
         entry_context={"trade_type": position.trade_type.value, "strategy_version": position.strategy_version},
-        metadata={
-            "source_model": "core.models.Position",
-            "recovery_state": position.recovery_state.value,
-            "recovery_target_price": position.recovery_target_price,
-        },
+        metadata=metadata,
     )
 
 
@@ -81,6 +84,7 @@ def trade_manager_to_core(position: TradeManagerPosition, existing: CorePosition
         entry_price=position.entry_price,
         trade_id=position.position_id,
     )
+    metadata = position.metadata
     core.symbol = position.symbol
     core.quantity = position.quantity
     core.entry_price = position.entry_price
@@ -93,14 +97,25 @@ def trade_manager_to_core(position: TradeManagerPosition, existing: CorePosition
     core.runtime.last_price = position.current_price
     core.runtime.highest_price_seen = position.highest_price
     core.runtime.highest_profit_percent = position.max_profit_percent
-    core.runtime.partial_exit_done = position.partial_closed
+    core.runtime.lowest_profit_percent = -position.max_drawdown_percent
+    core.runtime.partial_exit_done = bool(metadata.get("partial_exit_done", False))
     core.runtime.realized_profit = position.realized_pnl
     core.runtime.unrealized_profit = position.gross_pnl - position.realized_pnl
     core.realized_profit = position.realized_pnl
     core.unrealized_profit = core.runtime.unrealized_profit
     core.fees_paid = position.total_fees
-    core.recovery_mode = position.recovery_active
-    core.recovery_state = RecoveryState.ACTIVE if position.recovery_active else RecoveryState.DISABLED
+    core.recovery_mode = bool(metadata.get("recovery_mode", position.status is PositionStatus.HOLD))
+    recovery_state = metadata.get("recovery_state")
+    if recovery_state:
+        try:
+            core.recovery_state = RecoveryState(recovery_state)
+        except ValueError:
+            core.recovery_state = RecoveryState.ACTIVE if core.recovery_mode else RecoveryState.DISABLED
+    else:
+        core.recovery_state = RecoveryState.ACTIVE if core.recovery_mode else RecoveryState.DISABLED
+    core.recovery_target_price = float(metadata.get("recovery_target_price", 0.0) or 0.0)
+    core.trailing_active = bool(metadata.get("trailing_active", False))
+    core.break_even_active = bool(metadata.get("break_even_active", False))
     core.status = _TM_TO_CORE_STATUS[position.status]
     core.is_open = position.status not in {
         PositionStatus.CLOSED,
