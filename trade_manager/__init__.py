@@ -21,6 +21,7 @@ from .part4_monitor import MarketSnapshot, PositionMonitor, PositionMonitorThrea
 from .part5_exit import ExitReason, ExitResult, ExitValidator, SpotExitService
 from .part5_recovery import RecoveryRecord, RecoveryComparisonMatrix, RecoveryReport, RecoveryManager
 from .part6_risk import RiskDecision, RiskRejectReason, RiskConfig, RiskController, PositionSizeCalculator, PositionSizeNormalizer, PositionFundingValidator, AdvancedCapitalValidator, RiskLockManager, FinalRiskValidator, FinalRiskDecision
+from .part6_integration import Part6EntryApprovalAdapter
 from .part7_execution import OrderSide, OrderType, OrderStatus, ExecutionOrder, ExecutionResultStatus, ExecutionResult, ExecutionError, ExecutionResponse, ExecutionBroker, ExecutionRequestBuilder, ExecutionErrorHandler, BrokerUtilities, TradeManagerExecutionPipeline
 from .integration_contracts import CONTRACT, IntegrationContract, RiskSizingRequest, RiskSizingApproval, ExecutionRequest, ExecutionOutcomeRecord, ExecutionOutcome, ExecutionSide
 from .core_execution_gateway import CoreExecutionGateway
@@ -32,7 +33,7 @@ __all__ = [
     "PositionMetrics","PositionMetricsCalculator","PositionMetricsService","ExchangePosition","ExchangePositionAdapter","MemoryExchangePositionAdapter","PositionSynchronizer","SynchronizationResult","SynchronizationStatus",
     "PositionManagementFacade","RuntimeTradeContext","RuntimeStatistics","TradeManagerRuntime","Trade","TradeSide","TradeStatus","TradeAction","TradeDecision","ProtectionLogicEvaluator","TradeStateManager",
     "MarketSnapshot","PositionMonitor","PositionMonitorThread","ExitReason","ExitResult","ExitValidator","SpotExitService","RecoveryRecord","RecoveryComparisonMatrix","RecoveryReport","RecoveryManager",
-    "RiskDecision","RiskRejectReason","RiskConfig","RiskController","PositionSizeCalculator","PositionSizeNormalizer","PositionFundingValidator","AdvancedCapitalValidator","RiskLockManager","FinalRiskValidator","FinalRiskDecision",
+    "RiskDecision","RiskRejectReason","RiskConfig","RiskController","PositionSizeCalculator","PositionSizeNormalizer","PositionFundingValidator","AdvancedCapitalValidator","RiskLockManager","FinalRiskValidator","FinalRiskDecision","Part6EntryApprovalAdapter",
     "OrderSide","OrderType","OrderStatus","ExecutionOrder","ExecutionResultStatus","ExecutionResult","ExecutionError","ExecutionResponse","ExecutionBroker","ExecutionRequestBuilder","ExecutionErrorHandler","BrokerUtilities","TradeManagerExecutionPipeline",
     "CONTRACT","IntegrationContract","RiskSizingRequest","RiskSizingApproval","ExecutionRequest","ExecutionOutcomeRecord","ExecutionOutcome","ExecutionSide","CoreExecutionGateway","core_to_trade_manager","trade_manager_to_core",
 ]
