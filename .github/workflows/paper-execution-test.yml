@@ -61,3 +61,6 @@ jobs:
 
       - name: Run Shadow Main Trade Manager lifecycle tests
         run: python -m pytest -q tests/test_shadow_trade_manager_runtime.py
+
+      - name: Run full Python regression suite
+        run: python -m pytest -q
