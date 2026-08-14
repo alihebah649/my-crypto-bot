@@ -5,7 +5,7 @@ Work branch: `tm-integration-work`
 
 This file records integration issues explicitly instead of hiding them inside adapters.
 
-## Resolved in this pass
+## Resolved
 
 1. **Repository owner/path mismatch**
    - Correct owner: `alihebah649`.
@@ -13,47 +13,66 @@ This file records integration issues explicitly instead of hiding them inside ad
    - Previous `Kamel-Abdullah/shadow-trading-bot` target was incorrect.
 
 2. **Spot-only vs legacy SHORT logic**
-   - Part-2 protection models previously exposed `SHORT` and the evaluator contained short-side branches.
+   - Part-2 protection models previously exposed SHORT behavior.
    - The active integration contract is spot-only (`LONG` owned-asset position).
-   - The protection model/evaluator now reject non-LONG state.
+   - Protection models/evaluator reject non-LONG state.
 
 3. **Part-1/Part-8 model boundary**
-   - Part-1 runtime bookkeeping was written against the Part-8 `trade_manager.models.Position` contract instead of introducing a second Position class.
+   - Part-1 runtime bookkeeping uses the canonical Part-8 `trade_manager.models.Position` contract.
+   - No second Position persistence model was introduced.
 
 4. **Decision vs mutation boundary**
-   - Part 3 remains a state-mutation layer over the pure Part-2 evaluator; it does not perform broker calls.
+   - Part 2 evaluates protection decisions; Part 3 applies state mutations.
+   - Part 3 does not place broker/network orders.
 
 5. **Monitoring isolation**
-   - Part 4 monitoring processes positions independently so one position exception does not stop the cycle.
+   - Part 4 processes positions independently so one position exception does not stop the cycle.
 
 6. **Exit execution boundary**
-   - Part 5 exit code requires an injected `ExecutionGateway.close_spot()` rather than silently calling an arbitrary broker API.
+   - Part 5/8 exit flow is routed through `ExecutionGateway.close_spot()`.
+   - The controller refuses to mark a position CLOSED when execution is missing, rejected or failed.
+   - The actual exit price and commission come from the execution result when available.
 
 7. **Recovery transparency**
    - Part-5 recovery/reconciliation reports missing DB/broker state instead of silently repairing discrepancies.
 
 8. **Core execution ownership**
-   - Added `core_execution_gateway.py` as the single adapter from the Trade Manager execution contract to `core.execution_adapter.ExecutionAdapter`.
-   - Trade Manager no longer needs a second order implementation for paper/live execution.
+   - `core_execution_gateway.py` remains the single adapter from Trade Manager execution contracts to `core.execution_adapter.ExecutionAdapter`.
+   - Trade Manager does not duplicate Binance/paper order implementation.
 
 9. **Core Position vs Trade Manager Position**
-   - Added `core_position_adapter.py` as the explicit conversion boundary.
-   - The two models remain separate; callers must convert deliberately instead of duck-typing or duplicating persistence.
+   - `core_position_adapter.py` remains the explicit conversion boundary.
    - Negative unrealized P&L is preserved during conversion.
 
-## Still unresolved / must not be guessed
+10. **Parts 6 and 7 authoritative source availability**
+   - The complete `trade manager parts 1-7.docx` is now available and was used as the source for `part6_risk.py` and `part7_execution.py`.
+   - The overlapping source helpers were normalized into separate files rather than copied into one conflicting module.
+   - Part 6 owns pre-entry risk/sizing/limits/locks and never executes orders.
+   - Part 7 owns execution contracts/building/error handling/pipeline and never mutates Position state.
 
-### A. Parts 6 and 7 source contract
-The currently available File Library source is `trade manager parts 1-5.docx`; the repository history also shows Part-1 and Part-2 commits. A complete, authoritative Part-6/Part-7 source was not available in the current accessible sources during this pass. Therefore no invented Part-6/Part-7 API is being claimed as final.
+11. **Part 6/7 -> Part 8 contract**
+   - Part 6 uses spot-only sizing with leverage fixed to 1.0.
+   - Part 7 maps to the canonical `integration_contracts.ExecutionGateway`.
+   - Part 8 Position state is committed only after a successful execution result.
 
-### B. Final Paper Trading composition
-The core paper adapter exists and can be reached through `CoreExecutionGateway`, but the full application-level composition (strategy -> risk -> execution -> TM position commit -> ledger/reporting) has not yet been proven end-to-end on this branch.
+12. **Entry ordering**
+   - `PositionManagementFacade.open_position()` now requires an injected execution gateway and explicit Part-6 risk approval callback before sending BUY.
+   - A failed/rejected execution creates no Position record.
+   - Executed quantity/price/commission become the Position's authoritative entry values.
 
-### C. Part-8 facade vs execution gateway
-The current Part-8 facade still contains local position lifecycle operations. Before Paper Trading, its close/open responsibilities must be explicitly coordinated with the execution gateway so that a position is not marked closed before a successful execution result is received.
+13. **Review-required semantics**
+   - `REVIEW_REQUIRED` is a state requiring explicit human/system review and is not treated as an automatic sell.
 
-### D. Full Part-5 legacy surface
-The original Parts 1-5 document contains several overlapping variants (simple/advanced protection, exit manager/finalizer, recovery manager, monitor thread). The new files preserve responsibilities without copying contradictory variants into one giant module.
+## Remaining validation work (not a code contradiction)
+
+### A. End-to-end Paper Trading composition
+The repository contains the core paper adapter and the Trade Manager contracts, but the full application composition (strategy -> risk approval -> execution -> Position commit -> ledger/reporting) still requires an end-to-end test run on the branch.
+
+### B. Exchange-specific execution details
+The Part-7 document contains broker-specific skeletons. Concrete Binance/REST details remain owned by `core.execution_adapter`; they must not be reimplemented in Trade Manager.
+
+### C. Legacy Part-5 variants
+The original Parts 1-5 document contains overlapping simple/advanced protection, exit, recovery and monitor variants. The repository keeps one canonical implementation per responsibility and records the source variants here rather than duplicating them.
 
 ## Rule for future integration
 
