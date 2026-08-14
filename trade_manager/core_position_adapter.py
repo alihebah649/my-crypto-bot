@@ -7,7 +7,6 @@ caller should rely on duck-typing or duplicate persistence for the two models.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from core.models import Position as CorePosition
 from core.models import PositionStatus as CorePositionStatus
@@ -96,7 +95,7 @@ def trade_manager_to_core(position: TradeManagerPosition, existing: CorePosition
     core.runtime.highest_profit_percent = position.max_profit_percent
     core.runtime.partial_exit_done = position.partial_closed
     core.runtime.realized_profit = position.realized_pnl
-    core.runtime.unrealized_profit = max(0.0, position.gross_pnl - position.realized_pnl)
+    core.runtime.unrealized_profit = position.gross_pnl - position.realized_pnl
     core.realized_profit = position.realized_pnl
     core.unrealized_profit = core.runtime.unrealized_profit
     core.fees_paid = position.total_fees
