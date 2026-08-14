@@ -21,7 +21,7 @@ This file records integration issues explicitly instead of hiding them inside ad
    - Part-1 runtime bookkeeping was written against the Part-8 `trade_manager.models.Position` contract instead of introducing a second Position class.
 
 4. **Decision vs mutation boundary**
-   - Part 3 now remains a state-mutation layer over the pure Part-2 evaluator; it does not perform broker calls.
+   - Part 3 remains a state-mutation layer over the pure Part-2 evaluator; it does not perform broker calls.
 
 5. **Monitoring isolation**
    - Part 4 monitoring processes positions independently so one position exception does not stop the cycle.
@@ -32,19 +32,28 @@ This file records integration issues explicitly instead of hiding them inside ad
 7. **Recovery transparency**
    - Part-5 recovery/reconciliation reports missing DB/broker state instead of silently repairing discrepancies.
 
+8. **Core execution ownership**
+   - Added `core_execution_gateway.py` as the single adapter from the Trade Manager execution contract to `core.execution_adapter.ExecutionAdapter`.
+   - Trade Manager no longer needs a second order implementation for paper/live execution.
+
+9. **Core Position vs Trade Manager Position**
+   - Added `core_position_adapter.py` as the explicit conversion boundary.
+   - The two models remain separate; callers must convert deliberately instead of duck-typing or duplicating persistence.
+   - Negative unrealized P&L is preserved during conversion.
+
 ## Still unresolved / must not be guessed
 
 ### A. Parts 6 and 7 source contract
 The currently available File Library source is `trade manager parts 1-5.docx`; the repository history also shows Part-1 and Part-2 commits. A complete, authoritative Part-6/Part-7 source was not available in the current accessible sources during this pass. Therefore no invented Part-6/Part-7 API is being claimed as final.
 
-### B. Broker execution implementation
-`trade_manager/integration_contracts.py` defines the gateway contract, but the current Part-8 facade can still perform a local close through the controller/calculator path. Before Paper Trading, the authoritative execution path must be selected and wired so that `risk -> execution -> position commit` is the only real order path.
+### B. Final Paper Trading composition
+The core paper adapter exists and can be reached through `CoreExecutionGateway`, but the full application-level composition (strategy -> risk -> execution -> TM position commit -> ledger/reporting) has not yet been proven end-to-end on this branch.
 
-### C. Core Position vs Trade Manager Position
-`core.models.Position` and `trade_manager.models.Position` are different domain models. The current branch contains both. They must not be merged by duck-typing or duplicate persistence. A single explicit adapter/ownership decision is still required after Parts 6-7 are verified.
+### C. Part-8 facade vs execution gateway
+The current Part-8 facade still contains local position lifecycle operations. Before Paper Trading, its close/open responsibilities must be explicitly coordinated with the execution gateway so that a position is not marked closed before a successful execution result is received.
 
 ### D. Full Part-5 legacy surface
-The original Parts 1-5 document contains several overlapping variants (simple/advanced protection, exit manager/finalizer, recovery manager, monitor thread). The new files preserve the responsibilities without copying contradictory variants into one giant module.
+The original Parts 1-5 document contains several overlapping variants (simple/advanced protection, exit manager/finalizer, recovery manager, monitor thread). The new files preserve responsibilities without copying contradictory variants into one giant module.
 
 ## Rule for future integration
 
