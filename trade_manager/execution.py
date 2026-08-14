@@ -17,6 +17,17 @@ class OrderType(str, Enum):
     LIMIT = "LIMIT"
 
 
+class ExecutionStatus(str, Enum):
+    CREATED = "CREATED"
+    SUBMITTED = "SUBMITTED"
+    FILLED = "FILLED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass(slots=True)
 class ExecutionOrder:
     symbol: str
@@ -29,6 +40,8 @@ class ExecutionOrder:
 
 @dataclass(slots=True)
 class ExecutionResult:
+    """Part-7 result consumed by Trade Manager and the Part-8 lifecycle."""
+
     success: bool
     symbol: str
     side: str
@@ -41,6 +54,12 @@ class ExecutionResult:
     client_order_id: str | None = None
     message: str = ""
     raw: dict[str, Any] | None = None
+    status: ExecutionStatus = ExecutionStatus.UNKNOWN
+    remaining_quantity: float = 0.0
+
+    @property
+    def fully_filled(self) -> bool:
+        return self.status is ExecutionStatus.FILLED and self.remaining_quantity <= 0.0
 
 
 class ExecutionBroker(Protocol):
@@ -64,18 +83,19 @@ class ExecutionPipeline:
     def execute(self, order: ExecutionOrder) -> ExecutionResult:
         if not order.symbol or order.quantity <= 0:
             return ExecutionResult(False, order.symbol, order.side.value, order.quantity,
-                                   message="INVALID_ORDER")
+                                   message="INVALID_ORDER", status=ExecutionStatus.REJECTED)
         if self.validator is not None:
             result = self.validator(order)
             if result is False:
                 return ExecutionResult(False, order.symbol, order.side.value, order.quantity,
-                                       message="VALIDATION_FAILED")
+                                       message="VALIDATION_FAILED", status=ExecutionStatus.REJECTED)
         started = time.perf_counter()
         try:
             result = self.broker.submit_order(order)
         except Exception as exc:
             result = ExecutionResult(False, order.symbol, order.side.value, order.quantity,
-                                     client_order_id=order.client_order_id, message=str(exc))
+                                     client_order_id=order.client_order_id, message=str(exc),
+                                     status=ExecutionStatus.FAILED)
         if self.audit_logger is not None:
             self.audit_logger(result, (time.perf_counter() - started) * 1000.0)
         return result
