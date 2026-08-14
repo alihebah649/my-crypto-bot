@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -175,13 +176,29 @@ class _PaperLossPeriodLedger:
 class ShadowTradeManagerRuntime:
     """Fully composed Trade Manager runtime used by ``shadow_main.py``."""
 
-    def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
-                 execution_adapter: Optional[ExecutionAdapter] = None,
-                 risk_config: Optional[RiskConfig] = None) -> None:
+    def __init__(
+        self,
+        *,
+        initial_cash: float = 1000.0,
+        fee_rate: float = 0.001,
+        execution_adapter: Optional[ExecutionAdapter] = None,
+        risk_config: Optional[RiskConfig] = None,
+        state_dir: Optional[str] = None,
+    ) -> None:
         self.market = ShadowMarketState()
-        self.repository = PositionRepository()
+        self.state_dir = state_dir
+        position_state_path = None
+        paper_state_path = None
+        if state_dir:
+            os.makedirs(state_dir, exist_ok=True)
+            position_state_path = os.path.join(state_dir, "positions.json")
+            paper_state_path = os.path.join(state_dir, "paper_balance.json")
+
+        self.repository = PositionRepository(state_path=position_state_path)
         self.execution_adapter = execution_adapter or PaperExecutionAdapter(
-            initial_cash=initial_cash, fee_rate=fee_rate,
+            initial_cash=initial_cash,
+            fee_rate=fee_rate,
+            state_path=paper_state_path,
         )
         self.loss_tracker = LossTracker()
         self.loss_ledger = _PaperLossPeriodLedger(self.loss_tracker)
@@ -218,6 +235,9 @@ class ShadowTradeManagerRuntime:
         )
         if hasattr(self.execution_adapter, "connect"):
             self.execution_adapter.connect()
+        # Closed positions loaded from durable state are fed into the loss gate
+        # immediately. Open positions remain owned and await fresh market data.
+        self.loss_ledger.sync(self.repository.get_closed_positions())
 
     def update_market(self, symbol: str, **kwargs: Any) -> None:
         self.market.update(symbol, **kwargs)
