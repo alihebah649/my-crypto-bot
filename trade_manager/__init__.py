@@ -16,6 +16,7 @@ from .risk import (
 )
 from .protection import ProtectionLogicEvaluator
 from .execution import ExecutionOrder, ExecutionResult, ExecutionPipeline, OrderSide, OrderType
+from .core_execution_adapter import CoreExecutionBrokerAdapter
 from .recovery import RecoveryManager, RecoveryReport
 from .manager import TradeManager, CloseResult
 from .facade import PositionManagementFacade
@@ -31,12 +32,11 @@ __all__ = [
     "DailyRiskManager", "WeeklyRiskManager", "MonthlyRiskManager",
     "RiskLockManager", "RiskLockState", "ProtectionLogicEvaluator",
     "ExecutionOrder", "ExecutionResult", "ExecutionPipeline", "OrderSide", "OrderType",
-    "RecoveryManager", "RecoveryReport", "TradeManager", "CloseResult",
-    "PositionManagementFacade", "PositionRepository", "PositionCalculator",
-    "PositionCalculationResult", "Position", "PositionStatus", "PositionSide",
-    "PositionCloseReason", "PositionRiskManager", "PositionExitDecision",
-    "PositionExitReason", "CorePositionBridge", "from_core_position",
-    "apply_to_core_position",
+    "CoreExecutionBrokerAdapter", "RecoveryManager", "RecoveryReport",
+    "TradeManager", "CloseResult", "PositionManagementFacade", "PositionRepository",
+    "PositionCalculator", "PositionCalculationResult", "Position", "PositionStatus",
+    "PositionSide", "PositionCloseReason", "PositionRiskManager", "PositionExitDecision",
+    "PositionExitReason", "CorePositionBridge", "from_core_position", "apply_to_core_position",
 ]
 
-__version__ = "1.3.0-integrated"
+__version__ = "1.4.0-integrated"
