@@ -1,25 +1,20 @@
-"""Protection decision models extracted from Trade Manager Part 2.
+"""Protection decision models from Trade Manager Part 2.
 
-These models are intentionally independent from the Part 8 position models.
-They preserve the Part 2 contract until Parts 3-7 are reconciled.
+The current integration contract is SPOT ONLY. A trade represented here is
+therefore LONG/owned-asset state; short-side behavior is deliberately not part
+of this boundary.
 """
-
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-
 class TradeSide(Enum):
     LONG = "LONG"
-    SHORT = "SHORT"
-
 
 class TradeStatus(Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
-
 
 class TradeAction(Enum):
     NONE = "NONE"
@@ -27,7 +22,6 @@ class TradeAction(Enum):
     STOP_LOSS = "STOP_LOSS"
     UPDATE_STOP = "UPDATE_STOP"
     ACTIVATE_BREAK_EVEN = "ACTIVATE_BREAK_EVEN"
-
 
 @dataclass
 class Trade:
@@ -46,9 +40,12 @@ class Trade:
     break_even_done: bool = False
 
     def __post_init__(self) -> None:
+        if self.side is not TradeSide.LONG:
+            raise ValueError("Trade Manager integration is spot-only; side must be LONG")
+        if self.entry_price <= 0:
+            raise ValueError("entry_price must be positive")
         self.highest_price = self.entry_price
         self.lowest_price = self.entry_price
-
 
 @dataclass
 class TradeDecision:
