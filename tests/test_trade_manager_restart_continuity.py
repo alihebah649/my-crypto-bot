@@ -5,6 +5,19 @@ from __future__ import annotations
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 
 
+def market(price: float, ema100: float = 90.0) -> dict:
+    return {
+        "price": price,
+        "bid": price - 0.01,
+        "ask": price + 0.01,
+        "spread_percent": 0.02,
+        "atr": 2.0,
+        "volume_usdt": 1_000_000.0,
+        "volatility": 0.02,
+        "ema100": ema100,
+    }
+
+
 def test_open_position_and_paper_balance_survive_runtime_restart(tmp_path):
     state_dir = str(tmp_path / "trade_manager")
 
@@ -13,17 +26,7 @@ def test_open_position_and_paper_balance_survive_runtime_restart(tmp_path):
         fee_rate=0.001,
         state_dir=state_dir,
     )
-    first.update_market(
-        "BTCUSDT",
-        price=100.0,
-        bid=99.99,
-        ask=100.01,
-        spread_percent=0.02,
-        atr=2.0,
-        volume_usdt=1_000_000.0,
-        volatility=0.02,
-        ema100=90.0,
-    )
+    first.update_market("BTCUSDT", **market(100.0))
     position = first.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
     quantity = position.quantity
@@ -52,20 +55,11 @@ def test_closed_position_and_balance_are_restored_without_double_counting(tmp_pa
         fee_rate=0.001,
         state_dir=state_dir,
     )
-    first.update_market(
-        "BTCUSDT",
-        price=100.0,
-        bid=99.99,
-        ask=100.01,
-        spread_percent=0.02,
-        atr=2.0,
-        volume_usdt=1_000_000.0,
-        volatility=0.02,
-        ema100=90.0,
-    )
+    first.update_market("BTCUSDT", **market(100.0))
     position = first.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
 
+    first.update_market("BTCUSDT", **market(110.0))
     closed = first.facade.close_position(position.position_id, 110.0)
     assert closed is not None
     assert closed.status.name == "CLOSED"
