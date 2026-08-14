@@ -15,17 +15,17 @@ def test_closed_loss_updates_daily_weekly_monthly_risk_snapshot():
     assert position is not None
 
     runtime.update_market(
-        "BTCUSDT", price=90.0, bid=89.99, ask=90.01,
+        "BTCUSDT", price=70.0, bid=69.99, ask=70.01,
         spread_percent=0.02, atr=2.0, volume_usdt=1_000_000.0, ema100=95.0,
     )
-    closed = runtime.facade.close_position(position.position_id, 90.0)
+    closed = runtime.facade.close_position(position.position_id, 70.0)
     assert closed is not None
-    assert closed.realized_pnl < 0
+    assert closed.realized_pnl < -50.0
 
     # The runtime's next market synchronization feeds the closed result into
     # the Part-6 daily/weekly/monthly loss snapshot.
     runtime.update_market(
-        "BTCUSDT", price=90.0, bid=89.99, ask=90.01,
+        "BTCUSDT", price=70.0, bid=69.99, ask=70.01,
         spread_percent=0.02, atr=2.0, volume_usdt=1_000_000.0, ema100=95.0,
     )
 
