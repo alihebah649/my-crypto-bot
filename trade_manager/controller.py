@@ -1,7 +1,10 @@
 """8.5 - Position lifecycle controller."""
+from __future__ import annotations
+
 import threading
 import time
 from typing import List, Optional, Tuple
+
 from .calculator import PositionCalculator
 from .models import Position, PositionCloseReason, PositionStatus
 from .repository import PositionRepository
@@ -64,6 +67,9 @@ class PositionController:
                 return position
             if position.status not in {PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED}:
                 return None
+            if decision.exit_price <= 0:
+                raise ValueError("exit_price must be positive")
+
             position.status = PositionStatus.CLOSED
             position.closed_at = time.time()
             position.current_price = decision.exit_price
@@ -72,6 +78,7 @@ class PositionController:
                 PositionExitReason.TAKE_PROFIT: PositionCloseReason.TAKE_PROFIT,
                 PositionExitReason.TRAILING_STOP: PositionCloseReason.TRAILING_STOP,
                 PositionExitReason.BREAK_EVEN: PositionCloseReason.BREAK_EVEN,
+                PositionExitReason.MANUAL: PositionCloseReason.MANUAL,
                 PositionExitReason.REVIEW_REQUIRED: PositionCloseReason.REVIEW_EXIT,
                 PositionExitReason.RECOVERY_FAILED: PositionCloseReason.RECOVERY_FAILED,
             }
