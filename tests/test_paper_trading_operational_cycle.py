@@ -75,8 +75,10 @@ def test_full_paper_operational_cycle(tmp_path):
     assert recovered.current_price == pytest.approx(102.0)
     assert recovered.metadata.get("break_even_activated") is True
 
-    # 6) Explicit exit after recovery -> Core Paper SELL -> Trade Manager close
-    # state -> realized P&L and fee accounting.
+    # 6) Explicit exit after recovery -> first update the paper market to the
+    # intended fill price, then Core Paper SELL -> Trade Manager close state ->
+    # realized P&L and fee accounting.
+    market(runtime, "BTCUSDT", 103.0, ema=90.0)
     closed = runtime.facade.close_position(position.position_id, 103.0)
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
