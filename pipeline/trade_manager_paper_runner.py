@@ -1,30 +1,16 @@
-"""Paper runner with Trade Manager as the execution/lifecycle boundary.
-
-The existing market/indicator/recovery loop is retained for stability, but
-order execution and canonical position lifecycle now pass through:
-Part 6 Risk -> Part 7 Execution -> Part 8 Position.
-The core PortfolioEngine remains the accounting projection for compatibility.
-"""
+"""Paper runner with Trade Manager as the execution/lifecycle boundary."""
 from __future__ import annotations
 
 import logging
 
-from core.models import Position as CorePosition
-from core.models import TradeType
+from config import BUY_SCORE
+from core.models import Position as CorePosition, TradeType
 from trade_manager import (
-    PositionCalculator,
-    PositionCloseReason,
-    PositionController,
-    PositionManagementFacade,
-    PositionRepository,
-    PositionRiskManager,
-    RiskManager,
-    ExecutionPipeline as TMExecutionPipeline,
+    PositionCalculator, PositionCloseReason, PositionController,
+    PositionManagementFacade, PositionRepository, PositionRiskManager,
+    RiskManager, ExecutionPipeline as TMExecutionPipeline,
     CoreExecutionBrokerAdapter,
-    ExecutionOrder,
-    OrderSide as TMOrderSide,
 )
-
 from .paper_trading_runner import PaperTradingRunner
 
 logger = logging.getLogger("ShadowTrading.TradeManagerPaperRunner")
@@ -37,10 +23,7 @@ class TradeManagerPaperTradingRunner(PaperTradingRunner):
         super().__init__(**kwargs)
         repository = PositionRepository()
         controller = PositionController(PositionRiskManager(), repository)
-        broker = CoreExecutionBrokerAdapter(
-            self.paper_adapter,
-            strategy_name="Shadow Trading System V3",
-        )
+        broker = CoreExecutionBrokerAdapter(self.paper_adapter, strategy_name="Shadow Trading System V3")
         tm_execution = TMExecutionPipeline(broker)
         self.trade_manager = PositionManagementFacade(
             repository=repository,
@@ -54,13 +37,15 @@ class TradeManagerPaperTradingRunner(PaperTradingRunner):
         logger.info("Trade Manager is now the canonical paper execution boundary")
 
     def _consider_entry(self, symbol, state) -> None:
-        if state.score < self.BUY_SCORE if hasattr(self, "BUY_SCORE") else False:
+        if state.score < BUY_SCORE:
             return
         if self.portfolio.has_position(symbol) or self.trade_manager.controller.has_position(symbol):
             return
 
         snapshot = self.portfolio.snapshot
-        stop_loss = max(0.0, state.price - (state.atr * 2.0))
+        stop_loss = state.price - (state.atr * 2.0)
+        if stop_loss <= 0:
+            return
         risk = self.trade_manager.validate_entry(
             equity=snapshot.equity,
             free_balance=snapshot.free_balance,
@@ -68,14 +53,13 @@ class TradeManagerPaperTradingRunner(PaperTradingRunner):
             stop_loss=stop_loss,
             current_exposure=getattr(snapshot, "market_value", snapshot.invested),
             symbol_exposure=0.0,
-            estimated_fee=state.price * (1.0 - 0.0) * 0.001,
+            estimated_fee=state.price * 0.001,
         )
         if not risk.approved:
             logger.info("TM ENTRY REJECTED %s: %s", symbol, risk.reason)
             return
 
-        position_value = risk.position_size
-        quantity = position_value / state.price if state.price > 0 else 0.0
+        quantity = risk.position_size / state.price if state.price > 0 else 0.0
         if quantity <= 0:
             return
 
