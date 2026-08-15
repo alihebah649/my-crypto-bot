@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections import defaultdict
 from datetime import datetime, date
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 import requests
+
+from config import BUY_SCORE
 
 logger = logging.getLogger("ShadowTrading.Telegram")
 
@@ -92,7 +95,8 @@ class TelegramReporter:
             "📄 الوضع: <b>PAPER TRADING</b>"
         )
 
-    def daily_report(self, trades: Iterable, report_date: date) -> str:
+    @staticmethod
+    def daily_report(trades: Iterable, report_date: date) -> str:
         grouped = defaultdict(lambda: {"win": 0, "loss": 0, "net": 0.0})
         total_win = total_loss = 0
         total_net = 0.0
@@ -135,7 +139,7 @@ class TelegramReporter:
 
 
 class PaperTradeTelegramMonitor:
-    """Detects new paper positions/closed trades without altering trade logic."""
+    """Detects paper trades and reports operational diagnostics without altering trade logic."""
 
     def __init__(self, runner, *, interval: float = 5.0, timezone_name: str = "Asia/Aden") -> None:
         self.runner = runner
@@ -147,6 +151,8 @@ class PaperTradeTelegramMonitor:
         self._last_report_date = datetime.now(self.tz).date()
         self._stop = False
         self._startup_sent = False
+        self._diagnostic_sent = False
+        self._started_at = time.time()
 
     def stop(self) -> None:
         self._stop = True
@@ -166,8 +172,61 @@ class PaperTradeTelegramMonitor:
                 self.poll_once()
             except Exception:
                 logger.exception("Telegram monitor cycle failed")
-            import time
             time.sleep(self.interval)
+
+    def _send_no_trade_diagnostic(self) -> None:
+        """One-time diagnostic if the engine is alive but no paper trade occurred."""
+        if self._diagnostic_sent:
+            return
+        if time.time() - self._started_at < 300:
+            return
+
+        portfolio = self.runner.portfolio
+        if portfolio.total_open_positions() > 0 or len(portfolio.trade_ledger.all_trades()) > 0:
+            self._diagnostic_sent = True
+            return
+
+        cycles = int(getattr(self.runner, "_cycle", 0))
+        states = getattr(self.runner, "states", {})
+        ready = [s for s in states.values() if getattr(s, "updated_at", 0.0) > 0]
+        candidates = [
+            (symbol, state) for symbol, state in states.items()
+            if getattr(state, "score", 0.0) >= BUY_SCORE
+        ]
+        candidates.sort(key=lambda item: getattr(item[1], "score", 0.0), reverse=True)
+
+        lines = [
+            "🔎 <b>تشخيص Paper Trading بعد التشغيل</b>",
+            "لم يتم تسجيل شراء أو بيع حتى الآن.",
+            "",
+            f"🔄 دورات التشغيل: <b>{cycles}</b>",
+            f"📡 عملات استقبلت بيانات: <b>{len(ready)}/{len(self.runner.symbols)}</b>",
+            f"🎯 إشارات BUY التي تجاوزت {BUY_SCORE}: <b>{len(candidates)}</b>",
+        ]
+
+        if candidates:
+            lines.append("\n<b>أعلى الإشارات الحالية:</b>")
+            for symbol, state in candidates[:5]:
+                lines.append(
+                    f"• {symbol}: score={state.score:.0f}, RSI={state.rsi:.2f}, "
+                    f"price={state.price:.8f}, EMA100={state.ema100:.8f}"
+                )
+        elif ready:
+            top = sorted(
+                ((symbol, state) for symbol, state in states.items() if getattr(state, "updated_at", 0.0) > 0),
+                key=lambda item: getattr(item[1], "score", 0.0),
+                reverse=True,
+            )[:5]
+            lines.append("\n<b>أعلى الدرجات الحالية (لم تصل إلى BUY):</b>")
+            for symbol, state in top:
+                lines.append(
+                    f"• {symbol}: score={state.score:.0f}, RSI={state.rsi:.2f}, "
+                    f"price={state.price:.8f}, EMA100={state.ema100:.8f}"
+                )
+
+        lines.append("\n📄 الوضع: <b>PAPER TRADING فقط</b>")
+        if self.reporter.send("\n".join(lines)):
+            self._diagnostic_sent = True
 
     def poll_once(self) -> None:
         portfolio = self.runner.portfolio
@@ -193,6 +252,8 @@ class PaperTradeTelegramMonitor:
                     trade.exit_reason, portfolio.total_equity(),
                 ))
             self._seen_closed = len(closed_trades)
+
+        self._send_no_trade_diagnostic()
 
         now = datetime.now(self.tz)
         if now.date() != self._last_report_date:
