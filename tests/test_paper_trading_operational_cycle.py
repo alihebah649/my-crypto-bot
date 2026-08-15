@@ -9,7 +9,6 @@ No exchange credentials or live orders are used.
 
 import pytest
 
-from core.paper_execution_adapter import PaperExecutionAdapter
 from trade_manager.models import PositionStatus
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 
@@ -66,14 +65,14 @@ def test_full_paper_operational_cycle(tmp_path):
     assert held.hold_reason
     assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(5.0)
 
-    # 5) Recovery: once profitable again, HOLD returns to OPEN and no sale is
-    # forced merely because the position previously entered HOLD.
-    market(runtime, "BTCUSDT", 101.0, ema=90.0)
+    # 5) Recovery: once sufficiently profitable, HOLD returns to OPEN and the
+    # Part-8 break-even protection can activate without forcing a sale.
+    market(runtime, "BTCUSDT", 102.0, ema=90.0)
     runtime.evaluate_position("BTCUSDT")
     recovered = runtime.repository.get(position.position_id)
     assert recovered is not None
     assert recovered.status is PositionStatus.OPEN
-    assert recovered.current_price == pytest.approx(101.0)
+    assert recovered.current_price == pytest.approx(102.0)
     assert recovered.metadata.get("break_even_activated") is True
 
     # 6) Explicit exit after recovery -> Core Paper SELL -> Trade Manager close
