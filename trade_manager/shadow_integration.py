@@ -259,8 +259,16 @@ class ShadowTradeManagerRuntime:
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
         state = self.market.get(symbol)
         ema = self.market.ema100.get(symbol, 0.0)
-        return {"market": {"overall": "BULLISH" if ema and state.last_price > ema else "NEUTRAL"},
-                "volatility": "NORMAL"}
+        trend = "BULLISH" if ema and state.last_price > ema else "NEUTRAL"
+        # PositionRiskManager expects the EMA trend under ``ema_100`` and also
+        # uses the aggregate market trend. Keeping both fields populated closes
+        # the integration contract between ShadowMarketState and the Part-8
+        # Smart Hold / Recovery evaluator without introducing a second rule set.
+        return {
+            "ema_100": trend,
+            "market": {"overall": trend},
+            "volatility": "NORMAL",
+        }
 
     def _atr_percent(self, symbol: str) -> Optional[float]:
         price = self.market.price.get(symbol, 0.0)
