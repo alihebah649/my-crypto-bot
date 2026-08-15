@@ -10,6 +10,10 @@ def test_closed_loss_updates_daily_weekly_monthly_risk_snapshot():
         "BTCUSDT", price=100.0, bid=99.99, ask=100.01,
         spread_percent=0.02, atr=2.0, volume_usdt=1_000_000.0, ema100=90.0,
     )
+    runtime.update_market(
+        "ETHUSDT", price=100.0, bid=99.99, ask=100.01,
+        spread_percent=0.02, atr=2.0, volume_usdt=1_000_000.0, ema100=90.0,
+    )
 
     position = runtime.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
