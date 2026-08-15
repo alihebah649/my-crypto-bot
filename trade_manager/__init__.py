@@ -27,6 +27,7 @@ from .repository import PositionRepository
 from .calculator import PositionCalculator, PositionCalculationResult
 from .risk_manager import PositionRiskManager, PositionExitDecision, PositionExitReason
 from .core_bridge import CorePositionBridge, from_core_position, apply_to_core_position
+from .integration_contract import EntryIntent, EntryResult, INTEGRATION_ORDER
 
 __all__ = [
     "TradeManagerConfig", "ManagedPosition", "TradeContext", "TradeStatistics",
@@ -41,6 +42,7 @@ __all__ = [
     "Position", "PositionStatus", "PositionSide", "PositionCloseReason",
     "PositionRiskManager", "PositionExitDecision", "PositionExitReason",
     "CorePositionBridge", "from_core_position", "apply_to_core_position",
+    "EntryIntent", "EntryResult", "INTEGRATION_ORDER",
 ]
 
-__version__ = "1.4.1-integrated"
+__version__ = "1.4.2-integrated"
