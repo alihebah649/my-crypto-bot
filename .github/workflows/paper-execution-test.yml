@@ -8,6 +8,7 @@ on:
     paths:
       - "core/**"
       - "pipeline/**"
+      - "trade_manager/**"
       - "shadow_main.py"
       - "config.py"
       - "requirements.txt"
@@ -42,5 +43,9 @@ jobs:
           python -m pip install pytest
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
 
-      - name: Run paper integration tests
-        run: python -m pytest -q pipeline/test_paper_trading.py pipeline/test_integration.py
+      - name: Run paper integration and Trade Manager failure tests
+        run: |
+          python -m pytest -q \
+            pipeline/test_paper_trading.py \
+            pipeline/test_integration.py \
+            trade_manager/test_integration.py
