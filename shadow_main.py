@@ -3,9 +3,9 @@
 Architecture boundary:
     market data -> indicators/strategy -> Trade Manager -> core execution adapter
 
-``shadow_main.py`` is intentionally an orchestrator.  It no longer owns a
+``shadow_main.py`` is intentionally an orchestrator. It does not own a
 second portfolio, risk engine, position store, stop-loss engine, or execution
-implementation.  Those responsibilities belong to Trade Manager/Core.
+implementation. Those responsibilities belong to Trade Manager/Core.
 """
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -31,6 +33,7 @@ INITIAL_CASH = float(os.getenv("PAPER_INITIAL_CASH", "1000.0"))
 FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.001"))
 PAPER_STATE_DIR = os.getenv("PAPER_STATE_DIR", "data/paper")
 TIMEFRAME_SECONDS = 60
+REPORT_TIMEZONE = ZoneInfo(os.getenv("PAPER_REPORT_TIMEZONE", "Asia/Aden"))
 
 ISLAMIC_ASSETS = [
     "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "MATIC-USD",
@@ -47,6 +50,8 @@ current_prices: Dict[str, float] = {}
 market_state: Dict[str, Dict[str, float]] = {}
 resampler_history: Dict[str, list[dict]] = {}
 resampler_current: Dict[str, dict] = {}
+_report_lock = threading.RLock()
+_last_report_date: str | None = None
 
 
 def process_tick(symbol: str, price: float, volume: float, timestamp: float) -> None:
@@ -108,20 +113,97 @@ def evaluate_signal(price: float, ema100, rsi) -> str:
     return "HOLD"
 
 
+# Render environment contract: TOKEN = Telegram bot token, TELEGRAMID = chat id.
+# Legacy names remain supported only as fallbacks.
 TELEGRAM_TOKEN = os.getenv("TOKEN") or os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "199325566")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAMID") or os.getenv("TELEGRAM_CHAT_ID")
 
 
-def send_telegram_message(message: str) -> None:
-    if not TELEGRAM_TOKEN:
-        return
+def send_telegram_message(message: str) -> bool:
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram is not configured: TOKEN/TELEGRAMID are required")
+        return False
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=5,
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=10,
         )
+        if response.status_code != 200:
+            logger.error("Telegram returned HTTP %s: %s", response.status_code, response.text[:500])
+            return False
+        return bool(response.json().get("ok", True))
     except Exception:
         logger.exception("Telegram notification failed")
+        return False
+
+
+def _closed_positions_for_local_date(date_key: str):
+    positions = []
+    for position in runtime.repository.get_closed_positions():
+        closed_at = position.closed_at or position.opened_at
+        local_date = datetime.fromtimestamp(closed_at, REPORT_TIMEZONE).strftime("%Y-%m-%d")
+        if local_date == date_key:
+            positions.append(position)
+    return positions
+
+
+def build_daily_report(date_key: str | None = None) -> str:
+    date_key = date_key or datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d")
+    closed = _closed_positions_for_local_date(date_key)
+    by_coin: Dict[str, dict] = {}
+    for position in closed:
+        coin = position.symbol.upper().replace("-USD", "").replace("USDT", "")
+        row = by_coin.setdefault(coin, {"wins": 0, "losses": 0, "net": 0.0})
+        pnl = float(position.realized_pnl)
+        row["wins" if pnl > 0 else "losses"] += 1
+        row["net"] += pnl
+
+    lines = [
+        "📊 حصاد اليوم الشامل (PAPER TRADING)",
+        f"📅 التاريخ: {date_key}",
+        "",
+        "```",
+        f"{'COIN':<8} | {'WIN':<3} | {'LOSS':<4} | {'NET (FEES)':<10}",
+        "---------------------------------",
+    ]
+    total_wins = total_losses = 0
+    total_net = 0.0
+    for coin in sorted(by_coin):
+        row = by_coin[coin]
+        total_wins += row["wins"]
+        total_losses += row["losses"]
+        total_net += row["net"]
+        lines.append(f"{coin:<8} | {row['wins']:<3} | {row['losses']:<4} | {row['net']:+.2f}$")
+    lines.extend([
+        "---------------------------------",
+        f"{'TOTAL':<8} | {total_wins:<3} | {total_losses:<4} | {total_net:+.2f}$",
+        "```",
+        f"💵 Paper cash: ${runtime.execution_adapter.balance.cash:.2f}",
+        f"📦 Open positions: {len(runtime.repository.get_open_positions())}",
+    ])
+    if not closed:
+        lines.insert(5, "لا توجد صفقات مغلقة في هذا اليوم بعد.")
+    return "\n".join(lines)
+
+
+def _daily_report_loop() -> None:
+    global _last_report_date
+    while True:
+        try:
+            now = datetime.now(REPORT_TIMEZONE)
+            date_key = now.strftime("%Y-%m-%d")
+            with _report_lock:
+                if _last_report_date is None:
+                    _last_report_date = date_key
+                elif date_key != _last_report_date:
+                    previous = _last_report_date
+                    message = build_daily_report(previous)
+                    if send_telegram_message(message):
+                        _last_report_date = date_key
+            time.sleep(30)
+        except Exception:
+            logger.exception("Daily paper report loop failed")
+            time.sleep(30)
 
 
 @app.get("/")
@@ -135,6 +217,8 @@ def home():
         "metrics": getattr(metrics, "__dict__", str(metrics)),
         "last_update": time.time(),
         "persistence": bool(PAPER_STATE_DIR),
+        "telegram_configured": bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID),
+        "daily_report_timezone": str(REPORT_TIMEZONE),
     }), 200
 
 
@@ -152,8 +236,22 @@ def positions():
     ]), 200
 
 
+@app.get("/paper/daily-report")
+def daily_report():
+    return jsonify({
+        "mode": "PAPER",
+        "date": datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d"),
+        "report": build_daily_report(),
+    }), 200
+
+
 async def start_shadow_engine() -> None:
-    send_telegram_message("Shadow Trading Bot started: Trade Manager is now the lifecycle boundary.")
+    send_telegram_message(
+        "🟢 Paper Trading started on Render\n"
+        "Trade Manager is the lifecycle boundary.\n"
+        "No real exchange orders are submitted.\n"
+        "Telegram: TOKEN + TELEGRAMID"
+    )
     while True:
         try:
             async with websockets.connect("wss://ws-feed.exchange.coinbase.com", ping_interval=20) as ws:
@@ -217,6 +315,7 @@ def run_flask() -> None:
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_daily_report_loop, daemon=True, name="paper-daily-report").start()
     threading.Thread(
         target=lambda: asyncio.run(start_shadow_engine()),
         daemon=True,
