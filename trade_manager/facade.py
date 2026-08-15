@@ -7,14 +7,14 @@ from uuid import uuid4
 
 from .calculator import PositionCalculator
 from .controller import PositionController
-from .execution import ExecutionPipeline
+from .execution import ExecutionOrder, ExecutionPipeline, ExecutionResult, OrderSide
 from .history import PositionHistoryService
 from .metrics import PositionMetrics, PositionMetricsService
 from .models import Position, PositionCloseReason, PositionSide, PositionStatus
 from .repository import PositionRepository
 from .risk_manager import PositionExitDecision, PositionExitReason, PositionRiskManager
 from .risk import RiskEvaluation, RiskManager
-from .synchronizer import ExchangePositionAdapter, PositionSynchronizer, SynchronizationResult
+from .synchronizer import ExchangePositionAdapter, PositionSynchronizer
 
 
 class PositionManagementFacade:
@@ -53,29 +53,57 @@ class PositionManagementFacade:
             estimated_fee=estimated_fee,
         )
 
+    def open_position_with_execution(self, symbol: str, quantity: float, entry_price: float,
+                                     stop_loss: float, take_profit: Optional[float] = None,
+                                     entry_metadata: Optional[dict] = None,
+                                     *, risk_evaluation: Optional[RiskEvaluation] = None
+                                     ) -> Tuple[Optional[Position], ExecutionResult]:
+        if risk_evaluation is not None and not risk_evaluation.approved:
+            return None, ExecutionResult(False, symbol, "BUY", quantity,
+                                         message=f"ENTRY_RISK_REJECTED:{risk_evaluation.reason}")
+        if self.controller.has_position(symbol):
+            return None, ExecutionResult(False, symbol, "BUY", quantity,
+                                         message=f"POSITION_ALREADY_EXISTS:{symbol}")
+        if quantity <= 0 or entry_price <= 0:
+            return None, ExecutionResult(False, symbol, "BUY", quantity, message="INVALID_ENTRY")
+        if stop_loss <= 0 or stop_loss >= entry_price:
+            return None, ExecutionResult(False, symbol, "BUY", quantity, message="INVALID_SPOT_STOP")
+        if self.controller.execution_pipeline is None:
+            raise RuntimeError("Part-7 execution pipeline is not configured")
+
+        order = ExecutionOrder(symbol=symbol.upper(), side=OrderSide.BUY,
+                               quantity=quantity, price=entry_price)
+        execution = self.controller.execution_pipeline.execute(order)
+        if not execution.success:
+            return None, execution
+
+        filled_qty = execution.executed_quantity or quantity
+        filled_price = execution.average_price or entry_price
+        position = Position(
+            position_id=f"POS-{uuid4().hex[:12]}", symbol=symbol.upper(),
+            side=PositionSide.LONG, status=PositionStatus.OPEN,
+            quantity=filled_qty, entry_price=filled_price, current_price=filled_price,
+            stop_loss=stop_loss, take_profit=take_profit,
+            entry_metadata=dict(entry_metadata or {}),
+            exchange_order_id=execution.exchange_order_id,
+            client_order_id=execution.client_order_id,
+            entry_fee=execution.commission,
+            total_fees=execution.commission,
+        )
+        position.entry_metadata["entry_time"] = time.time()
+        self.repository.add(position)
+        return position, execution
+
     def open_position(self, symbol: str, quantity: float, entry_price: float,
                       stop_loss: float, take_profit: Optional[float] = None,
                       entry_metadata: Optional[dict] = None,
                       *, risk_evaluation: Optional[RiskEvaluation] = None) -> Position:
-        if risk_evaluation is not None and not risk_evaluation.approved:
-            raise ValueError(f"ENTRY_RISK_REJECTED:{risk_evaluation.reason}")
-        if self.repository.get_by_symbol(symbol):
-            raise ValueError(f"Position already exists for {symbol}")
-        if quantity <= 0 or entry_price <= 0:
-            raise ValueError("quantity and entry_price must be positive")
-        if stop_loss <= 0 or stop_loss >= entry_price:
-            raise ValueError("spot stop_loss must be positive and below entry_price")
-
-        position = Position(
-            position_id=f"POS-{uuid4().hex[:12]}", symbol=symbol.upper(),
-            side=PositionSide.LONG, status=PositionStatus.OPEN,
-            quantity=quantity, entry_price=entry_price, current_price=entry_price,
-            stop_loss=stop_loss, take_profit=take_profit,
-            entry_metadata=dict(entry_metadata or {}),
-            client_order_id=f"CLIENT-{uuid4().hex[:8]}",
+        position, execution = self.open_position_with_execution(
+            symbol, quantity, entry_price, stop_loss, take_profit, entry_metadata,
+            risk_evaluation=risk_evaluation,
         )
-        position.entry_metadata["entry_time"] = time.time()
-        self.repository.add(position)
+        if position is None:
+            raise ValueError(execution.message or "ENTRY_EXECUTION_FAILED")
         return position
 
     def close_position(self, position_id: str, exit_price: float,
@@ -130,7 +158,7 @@ class PositionManagementFacade:
         self.metrics.refresh()
         return self.metrics.get_metrics()
 
-    def synchronize(self) -> Optional[SynchronizationResult]:
+    def synchronize(self):
         return self.synchronizer.synchronize() if self.synchronizer else None
 
     def get_hold_statistics(self) -> Dict:
