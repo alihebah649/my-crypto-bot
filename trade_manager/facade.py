@@ -1,4 +1,4 @@
-"""Trade Manager facade: canonical Part-8 position lifecycle boundary."""
+"""Trade Manager facade: canonical Part-8.1-8.8 lifecycle boundary."""
 from __future__ import annotations
 
 import time
@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .calculator import PositionCalculator
 from .controller import PositionController
+from .execution import ExecutionPipeline
 from .history import PositionHistoryService
 from .metrics import PositionMetrics, PositionMetricsService
 from .models import Position, PositionCloseReason, PositionSide, PositionStatus
@@ -19,15 +20,15 @@ from .synchronizer import ExchangePositionAdapter, PositionSynchronizer, Synchro
 class PositionManagementFacade:
     """Single public boundary for Part 8.1-8.8.
 
-    Entry risk (Part 6) is exposed through ``validate_entry``. Open-position
-    recovery/exit logic (8.4) remains in ``PositionRiskManager`` and execution
-    remains behind the Part-7 ``ExecutionPipeline`` supplied by the caller.
+    Part 6 validates new entries. Part 7 executes orders. Part 8 owns the
+    canonical position lifecycle and P&L/history state.
     """
 
     def __init__(self, repository: PositionRepository, controller: PositionController,
                  calculator: PositionCalculator, risk_manager: PositionRiskManager,
                  entry_risk_manager: Optional[RiskManager] = None,
-                 exchange_adapter: Optional[ExchangePositionAdapter] = None):
+                 exchange_adapter: Optional[ExchangePositionAdapter] = None,
+                 execution_pipeline: Optional[ExecutionPipeline] = None):
         self.repository = repository
         self.controller = controller
         self.calculator = calculator
@@ -37,22 +38,18 @@ class PositionManagementFacade:
         self.metrics = PositionMetricsService(self.history_service)
         self.synchronizer = (PositionSynchronizer(repository, controller, calculator, exchange_adapter)
                              if exchange_adapter else None)
+        if execution_pipeline is not None:
+            self.controller.execution_pipeline = execution_pipeline
 
     def validate_entry(self, *, equity: float, free_balance: float, entry_price: float,
                        stop_loss: float, current_exposure: float = 0.0,
                        symbol_exposure: float = 0.0, spread_percent: float = 0.0,
                        slippage_percent: float = 0.0, estimated_fee: float = 0.0) -> RiskEvaluation:
-        """Part-6 -> Part-8 entry gate. No position is created on rejection."""
         return self.entry_risk_manager.evaluate(
-            equity=equity,
-            free_balance=free_balance,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            open_positions=len(self.repository.get_open_positions()),
-            current_exposure=current_exposure,
-            symbol_exposure=symbol_exposure,
-            spread_percent=spread_percent,
-            slippage_percent=slippage_percent,
+            equity=equity, free_balance=free_balance, entry_price=entry_price,
+            stop_loss=stop_loss, open_positions=len(self.repository.get_open_positions()),
+            current_exposure=current_exposure, symbol_exposure=symbol_exposure,
+            spread_percent=spread_percent, slippage_percent=slippage_percent,
             estimated_fee=estimated_fee,
         )
 
@@ -60,7 +57,6 @@ class PositionManagementFacade:
                       stop_loss: float, take_profit: Optional[float] = None,
                       entry_metadata: Optional[dict] = None,
                       *, risk_evaluation: Optional[RiskEvaluation] = None) -> Position:
-        """Create a local position after the caller has passed the entry risk gate."""
         if risk_evaluation is not None and not risk_evaluation.approved:
             raise ValueError(f"ENTRY_RISK_REJECTED:{risk_evaluation.reason}")
         if self.repository.get_by_symbol(symbol):
@@ -71,15 +67,10 @@ class PositionManagementFacade:
             raise ValueError("spot stop_loss must be positive and below entry_price")
 
         position = Position(
-            position_id=f"POS-{uuid4().hex[:12]}",
-            symbol=symbol.upper(),
-            side=PositionSide.LONG,
-            status=PositionStatus.OPEN,
-            quantity=quantity,
-            entry_price=entry_price,
-            current_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
+            position_id=f"POS-{uuid4().hex[:12]}", symbol=symbol.upper(),
+            side=PositionSide.LONG, status=PositionStatus.OPEN,
+            quantity=quantity, entry_price=entry_price, current_price=entry_price,
+            stop_loss=stop_loss, take_profit=take_profit,
             entry_metadata=dict(entry_metadata or {}),
             client_order_id=f"CLIENT-{uuid4().hex[:8]}",
         )
