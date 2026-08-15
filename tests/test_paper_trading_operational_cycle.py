@@ -87,7 +87,9 @@ def test_full_paper_operational_cycle(tmp_path):
     assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(0.0)
     assert runtime.execution_adapter.balance.cash == pytest.approx(1013.985)
 
-    # 7) Accounting survives the lifecycle and the closed position is retained.
+    # 7) The runtime synchronizes the Part-6 loss ledger on the next market
+    # update. This mirrors the application's live-tick lifecycle.
+    market(runtime, "BTCUSDT", 103.0, ema=90.0)
     assert runtime.loss_tracker.snapshot().daily_pnl == pytest.approx(13.985)
     assert len(runtime.repository.get_closed_positions()) == 1
 
