@@ -124,7 +124,8 @@ def test_part6_approval_reaches_trade_manager_and_paper_execution():
     assert position.status is PositionStatus.OPEN
     assert position.entry_price == pytest.approx(100.0)
     assert paper.balance.assets["BTCUSDT"] == pytest.approx(5.0)
-    assert paper.balance.cash == pytest.approx(999.5)
+    # $500 notional + $0.50 entry fee was consumed from the $1000 account.
+    assert paper.balance.cash == pytest.approx(499.5)
 
 
 def test_part6_rejects_spot_leverage_above_one():
