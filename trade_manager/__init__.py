@@ -23,6 +23,7 @@ from .core_execution_adapter import CoreExecutionBrokerAdapter
 from .recovery import RecoveryManager, RecoveryReport
 from .manager import TradeManager, CloseResult
 from .facade import PositionManagementFacade
+from .controller import PositionController
 from .repository import PositionRepository
 from .calculator import PositionCalculator, PositionCalculationResult
 from .risk_manager import PositionRiskManager, PositionExitDecision, PositionExitReason
@@ -39,7 +40,7 @@ __all__ = [
     "ExecutionOrder", "ExecutionResult", "ExecutionPipeline", "ExecutionStatus",
     "OrderSide", "OrderType", "CoreExecutionBrokerAdapter", "RecoveryManager",
     "RecoveryReport", "TradeManager", "CloseResult", "PositionManagementFacade",
-    "PositionRepository", "PositionCalculator", "PositionCalculationResult",
+    "PositionController", "PositionRepository", "PositionCalculator", "PositionCalculationResult",
     "Position", "PositionStatus", "PositionSide", "PositionCloseReason",
     "PositionRiskManager", "PositionExitDecision", "PositionExitReason",
     "CorePositionBridge", "from_core_position", "apply_to_core_position",
