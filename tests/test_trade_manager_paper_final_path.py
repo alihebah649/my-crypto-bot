@@ -42,7 +42,9 @@ def test_full_paper_buy_and_successful_manual_close_path():
     position = runtime.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
     assert position.status is PositionStatus.OPEN
-    assert position.entry_fee == pytest.approx(0.5)
+    # Part 6 sizes by risk / stop distance. The fee must therefore be derived
+    # from the executed quantity rather than assuming a fixed $50 entry.
+    assert position.entry_fee == pytest.approx(position.quantity * position.entry_price * 0.001)
     assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(position.quantity)
 
     runtime.update_market("BTCUSDT", price=110.0, **MARKET)
