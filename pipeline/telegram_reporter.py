@@ -22,7 +22,11 @@ class TelegramReporter:
     def __init__(self, *, timeout: float = 10.0) -> None:
         self.token = os.getenv("TOKEN") or os.getenv("TELEGRAM_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAMID") or os.getenv("TELEGRAM_CHAT_ID", "")
-        self.enabled = bool(self.token and self.chat_id and os.getenv("ENABLE_TELEGRAM", "true").lower() not in {"0", "false", "no"})
+        self.enabled = bool(
+            self.token
+            and self.chat_id
+            and os.getenv("ENABLE_TELEGRAM", "true").lower() not in {"0", "false", "no"}
+        )
         self.timeout = timeout
         self._session = requests.Session()
 
@@ -33,7 +37,12 @@ class TelegramReporter:
         try:
             response = self._session.post(
                 f"https://api.telegram.org/bot{self.token}/sendMessage",
-                data={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+                data={
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -44,6 +53,19 @@ class TelegramReporter:
         except Exception:
             logger.exception("Telegram message delivery failed")
             return False
+
+    @staticmethod
+    def startup_message() -> str:
+        return (
+            "🟢 <b>تم تشغيل Paper Trading</b>\n"
+            "🤖 البوت يعمل على Render بنجاح.\n"
+            "🧩 Trade Manager: <b>ACTIVE</b>\n"
+            "📄 الوضع: <b>PAPER TRADING</b>\n"
+            "🚫 لا توجد أوامر حقيقية إلى Binance.\n"
+            "📨 إشعارات Telegram: <b>ACTIVE</b>\n"
+            "📊 التقرير اليومي مفعل.\n"
+            "💓 الخدمة مصممة للاستمرار مع طلبات الـ health monitoring."
+        )
 
     @staticmethod
     def trade_buy(symbol: str, quantity: float, price: float, notional: float, reason: str) -> str:
@@ -124,11 +146,21 @@ class PaperTradeTelegramMonitor:
         self._seen_closed = 0
         self._last_report_date = datetime.now(self.tz).date()
         self._stop = False
+        self._startup_sent = False
 
     def stop(self) -> None:
         self._stop = True
 
     def run_forever(self) -> None:
+        # Startup notification is deliberately emitted from the monitor thread
+        # so it uses the exact same TOKEN/TELEGRAMID configuration and delivery
+        # path as all subsequent trade alerts. A failed Telegram send cannot
+        # affect the paper-trading runner.
+        if not self._startup_sent:
+            self._startup_sent = self.reporter.send(self.reporter.startup_message())
+            if not self._startup_sent:
+                logger.warning("Telegram startup notification was not delivered")
+
         while not self._stop:
             try:
                 self.poll_once()
