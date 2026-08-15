@@ -1,10 +1,8 @@
 """Canonical entry point for Shadow Trading Bot.
 
-The legacy monolithic implementation has been removed from the entry point.
-The bot now starts the paper-trading integration path explicitly and keeps
-execution isolated behind PaperExecutionAdapter.
+The runtime uses the PaperTradingRunner with Trade Manager as the canonical
+Part-6/7/8 boundary. The legacy bot.py entry point is intentionally not used.
 """
-
 from __future__ import annotations
 
 import logging
@@ -13,8 +11,7 @@ import threading
 
 from flask import Flask, jsonify
 
-from pipeline.paper_trading_runner import PaperTradingRunner
-
+from pipeline.trade_manager_paper_runner import TradeManagerPaperTradingRunner
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -23,17 +20,23 @@ logging.basicConfig(
 logger = logging.getLogger("ShadowTrading.Main")
 
 app = Flask(__name__)
-runner = PaperTradingRunner()
+runner = TradeManagerPaperTradingRunner()
 
 
 @app.get("/")
 def home():
-    return jsonify({"status": "healthy", "mode": "PAPER"}), 200
+    return jsonify({"status": "healthy", "mode": "PAPER", "trade_manager": "ACTIVE"}), 200
 
 
 @app.get("/status")
 def status():
-    return jsonify(runner.snapshot()), 200
+    snapshot = runner.snapshot()
+    snapshot["trade_manager"] = {
+        "open_positions": len(runner.trade_manager.get_open_positions()),
+        "hold_positions": len(runner.trade_manager.get_hold_positions()),
+        "review_required": len(runner.trade_manager.get_review_required()),
+    }
+    return jsonify(snapshot), 200
 
 
 def _run_paper() -> None:
