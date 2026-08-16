@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - tm-integration-work
+      - paper-ready-main-sync
     paths:
       - "core/**"
       - "trade_manager/**"
