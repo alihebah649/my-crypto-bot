@@ -1,1 +1,0 @@
-Temporary marker for creating the paper-ready sync branch; this file will be removed before the branch is considered for merge.
