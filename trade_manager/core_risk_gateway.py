@@ -14,6 +14,7 @@ from .part6_risk import (
     PositionSizeCalculator,
     RiskController,
     RiskDecision,
+    RiskRejectReason,
     SymbolExposure,
 )
 
@@ -100,8 +101,30 @@ class CoreRiskGateway:
             if position_value > config.maximum_position_size:
                 return self._reject("MAX_POSITION_EXCEEDED")
 
+            # RiskController checks current exposure. This second check is
+            # prospective: it prevents the newly approved position from taking
+            # the portfolio beyond the configured exposure cap.
+            equity = max(float(portfolio.account_equity), 0.0)
+            current_exposure = max(float(portfolio.used_margin), 0.0)
+            max_exposure = equity * config_for_exposure(self.position_sizer.config) / 100.0
+            prospective_exposure = current_exposure + position_value
+            if prospective_exposure > max_exposure:
+                return self._reject(
+                    RiskRejectReason.MAX_PORTFOLIO_EXPOSURE.name,
+                    metadata={
+                        "current_exposure": current_exposure,
+                        "position_value": position_value,
+                        "prospective_exposure": prospective_exposure,
+                        "max_exposure": max_exposure,
+                    },
+                )
+
             capital_required = position_value
-            total_required = capital_required + max(request.estimated_fee, 0.0) + max(request.maintenance_margin, 0.0)
+            total_required = (
+                capital_required
+                + max(request.estimated_fee, 0.0)
+                + max(request.maintenance_margin, 0.0)
+            )
             if total_required > request.free_balance:
                 return self._reject(
                     "INSUFFICIENT_BALANCE",
@@ -134,6 +157,11 @@ class CoreRiskGateway:
     @staticmethod
     def _reject(reason: str, metadata: Optional[dict[str, Any]] = None) -> RiskSizingApproval:
         return RiskSizingApproval(approved=False, reason=reason, metadata=dict(metadata or {}))
+
+
+def config_for_exposure(config) -> float:
+    """Return the configured portfolio exposure percentage from Part 6."""
+    return float(config.exposure.max_portfolio_exposure_percent)
 
 
 __all__ = [
