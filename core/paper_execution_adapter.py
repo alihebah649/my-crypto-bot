@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+import json
+import os
+import tempfile
+from typing import Any, Optional
 from uuid import uuid4
 
 from core.execution_adapter import ExecutionAdapter
@@ -29,9 +32,16 @@ class PaperBalance:
 
 
 class PaperExecutionAdapter(ExecutionAdapter):
-    """Exchange-free execution adapter used only for paper trading."""
+    """Exchange-free execution adapter used only for paper trading.
 
-    def __init__(self, initial_cash: float = 1000.0, fee_rate: float = 0.001) -> None:
+    ``state_path`` persists cash, owned assets and market prices so a restart
+    cannot silently recreate an empty paper account. Orders are intentionally
+    not restored because paper orders are filled/rejected synchronously and
+    there are no pending exchange orders to reconstruct.
+    """
+
+    def __init__(self, initial_cash: float = 1000.0, fee_rate: float = 0.001,
+                 state_path: Optional[str] = None) -> None:
         super().__init__("PAPER")
         if initial_cash < 0:
             raise ValueError("initial_cash must be non-negative")
@@ -41,7 +51,10 @@ class PaperExecutionAdapter(ExecutionAdapter):
         self.balance = PaperBalance(cash=float(initial_cash))
         self.orders: dict[str, ExecutionResult] = {}
         self.market_prices: dict[str, float] = {}
+        self.state_path = state_path
         self._connected = False
+        if self.state_path:
+            self._load_state()
 
     def connect(self) -> None:
         self._connected = True
@@ -57,6 +70,7 @@ class PaperExecutionAdapter(ExecutionAdapter):
         if price <= 0:
             raise ValueError("market price must be positive")
         self.market_prices[symbol.upper()] = price
+        self._persist_state()
 
     def get_market_price(self, symbol: str) -> float:
         try:
@@ -119,6 +133,7 @@ class PaperExecutionAdapter(ExecutionAdapter):
             raw_response={"source": ExecutionSource.PAPER.value, "trade_type": trade_type},
         )
         self.orders[order_id] = result
+        self._persist_state()
         return result
 
     def cancel_order(self, symbol: str, order_id: str) -> bool:
@@ -161,6 +176,7 @@ class PaperExecutionAdapter(ExecutionAdapter):
             raw_response={"source": ExecutionSource.PAPER.value},
         )
         self.orders[f"REJECTED-{uuid4().hex[:16]}"] = result
+        self._persist_state()
         return result
 
     def snapshot(self) -> dict[str, Any]:
@@ -171,4 +187,48 @@ class PaperExecutionAdapter(ExecutionAdapter):
             "assets": dict(self.balance.assets),
             "orders": len(self.orders),
             "fee_rate": self.fee_rate,
+            "market_prices": dict(self.market_prices),
         }
+
+    def _persist_state(self) -> None:
+        if not self.state_path:
+            return
+        directory = os.path.dirname(os.path.abspath(self.state_path))
+        os.makedirs(directory, exist_ok=True)
+        payload = {
+            "version": 1,
+            "cash": self.balance.cash,
+            "reserved": self.balance.reserved,
+            "assets": self.balance.assets,
+            "market_prices": self.market_prices,
+            "fee_rate": self.fee_rate,
+        }
+        fd, temp_path = tempfile.mkstemp(prefix="paper-state-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.state_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def _load_state(self) -> None:
+        if not os.path.exists(self.state_path):
+            return
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if payload.get("version") != 1:
+                raise ValueError("unsupported paper state version")
+            if payload.get("fee_rate") is not None and abs(float(payload["fee_rate"]) - self.fee_rate) > 1e-12:
+                raise ValueError("persisted fee_rate differs from configured fee_rate")
+            self.balance = PaperBalance(
+                cash=float(payload["cash"]),
+                reserved=float(payload.get("reserved", 0.0)),
+                assets={str(k): float(v) for k, v in payload.get("assets", {}).items()},
+            )
+            self.market_prices = {str(k): float(v) for k, v in payload.get("market_prices", {}).items()}
+        except Exception as exc:
+            raise RuntimeError(f"Unable to restore PaperExecutionAdapter: {exc}") from exc
