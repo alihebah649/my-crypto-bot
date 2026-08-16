@@ -70,3 +70,5 @@ jobs:
 
       - name: Run full Python regression suite
         run: python -m pytest -q
+
+# CI trigger verification checkpoint
