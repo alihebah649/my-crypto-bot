@@ -65,3 +65,5 @@ def test_existing_swing_lane_can_still_reach_buy():
 
 def test_strategy_universe_remains_16_spot_pairs():
     assert len(shadow_main.TRADING_SYMBOLS) == 16
+
+# CI trigger checkpoint: safe adapter preserves original runtime composition.
