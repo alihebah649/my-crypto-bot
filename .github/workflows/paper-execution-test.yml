@@ -8,6 +8,7 @@ on:
       - tm-integration-work
       - dual-mode-safe-calibration
       - scalp-calibration-v2
+      - scalp-gate-fix-v3
     paths:
       - "core/**"
       - "trade_manager/**"
