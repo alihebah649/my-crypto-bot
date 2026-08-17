@@ -67,3 +67,4 @@ def test_strategy_universe_remains_16_spot_pairs():
     assert len(shadow_main.TRADING_SYMBOLS) == 16
 
 # CI trigger checkpoint: safe adapter preserves original runtime composition.
+# The legacy runtime remains the execution authority.
