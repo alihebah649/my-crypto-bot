@@ -1,1 +1,1 @@
-PLACEHOLDER
+''' + repr(code) + '''
