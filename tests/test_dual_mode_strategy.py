@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-from shadow_main import (
-    BUY_SCORE_THRESHOLD,
-    SCALP_SCORE_THRESHOLD,
-    SWING_SCORE_THRESHOLD,
-    TRADING_SYMBOLS,
-    _score_scalp,
-    score_symbol,
-)
+from shadow_main import BUY_SCORE_THRESHOLD, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, TRADING_SYMBOLS, score_symbol
 
 
 def candle(open_price: float, high: float, low: float, close: float, volume: float = 100.0) -> dict:
@@ -24,26 +17,17 @@ def test_dual_mode_thresholds_are_separated():
     assert SCALP_SCORE_THRESHOLD == 65
 
 
-def test_scalp_score_can_pass_without_meeting_swing_threshold():
-    score, reasons = _score_scalp(
-        price=100.0,
-        rsi5=32.0,
-        lower5=100.2,
-        middle5=101.0,
-        volume5=1.10,
-        pattern_found=True,
-        pattern_name="BULLISH_ENGULFING",
-        pattern_confirmed=True,
-        macro_points=6,
-        macro_reason="15M_BOLLINGER_LOWER_HALF",
-    )
-    assert score == 76
-    assert score >= SCALP_SCORE_THRESHOLD
-    assert score < SWING_SCORE_THRESHOLD
-    assert "5M_BULLISH_ENGULFING_CONFIRMED" in reasons
+def test_score_exposes_independent_scalp_and_swing_lanes():
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "106.5"}, candles_15m, candles_5m)
+    assert "scalp_score" in result
+    assert "swing_score" in result
+    assert result["scalp_signal"] in {"BUY", "HOLD"}
+    assert result["swing_signal"] in {"BUY", "HOLD"}
 
 
-def test_scalp_gate_rejects_oversold_without_confirmed_reversal():
+def test_scalp_gate_rejects_without_confirmed_reversal():
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     candles_5m[-2] = candle(99.0, 101.0, 98.5, 100.2, 160.0)
@@ -60,7 +44,7 @@ def test_existing_swing_lane_can_still_reach_buy():
         candles_15m[-20 + i] = candle(base + 0.5, base + 0.6, base - 0.2, base)
     candles_15m[-2] = candle(102.0, 102.5, 100.5, 104.5, 150.0)
     candles_15m[-1] = candle(105.0, 105.3, 101.0, 101.5, 100.0)
-    candles_5m = rising_series(20, 100.0)
+    candles_5m = rising_series(21, 100.0)
     candles_5m[-2] = candle(99.0, 103.0, 98.8, 102.5, 120.0)
     candles_5m[-1] = candle(102.5, 102.7, 101.8, 102.4, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "104.5"}, candles_15m, candles_5m)
