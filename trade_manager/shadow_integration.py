@@ -6,7 +6,6 @@ execution is delegated to the existing core execution adapter through
 ``CoreExecutionGateway``.
 """
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
@@ -160,8 +159,13 @@ class ShadowTradeManagerRuntime:
                  "facade": "NOT_RUN", "execution": "NOT_RUN", "execution_outcome": None, "result": "UNKNOWN"}
         self.last_entry_diagnostics[symbol] = trace
         account = self.portfolio_provider.snapshot()
+        target = float(self.risk_config.position_sizing.target_position_value)
+        risk_percent = float(self.risk_config.position_sizing.risk_per_trade_percent)
+        max_exposure_percent = float(self.risk_config.exposure.max_portfolio_exposure_percent)
         trace.update({"account_equity": account.account_equity, "free_balance": account.free_margin,
-                      "open_positions": account.open_positions, "entry_price": entry_price, "stop_loss": stop_loss})
+                      "open_positions": account.open_positions, "entry_price": entry_price, "stop_loss": stop_loss,
+                      "risk_config": {"target_position_value": target, "risk_per_trade_percent": risk_percent,
+                                      "max_portfolio_exposure_percent": max_exposure_percent}})
         approval = self.risk_gateway.approve(RiskSizingRequest(symbol=symbol, entry_price=entry_price, stop_loss=stop_loss,
                                                               account_equity=account.account_equity, free_balance=account.free_margin, leverage=1.0))
         trace.update({"risk_gateway": "PASS" if approval.approved else "REJECT", "risk_reason": approval.reason,
