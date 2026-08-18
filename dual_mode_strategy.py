@@ -3,16 +3,18 @@ from __future__ import annotations
 import pandas as pd
 
 # Scalping is intentionally easier to trigger than Swing, but still requires
-# a confirmed 5m bullish setup plus macro support and minimum liquidity.
+# strong 5m evidence plus macro support and minimum liquidity.
 SCALP_SCORE_THRESHOLD = 65
 SWING_SCORE_THRESHOLD = 80
 BUY_SCORE_THRESHOLD = SWING_SCORE_THRESHOLD
 SCALP_MIN_VOLUME_RATIO = 0.75
 SCALP_MAX_RSI = 60.0
 
+
 def calculate_ema(prices,period=100):
     if len(prices)<period:return 0.0
     return float(pd.Series(prices,dtype="float64").ewm(span=period,adjust=False).mean().iloc[-1])
+
 
 def calculate_rsi(prices,period=14):
     if len(prices)<period+1:return 0.0
@@ -20,13 +22,16 @@ def calculate_rsi(prices,period=14):
     if float(al.iloc[-1])==0:return 100.0 if float(ag.iloc[-1])>0 else 50.0
     return float((100-100/(1+ag/al)).iloc[-1])
 
+
 def calculate_atr(candles,period=14):
     if len(candles)<period+1:return 0.0
     h=pd.Series([x["high"]for x in candles]);l=pd.Series([x["low"]for x in candles]);c=pd.Series([x["close"]for x in candles]);p=c.shift(1);tr=pd.concat([h-l,(h-p).abs(),(l-p).abs()],axis=1).max(axis=1);return float(tr.ewm(alpha=1/period,adjust=False).mean().iloc[-1])
 
+
 def calculate_bollinger(candles,period=20,deviations=2.0):
     if len(candles)<period:return 0.0,0.0,0.0
     s=pd.Series([x["close"]for x in candles]);m=float(s.rolling(period).mean().iloc[-1]);d=float(s.rolling(period).std(ddof=0).iloc[-1]);return m-deviations*d,m,m+deviations*d
+
 
 def bullish_pattern(candles):
     if len(candles)<4:return False,"INSUFFICIENT_CANDLES",False
@@ -39,9 +44,11 @@ def bullish_pattern(candles):
     if not name:return False,"NEUTRAL",False
     return True,name,bool(bull and a["close"]>b["high"])
 
+
 def _volume_ratio(candles,window=20):
     if len(candles)<window+1:return 0.0
     avg=sum(x["volume"]for x in candles[-window-1:-1])/float(window);return candles[-1]["volume"]/avg if avg>0 else 0.0
+
 
 def _macro_support(price,lower,middle):
     if lower<=0:return 0,""
@@ -50,6 +57,7 @@ def _macro_support(price,lower,middle):
     if distance<=.005:return 12,"15M_BOLLINGER_NEAR_SUPPORT"
     if price<=middle:return 6,"15M_BOLLINGER_LOWER_HALF"
     return 0,""
+
 
 def score_symbol(symbol,ticker,candles_15m,candles_5m):
     c15=candles_15m[:-1] if len(candles_15m)>1 else [];c5=candles_5m[:-1] if len(candles_5m)>1 else [];price=float(ticker.get("lastPrice",0))
@@ -85,12 +93,33 @@ def score_symbol(symbol,ticker,candles_15m,candles_5m):
     if found and confirmed:scalp+=30;scalp_reasons.append(f"5M_{name}_CONFIRMED")
     elif found:scalp+=8;scalp_reasons.append(f"5M_{name}")
     scalp=min(scalp,100)
-    # A confirmed breakout should not be rejected merely because RSI has moved
-    # above the old recovery-zone cutoff. Keep an upper RSI safety ceiling so
-    # genuinely overheated breakouts (e.g. RSI > 60) remain blocked.
-    gate=bool(found and confirmed and r5<=SCALP_MAX_RSI and v5>=SCALP_MIN_VOLUME_RATIO and macro_points>0)
+
+    # Two valid Scalp entry paths:
+    # 1) Confirmed 5m bullish reversal/breakout with macro support.
+    # 2) High-confidence recovery: score threshold reached from independent
+    #    support/oversold/liquidity evidence, without requiring a candle label.
+    confirmed_reversal=bool(found and confirmed)
+    high_confidence_recovery=bool(
+        scalp>=SCALP_SCORE_THRESHOLD
+        and r5<=45.0
+        and v5>=SCALP_MIN_VOLUME_RATIO
+    )
+    gate=bool(
+        macro_points>0
+        and r5<=SCALP_MAX_RSI
+        and v5>=SCALP_MIN_VOLUME_RATIO
+        and (confirmed_reversal or high_confidence_recovery)
+    )
+    gate_reasons=[]
+    if macro_points<=0:gate_reasons.append("NO_15M_MACRO_SUPPORT")
+    if r5>SCALP_MAX_RSI:gate_reasons.append("5M_RSI_TOO_HIGH")
+    if v5<SCALP_MIN_VOLUME_RATIO:gate_reasons.append("5M_VOLUME_TOO_LOW")
+    if confirmed_reversal:gate_reasons.append("CONFIRMED_5M_REVERSAL")
+    elif high_confidence_recovery:gate_reasons.append("HIGH_CONFIDENCE_RECOVERY")
+    else:gate_reasons.append("NO_CONFIRMED_REVERSAL_OR_RECOVERY_SCORE")
+
     scalp_signal="BUY" if scalp>=SCALP_SCORE_THRESHOLD and gate else "HOLD";swing_signal="BUY" if swing>=SWING_SCORE_THRESHOLD else "HOLD"
     if scalp_signal=="BUY":mode="SCALP";selected=scalp;reasons=scalp_reasons
     elif swing_signal=="BUY":mode="SWING";selected=swing;reasons=swing_reasons
     else:mode="NONE";selected=max(scalp,swing);reasons=scalp_reasons if scalp>=swing else swing_reasons
-    return {"symbol":symbol,"score":selected,"signal":"BUY" if mode!="NONE" else "HOLD","trade_mode":mode,"swing_score":swing,"scalp_score":scalp,"swing_signal":swing_signal,"scalp_signal":scalp_signal,"scalp_gate":gate,"scalp_min_volume_ratio":SCALP_MIN_VOLUME_RATIO,"scalp_max_rsi":SCALP_MAX_RSI,"reasons":reasons,"swing_reasons":swing_reasons,"scalp_reasons":scalp_reasons,"price":price,"ema100":ema100,"rsi":r15,"rsi5m":r5,"atr":atr,"atr5m":atr5,"lower_band":lo15,"middle_band":mid15,"upper_band":up15,"lower_band_5m":lo5,"middle_band_5m":mid5,"upper_band_5m":up5,"volume_ratio":v15,"volume_ratio_5m":v5,"pattern":name,"pattern_confirmed":confirmed}
+    return {"symbol":symbol,"score":selected,"signal":"BUY" if mode!="NONE" else "HOLD","trade_mode":mode,"swing_score":swing,"scalp_score":scalp,"swing_signal":swing_signal,"scalp_signal":scalp_signal,"scalp_gate":gate,"scalp_gate_reasons":gate_reasons,"scalp_confirmed_reversal":confirmed_reversal,"scalp_high_confidence_recovery":high_confidence_recovery,"scalp_min_volume_ratio":SCALP_MIN_VOLUME_RATIO,"scalp_max_rsi":SCALP_MAX_RSI,"reasons":reasons,"swing_reasons":swing_reasons,"scalp_reasons":scalp_reasons,"price":price,"ema100":ema100,"rsi":r15,"rsi5m":r5,"atr":atr,"atr5m":atr5,"lower_band":lo15,"middle_band":mid15,"upper_band":up15,"lower_band_5m":lo5,"middle_band_5m":mid5,"upper_band_5m":up5,"volume_ratio":v15,"volume_ratio_5m":v5,"pattern":name,"pattern_confirmed":confirmed}
