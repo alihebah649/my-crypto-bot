@@ -111,7 +111,9 @@ def test_part6_approval_reaches_trade_manager_and_paper_execution():
     )
 
     assert approval.approved is True
-    assert approval.quantity == pytest.approx(5.0)
+    assert approval.quantity == pytest.approx(0.5)
+    assert approval.position_value == pytest.approx(50.0)
+    assert approval.metadata["target_position_value"] == pytest.approx(50.0)
 
     position = facade.open_position(
         symbol="BTCUSDT",
@@ -123,9 +125,9 @@ def test_part6_approval_reaches_trade_manager_and_paper_execution():
     assert position is not None
     assert position.status is PositionStatus.OPEN
     assert position.entry_price == pytest.approx(100.0)
-    assert paper.balance.assets["BTCUSDT"] == pytest.approx(5.0)
-    # $500 notional + $0.50 entry fee was consumed from the $1000 account.
-    assert paper.balance.cash == pytest.approx(499.5)
+    assert paper.balance.assets["BTCUSDT"] == pytest.approx(0.5)
+    # $50 notional + $0.05 entry fee was consumed from the $1000 account.
+    assert paper.balance.cash == pytest.approx(949.95)
 
 
 def test_part6_rejects_spot_leverage_above_one():
