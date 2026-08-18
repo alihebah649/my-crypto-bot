@@ -177,6 +177,7 @@ class ShadowTradeManagerRuntime:
                  persistence_dir: Optional[str] = None) -> None:
         self.market = ShadowMarketState()
         self.persistence_dir = persistence_dir
+        self.last_entry_diagnostics: Dict[str, dict] = {}
         position_state = None
         paper_state = None
         if persistence_dir:
@@ -232,7 +233,27 @@ class ShadowTradeManagerRuntime:
         self.loss_ledger.sync(self.repository.get_closed_positions())
 
     def open_position(self, symbol: str, entry_price: float, stop_loss: float) -> Optional[Position]:
+        trace = {
+            "symbol": symbol,
+            "started_at": time.time(),
+            "risk_gateway": "NOT_RUN",
+            "risk_reason": None,
+            "risk_quantity": 0.0,
+            "risk_position_value": 0.0,
+            "risk_capital_required": 0.0,
+            "risk_metadata": {},
+            "facade": "NOT_RUN",
+            "execution": "NOT_RUN",
+            "execution_outcome": None,
+            "result": "UNKNOWN",
+        }
+        self.last_entry_diagnostics[symbol] = trace
         account = self.portfolio_provider.snapshot()
+        trace["account_equity"] = account.account_equity
+        trace["free_balance"] = account.free_margin
+        trace["open_positions"] = account.open_positions
+        trace["entry_price"] = entry_price
+        trace["stop_loss"] = stop_loss
         approval = self.risk_gateway.approve(
             RiskSizingRequest(
                 symbol=symbol, entry_price=entry_price, stop_loss=stop_loss,
@@ -240,13 +261,35 @@ class ShadowTradeManagerRuntime:
                 leverage=1.0,
             )
         )
+        trace["risk_gateway"] = "PASS" if approval.approved else "REJECT"
+        trace["risk_reason"] = approval.reason
+        trace["risk_quantity"] = approval.quantity
+        trace["risk_position_value"] = approval.position_value
+        trace["risk_capital_required"] = approval.capital_required
+        trace["risk_metadata"] = dict(approval.metadata)
         if not approval.approved:
+            trace["result"] = "REJECTED_AT_RISK_GATE"
+            trace["finished_at"] = time.time()
             return None
-        return self.facade.open_position(
+        trace["facade"] = "CALLED"
+        position = self.facade.open_position(
             symbol=symbol, quantity=approval.quantity, entry_price=entry_price,
             stop_loss=stop_loss, account_equity=account.account_equity,
             free_balance=account.free_margin,
         )
+        if position is not None:
+            trace["execution"] = "FILLED"
+            trace["execution_outcome"] = {
+                "quantity": position.quantity,
+                "entry_price": position.entry_price,
+                "exchange_order_id": position.exchange_order_id,
+            }
+            trace["result"] = "POSITION_OPENED"
+        else:
+            trace["execution"] = "REJECTED_OR_FAILED"
+            trace["result"] = "REJECTED_AFTER_INITIAL_RISK_PASS"
+        trace["finished_at"] = time.time()
+        return position
 
     def evaluate_position(self, symbol: str) -> None:
         for position in self.repository.get_by_symbol(symbol):
@@ -260,10 +303,6 @@ class ShadowTradeManagerRuntime:
         state = self.market.get(symbol)
         ema = self.market.ema100.get(symbol, 0.0)
         trend = "BULLISH" if ema and state.last_price > ema else "NEUTRAL"
-        # PositionRiskManager expects the EMA trend under ``ema_100`` and also
-        # uses the aggregate market trend. Keeping both fields populated closes
-        # the integration contract between ShadowMarketState and the Part-8
-        # Smart Hold / Recovery evaluator without introducing a second rule set.
         return {
             "ema_100": trend,
             "market": {"overall": trend},
