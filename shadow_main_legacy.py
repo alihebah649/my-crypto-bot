@@ -42,9 +42,6 @@ LOOP_SECONDS = float(os.getenv("PAPER_LOOP_SECONDS", "30"))
 REPORT_TIMEZONE = ZoneInfo(os.getenv("PAPER_REPORT_TIMEZONE", "Asia/Aden"))
 BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
 
-# Restored from the established Binance Spot strategy universe. All symbols are
-# USDT spot pairs so the market-data, paper-account and Trade Manager contracts
-# use one symbol namespace.
 TRADING_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT",
     "ADAUSDT", "DOTUSDT", "NEARUSDT", "ARBUSDT",
@@ -52,7 +49,6 @@ TRADING_SYMBOLS = [
     "ALGOUSDT", "ATOMUSDT", "FETUSDT", "LTCUSDT",
 ]
 
-# Strategy thresholds. Score is deliberately transparent and bounded to 100.
 BUY_SCORE_THRESHOLD = 80
 EMA_POINTS = 20
 RSI_POINTS = 20
@@ -150,12 +146,6 @@ def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
 
 
 def fetch_strategy_data() -> tuple[dict[str, dict], dict[str, list[dict]], dict[str, list[dict]]]:
-    """Fetch the complete 16-symbol strategy inputs in parallel.
-
-    15m candles provide the macro setup; 5m candles provide the micro
-    confirmation. Using exchange history on every cycle removes the old
-    startup-history bottleneck from the one-minute tick resampler.
-    """
     tickers = fetch_24h_tickers()
     entry_15m: dict[str, list[dict]] = {}
     entry_5m: dict[str, list[dict]] = {}
@@ -231,10 +221,8 @@ def calculate_bollinger(candles: list[dict], period: int = 20, deviations: float
 
 
 def bullish_pattern(candles: list[dict]) -> tuple[bool, str, bool]:
-    """Return bullish pattern, name and confirmation status using closed candles."""
     if len(candles) < 4:
         return False, "INSUFFICIENT_CANDLES", False
-
     c1, c2, c3 = candles[-1], candles[-2], candles[-3]
     body1 = abs(c1["close"] - c1["open"])
     body2 = abs(c2["close"] - c2["open"])
@@ -260,13 +248,11 @@ def bullish_pattern(candles: list[dict]) -> tuple[bool, str, bool]:
 
     if not name:
         return False, "NEUTRAL", False
-
     confirmation = bullish1 and c1["close"] > c2["high"]
     return True, name, confirmation
 
 
 def score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m: list[dict]) -> dict:
-    # Ignore the currently forming candle in strategy calculations.
     closed_15m = candles_15m[:-1] if len(candles_15m) > 1 else []
     closed_5m = candles_5m[:-1] if len(candles_5m) > 1 else []
     price = float(ticker.get("lastPrice", 0.0))
@@ -275,7 +261,6 @@ def score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m:
             "symbol": symbol, "score": 0, "signal": "HOLD", "reasons": ["INSUFFICIENT_DATA"],
             "price": price, "ema100": 0.0, "rsi": 0.0, "atr": 0.0,
         }
-
     closes = [c["close"] for c in closed_15m]
     ema100 = calculate_ema(closes, 100)
     rsi = calculate_rsi(closes, 14)
@@ -283,70 +268,43 @@ def score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m:
     lower_band, middle_band, upper_band = calculate_bollinger(closed_15m, 20, 2.0)
     current_volume = closed_15m[-1]["volume"]
     average_volume = sum(c["volume"] for c in closed_15m[-21:-1]) / 20.0
-
     score = 0
     reasons: list[str] = []
-
     if price > ema100:
-        score += EMA_POINTS
-        reasons.append("EMA100_TREND")
-
+        score += EMA_POINTS; reasons.append("EMA100_TREND")
     if rsi <= 30:
-        score += RSI_POINTS
-        reasons.append("RSI_DEEP_OVERSOLD")
+        score += RSI_POINTS; reasons.append("RSI_DEEP_OVERSOLD")
     elif rsi < 40:
-        score += 15
-        reasons.append("RSI_OVERSOLD")
+        score += 15; reasons.append("RSI_OVERSOLD")
     elif rsi < 50:
-        score += 8
-        reasons.append("RSI_RECOVERY_ZONE")
-
+        score += 8; reasons.append("RSI_RECOVERY_ZONE")
     if lower_band > 0:
         distance_from_lower = (price - lower_band) / price
         if price <= lower_band:
-            score += BB_POINTS
-            reasons.append("BOLLINGER_LOWER_SUPPORT")
+            score += BB_POINTS; reasons.append("BOLLINGER_LOWER_SUPPORT")
         elif distance_from_lower <= 0.005:
-            score += 18
-            reasons.append("BOLLINGER_NEAR_SUPPORT")
+            score += 18; reasons.append("BOLLINGER_NEAR_SUPPORT")
         elif price <= middle_band:
-            score += 8
-            reasons.append("BOLLINGER_LOWER_HALF")
-
+            score += 8; reasons.append("BOLLINGER_LOWER_HALF")
     if average_volume > 0:
         volume_ratio = current_volume / average_volume
         if volume_ratio >= 1.20:
-            score += VOLUME_POINTS
-            reasons.append("VOLUME_CONFIRMATION")
+            score += VOLUME_POINTS; reasons.append("VOLUME_CONFIRMATION")
         elif volume_ratio >= 1.05:
-            score += 8
-            reasons.append("VOLUME_RISING")
-
+            score += 8; reasons.append("VOLUME_RISING")
     pattern_found, pattern_name, confirmation = bullish_pattern(closed_5m)
     if pattern_found and confirmation:
-        score += CANDLE_POINTS
-        reasons.append(f"5M_{pattern_name}_CONFIRMED")
+        score += CANDLE_POINTS; reasons.append(f"5M_{pattern_name}_CONFIRMED")
     elif pattern_found:
-        score += 8
-        reasons.append(f"5M_{pattern_name}")
-
+        score += 8; reasons.append(f"5M_{pattern_name}")
     score = min(score, 100)
     signal = "BUY" if score >= BUY_SCORE_THRESHOLD else "HOLD"
     return {
-        "symbol": symbol,
-        "score": score,
-        "signal": signal,
-        "reasons": reasons,
-        "price": price,
-        "ema100": ema100,
-        "rsi": rsi,
-        "atr": atr,
-        "lower_band": lower_band,
-        "middle_band": middle_band,
-        "upper_band": upper_band,
+        "symbol": symbol, "score": score, "signal": signal, "reasons": reasons,
+        "price": price, "ema100": ema100, "rsi": rsi, "atr": atr,
+        "lower_band": lower_band, "middle_band": middle_band, "upper_band": upper_band,
         "volume_ratio": current_volume / average_volume if average_volume else 0.0,
-        "pattern": pattern_name,
-        "pattern_confirmed": confirmation,
+        "pattern": pattern_name, "pattern_confirmed": confirmation,
     }
 
 
@@ -387,28 +345,18 @@ def build_daily_report(date_key: str | None = None) -> str:
         pnl = float(position.realized_pnl)
         row["wins" if pnl > 0 else "losses"] += 1
         row["net"] += pnl
-
     lines = [
-        "📊 حصاد اليوم الشامل (PAPER TRADING)",
-        f"📅 التاريخ المنتهي: {date_key}",
-        "",
-        "```",
+        "📊 حصاد اليوم الشامل (PAPER TRADING)", f"📅 التاريخ المنتهي: {date_key}", "", "```",
         f"{'COIN':<8} | {'WIN':<3} | {'LOSS':<4} | {'NET (FEES)':<10}",
         "---------------------------------",
     ]
-    total_wins = total_losses = 0
-    total_net = 0.0
+    total_wins = total_losses = 0; total_net = 0.0
     for coin in sorted(by_coin):
-        row = by_coin[coin]
-        total_wins += row["wins"]
-        total_losses += row["losses"]
-        total_net += row["net"]
+        row = by_coin[coin]; total_wins += row["wins"]; total_losses += row["losses"]; total_net += row["net"]
         lines.append(f"{coin:<8} | {row['wins']:<3} | {row['losses']:<4} | {row['net']:+.2f}$")
     lines.extend([
-        "---------------------------------",
-        f"{'TOTAL':<8} | {total_wins:<3} | {total_losses:<4} | {total_net:+.2f}$",
-        "```",
-        "📄 Paper Trading — لا توجد أوامر حقيقية" if not closed else "📄 Paper Trading — أوامر محاكاة فقط",
+        "---------------------------------", f"{'TOTAL':<8} | {total_wins:<3} | {total_losses:<4} | {total_net:+.2f}$",
+        "```", "📄 Paper Trading — لا توجد أوامر حقيقية" if not closed else "📄 Paper Trading — أوامر محاكاة فقط",
         f"💵 Paper cash: ${runtime.execution_adapter.balance.cash:.2f}",
         f"📦 Open positions: {len(runtime.repository.get_open_positions())}",
     ])
@@ -421,15 +369,10 @@ def build_score_diagnostic() -> str:
     lines = [
         "🔎 تشخيص Score — Paper Trading",
         f"📡 العملات ذات البيانات: {len(latest_scores)}/{len(TRADING_SYMBOLS)}",
-        f"🎯 BUY >= {BUY_SCORE_THRESHOLD}: {sum(1 for r in rows if r.get('signal') == 'BUY')}",
-        "",
-        "أعلى الدرجات:",
+        f"🎯 BUY >= {BUY_SCORE_THRESHOLD}: {sum(1 for r in rows if r.get('signal') == 'BUY')}", "", "أعلى الدرجات:",
     ]
     for row in top:
-        lines.append(
-            f"• {row['symbol']}: {row['score']}/100 | RSI={row['rsi']:.1f} | "
-            f"EMA100={row['ema100']:.6f} | {', '.join(row['reasons']) or '—'}"
-        )
+        lines.append(f"• {row['symbol']}: {row['score']}/100 | RSI={row['rsi']:.1f} | EMA100={row['ema100']:.6f} | {', '.join(row['reasons']) or '—'}")
     return "\n".join(lines)
 
 
@@ -437,8 +380,7 @@ def _daily_report_loop() -> None:
     global _last_report_date
     while True:
         try:
-            now = datetime.now(REPORT_TIMEZONE)
-            date_key = now.strftime("%Y-%m-%d")
+            now = datetime.now(REPORT_TIMEZONE); date_key = now.strftime("%Y-%m-%d")
             with _report_lock:
                 if _last_report_date is None:
                     _last_report_date = date_key
@@ -448,24 +390,17 @@ def _daily_report_loop() -> None:
                         _last_report_date = date_key
             time.sleep(30)
         except Exception:
-            logger.exception("Daily report loop failed")
-            time.sleep(30)
+            logger.exception("Daily report loop failed"); time.sleep(30)
 
 
 @app.get("/")
 def home():
-    positions = runtime.facade.get_open_positions()
-    metrics = runtime.facade.get_metrics()
+    positions = runtime.facade.get_open_positions(); metrics = runtime.facade.get_metrics()
     return jsonify({
-        "status": "healthy",
-        "mode": "PAPER",
-        "entrypoint": "shadow_main.py",
-        "trade_manager": "modular_parts_1_8",
-        "symbols": TRADING_SYMBOLS,
-        "open_positions": len(positions),
-        "metrics": getattr(metrics, "__dict__", str(metrics)),
-        "last_update": time.time(),
-        "persistence": bool(PAPER_STATE_DIR),
+        "status": "healthy", "mode": "PAPER", "entrypoint": "shadow_main.py",
+        "trade_manager": "modular_parts_1_8", "symbols": TRADING_SYMBOLS,
+        "open_positions": len(positions), "metrics": getattr(metrics, "__dict__", str(metrics)),
+        "last_update": time.time(), "persistence": bool(PAPER_STATE_DIR),
         "telegram_configured": bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID),
         "score_threshold": BUY_SCORE_THRESHOLD,
         "strategy": "15m Bollinger/EMA/RSI/Volume + 5m bullish confirmation",
@@ -476,29 +411,16 @@ def home():
 @app.get("/trade-manager/positions")
 def positions():
     return jsonify([
-        {
-            "position_id": p.position_id,
-            "symbol": p.symbol,
-            "status": p.status.name,
-            "quantity": p.quantity,
-            "entry_price": p.entry_price,
-            "current_price": p.current_price,
-            "stop_loss": p.stop_loss,
-            "take_profit": p.take_profit,
-            "realized_pnl": p.realized_pnl,
-            "fees": p.total_fees,
-        }
+        {"position_id": p.position_id, "symbol": p.symbol, "status": p.status.name, "quantity": p.quantity,
+         "entry_price": p.entry_price, "current_price": p.current_price, "stop_loss": p.stop_loss,
+         "take_profit": p.take_profit, "realized_pnl": p.realized_pnl, "fees": p.total_fees}
         for p in runtime.repository.get_all()
     ]), 200
 
 
 @app.get("/paper/daily-report")
 def daily_report():
-    return jsonify({
-        "mode": "PAPER",
-        "date": datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d"),
-        "report": build_daily_report(),
-    }), 200
+    return jsonify({"mode": "PAPER", "date": datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d"), "report": build_daily_report()}), 200
 
 
 @app.get("/paper/diagnostics")
@@ -510,6 +432,7 @@ def diagnostics():
         "buy_count": sum(1 for row in latest_scores.values() if row.get("signal") == "BUY"),
         "score_threshold": BUY_SCORE_THRESHOLD,
         "scores": sorted(latest_scores.values(), key=lambda item: item.get("score", 0), reverse=True),
+        "entry_diagnostics": runtime.last_entry_diagnostics,
     }), 200
 
 
@@ -522,101 +445,94 @@ def process_market_cycle() -> None:
     global latest_scores
     tickers, candles_15m, candles_5m = fetch_strategy_data()
     new_scores: dict[str, dict] = {}
-
-    # Preserve the established BTC crash guard as a portfolio-level blocker,
-    # not as a per-symbol score penalty.
     btc_1h = fetch_klines("BTCUSDT", "1h", 6)
     btc_crashing, btc_drop = btc_crash_guard(btc_1h)
     if btc_crashing:
         logger.warning("BTC crash guard active: %.2f%%", btc_drop)
 
     for symbol in TRADING_SYMBOLS:
-        ticker = tickers.get(symbol)
-        c15 = candles_15m.get(symbol, [])
-        c5 = candles_5m.get(symbol, [])
+        ticker = tickers.get(symbol); c15 = candles_15m.get(symbol, []); c5 = candles_5m.get(symbol, [])
         if not ticker:
             continue
-        price = float(ticker.get("lastPrice", 0.0))
-        bid = float(ticker.get("bidPrice", price) or price)
+        price = float(ticker.get("lastPrice", 0.0)); bid = float(ticker.get("bidPrice", price) or price)
         ask = float(ticker.get("askPrice", price) or price)
         spread = ((ask - bid) / price * 100.0) if price > 0 else 0.0
         quote_volume = float(ticker.get("quoteVolume", 0.0) or 0.0)
-        score = score_symbol(symbol, ticker, c15, c5)
-        new_scores[symbol] = score
-
-        runtime.update_market(
-            symbol,
-            price=price,
-            bid=bid,
-            ask=ask,
-            spread_percent=spread,
-            atr=float(score.get("atr", 0.0)),
-            volume_usdt=quote_volume,
-            volatility=0.0,
-            ema100=float(score.get("ema100", 0.0)),
-        )
-        current_prices[symbol] = price
-        market_state[symbol] = score
-
-        # Existing positions are evaluated before considering a new entry.
+        score = score_symbol(symbol, ticker, c15, c5); new_scores[symbol] = score
+        runtime.update_market(symbol, price=price, bid=bid, ask=ask, spread_percent=spread,
+                              atr=float(score.get("atr", 0.0)), volume_usdt=quote_volume,
+                              volatility=0.0, ema100=float(score.get("ema100", 0.0)))
+        current_prices[symbol] = price; market_state[symbol] = score
         runtime.evaluate_position(symbol)
 
     latest_scores = new_scores
 
-    # Entry pass is deliberately separate from market-state updates so a BUY
-    # cannot be created from a half-updated universe.
     for symbol, score in sorted(new_scores.items(), key=lambda item: item[1]["score"], reverse=True):
         if score.get("signal") != "BUY":
             continue
+
+        # Non-invasive trace: these are pre-Trade-Manager blockers. They do not
+        # change the existing decision path; they only make the exact choke
+        # point observable from /paper/diagnostics.
+        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+        trace.update({
+            "score": score.get("score"), "signal": score.get("signal"),
+            "scalp_score": score.get("scalp_score"), "scalp_gate": score.get("scalp_gate"),
+            "pre_trade": {"btc_crash_guard": "PASS", "existing_position": "PASS",
+                          "atr_price": "PASS", "stop_loss": "PASS"},
+        })
         if btc_crashing:
+            trace["pre_trade"]["btc_crash_guard"] = "REJECT"
+            trace["result"] = "REJECTED_AT_BTC_CRASH_GUARD"
+            trace["finished_at"] = time.time()
+            logger.info("ENTRY TRACE %s: %s", symbol, trace)
             continue
         if runtime.controller.has_position(symbol):
+            trace["pre_trade"]["existing_position"] = "REJECT"
+            trace["result"] = "REJECTED_EXISTING_POSITION"
+            trace["finished_at"] = time.time()
+            logger.info("ENTRY TRACE %s: %s", symbol, trace)
             continue
-        atr = float(score.get("atr", 0.0))
-        price = float(score.get("price", 0.0))
+        atr = float(score.get("atr", 0.0)); price = float(score.get("price", 0.0))
         if atr <= 0 or price <= 0:
+            trace["pre_trade"]["atr_price"] = "REJECT"
+            trace["result"] = "REJECTED_INVALID_ATR_OR_PRICE"
+            trace["finished_at"] = time.time()
+            logger.info("ENTRY TRACE %s: %s", symbol, trace)
             continue
-
-        # ATR stop is the strategy's concrete stop distance; Part 6 owns the
-        # final quantity calculation and may reject the entry for risk reasons.
         stop_loss = price - (2.0 * atr)
         if stop_loss <= 0:
+            trace["pre_trade"]["stop_loss"] = "REJECT"
+            trace["result"] = "REJECTED_INVALID_STOP"
+            trace["finished_at"] = time.time()
+            logger.info("ENTRY TRACE %s: %s", symbol, trace)
             continue
+
         position = runtime.open_position(symbol, price, stop_loss)
+        trace = runtime.last_entry_diagnostics.get(symbol, trace)
         if position is not None:
             reasons = " | ".join(score.get("reasons", []))
             send_telegram_message(
-                "=== PAPER BUY ===\n"
-                f"Symbol: {symbol}\n"
-                f"Score: {score['score']}/100\n"
-                f"Reasons: {reasons}\n"
-                f"Quantity: {position.quantity:.12f}\n"
-                f"Entry: {position.entry_price:.8f}\n"
-                f"Stop: {position.stop_loss:.8f}\n"
-                f"RSI: {score['rsi']:.2f}\n"
-                f"EMA100: {score['ema100']:.8f}\n"
-                f"PAPER ONLY"
+                "=== PAPER BUY ===\n" f"Symbol: {symbol}\n" f"Score: {score['score']}/100\n"
+                f"Reasons: {reasons}\n" f"Quantity: {position.quantity:.12f}\n"
+                f"Entry: {position.entry_price:.8f}\n" f"Stop: {position.stop_loss:.8f}\n"
+                f"RSI: {score['rsi']:.2f}\n" f"EMA100: {score['ema100']:.8f}\nPAPER ONLY"
             )
+        else:
+            logger.warning("ENTRY BLOCKED %s: score=%s trace=%s", symbol, score.get("score"), trace)
 
-    logger.info(
-        "Paper cycle complete: data=%d/%d, BUY=%d, top=%s",
-        len(new_scores),
-        len(TRADING_SYMBOLS),
-        sum(1 for row in new_scores.values() if row.get("signal") == "BUY"),
-        ", ".join(f"{r['symbol']}:{r['score']}" for r in sorted(new_scores.values(), key=lambda x: x['score'], reverse=True)[:5]),
-    )
+    logger.info("Paper cycle complete: data=%d/%d, BUY=%d, top=%s",
+                len(new_scores), len(TRADING_SYMBOLS),
+                sum(1 for row in new_scores.values() if row.get("signal") == "BUY"),
+                ", ".join(f"{r['symbol']}:{r['score']}" for r in sorted(new_scores.values(), key=lambda x: x['score'], reverse=True)[:5]))
 
 
 async def start_shadow_engine() -> None:
-    if not send_telegram_message(
-        "🟢 Paper Trading strategy engine started on Render\n"
-        f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
-        "Strategy: 15m macro support + 5m bullish confirmation + EMA100/RSI/volume\n"
-        "Trade Manager: Parts 1-8\n"
-        "No real exchange orders are submitted."
-    ):
+    if not send_telegram_message("🟢 Paper Trading strategy engine started on Render\n"
+                                 f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
+                                 "Strategy: 15m macro support + 5m bullish confirmation + EMA100/RSI/volume\n"
+                                 "Trade Manager: Parts 1-8\nNo real exchange orders are submitted."):
         logger.warning("Paper engine started but Telegram activation message was not delivered")
-
     while True:
         started = time.monotonic()
         try:
@@ -632,14 +548,6 @@ def run_flask() -> None:
 
 
 if __name__ == "__main__":
-    threading.Thread(
-        target=_daily_report_loop,
-        daemon=True,
-        name="paper-daily-report",
-    ).start()
-    threading.Thread(
-        target=lambda: asyncio.run(start_shadow_engine()),
-        daemon=True,
-        name="shadow-market-engine",
-    ).start()
+    threading.Thread(target=_daily_report_loop, daemon=True, name="paper-daily-report").start()
+    threading.Thread(target=lambda: asyncio.run(start_shadow_engine()), daemon=True, name="shadow-market-engine").start()
     run_flask()
