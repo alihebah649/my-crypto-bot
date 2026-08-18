@@ -1,9 +1,7 @@
 """Trade Manager Part 6 - normalized risk layer.
 
-Source: ``trade manager parts 1-7.docx`` sections 6.1-6.3.
-The original document contains overlapping risk helpers; this module keeps
-those responsibilities explicit and exposes a spot-only, leverage=1 boundary.
-No order is ever submitted here.
+Spot-only risk boundary. Position sizing is capped by both account-risk sizing
+and the configured target notional for the bot's normal entry size.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -39,7 +37,10 @@ class RiskEvaluation:
     approved_position_size: Optional[PositionSizeResult]=None; metadata: dict[str,Any]=field(default_factory=dict)
 @dataclass(slots=True)
 class PositionSizingConfig:
-    risk_per_trade_percent: float=1.0; minimum_position_size: float=10.0; maximum_position_size: float=100000.0
+    risk_per_trade_percent: float=1.0
+    target_position_value: float=50.0
+    minimum_position_size: float=10.0
+    maximum_position_size: float=100000.0
     allow_fractional_quantity: bool=True; round_quantity_to_step: bool=True
 @dataclass(slots=True)
 class DailyRiskConfig:
@@ -91,15 +92,24 @@ class RiskContext:
 
 class PositionSizeCalculator:
     def __init__(self, config: RiskConfig): self.config=config
-    def calculate(self, *, account_equity: float, entry_price: float, stop_loss: float, leverage: float=1.0)->PositionSizeResult:
+    def calculate(self, *, account_equity: float, entry_price: float, stop_loss: float, leverage: float=1.0,
+                  target_position_value: Optional[float]=None)->PositionSizeResult:
         if account_equity<=0 or entry_price<=0 or stop_loss<=0: raise ValueError("invalid sizing inputs")
         if leverage!=1.0: raise ValueError("spot-only Trade Manager requires leverage=1.0")
         distance=abs(entry_price-stop_loss)
         if distance<=0: raise ValueError("stop distance equals zero")
         risk_pct=self.config.position_sizing.risk_per_trade_percent/100.0
         if not 0<risk_pct<=1: raise ValueError("invalid risk percent")
-        risk_amount=account_equity*risk_pct; quantity=risk_amount/distance; value=quantity*entry_price
-        return PositionSizeResult(quantity,value,risk_amount,distance,1.0,value)
+        risk_amount=account_equity*risk_pct
+        risk_quantity=risk_amount/distance
+        risk_value=risk_quantity*entry_price
+        configured_target=(self.config.position_sizing.target_position_value
+                           if target_position_value is None else float(target_position_value))
+        if configured_target<=0: raise ValueError("invalid target position value")
+        value=min(configured_target,risk_value)
+        quantity=value/entry_price
+        actual_risk=quantity*distance
+        return PositionSizeResult(quantity,value,actual_risk,distance,1.0,value)
 
 class PositionSizeNormalizer:
     def __init__(self, exchange_info_provider: Any): self.exchange_info=exchange_info_provider
