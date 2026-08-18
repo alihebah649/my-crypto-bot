@@ -57,8 +57,10 @@ def test_part6_spot_position_sizing_and_risk_gate():
     sizing = PositionSizeCalculator(config).calculate(
         account_equity=1000.0, entry_price=100.0, stop_loss=98.0, leverage=1.0
     )
-    assert sizing.quantity == 5.0
-    assert sizing.capital_used == 500.0
+    # Normal Paper entry is capped by the configured $50 target notional.
+    assert sizing.quantity == 0.5
+    assert sizing.capital_used == 50.0
+    assert sizing.risk_amount == 1.0
 
     controller = RiskController(config)
     account = PortfolioSnapshot(1000, 1000, 0, 1000, 0, 0, 0, 0, 0)
