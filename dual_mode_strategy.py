@@ -1,10 +1,14 @@
 """Dual-lane strategy: 5m reversal-led Scalping + high-confidence Swing."""
 from __future__ import annotations
 import pandas as pd
-SCALP_SCORE_THRESHOLD=65
-SWING_SCORE_THRESHOLD=80
-BUY_SCORE_THRESHOLD=SWING_SCORE_THRESHOLD
-SCALP_MIN_VOLUME_RATIO=0.75
+
+# Scalping is intentionally easier to trigger than Swing, but still requires
+# a confirmed 5m bullish setup plus macro support and minimum liquidity.
+SCALP_SCORE_THRESHOLD = 60
+SWING_SCORE_THRESHOLD = 80
+BUY_SCORE_THRESHOLD = SWING_SCORE_THRESHOLD
+SCALP_MIN_VOLUME_RATIO = 0.75
+SCALP_MAX_RSI = 60.0
 
 def calculate_ema(prices,period=100):
     if len(prices)<period:return 0.0
@@ -80,8 +84,13 @@ def score_symbol(symbol,ticker,candles_15m,candles_5m):
     elif v5>=SCALP_MIN_VOLUME_RATIO:scalp+=3;scalp_reasons.append("5M_VOLUME_ACCEPTABLE")
     if found and confirmed:scalp+=30;scalp_reasons.append(f"5M_{name}_CONFIRMED")
     elif found:scalp+=8;scalp_reasons.append(f"5M_{name}")
-    scalp=min(scalp,100);gate=bool(found and confirmed and r5<=45 and v5>=SCALP_MIN_VOLUME_RATIO and macro_points>0);scalp_signal="BUY" if scalp>=SCALP_SCORE_THRESHOLD and gate else "HOLD";swing_signal="BUY" if swing>=SWING_SCORE_THRESHOLD else "HOLD"
+    scalp=min(scalp,100)
+    # A confirmed breakout should not be rejected merely because RSI has moved
+    # above the old recovery-zone cutoff. Keep an upper RSI safety ceiling so
+    # genuinely overheated breakouts (e.g. RSI > 60) remain blocked.
+    gate=bool(found and confirmed and r5<=SCALP_MAX_RSI and v5>=SCALP_MIN_VOLUME_RATIO and macro_points>0)
+    scalp_signal="BUY" if scalp>=SCALP_SCORE_THRESHOLD and gate else "HOLD";swing_signal="BUY" if swing>=SWING_SCORE_THRESHOLD else "HOLD"
     if scalp_signal=="BUY":mode="SCALP";selected=scalp;reasons=scalp_reasons
     elif swing_signal=="BUY":mode="SWING";selected=swing;reasons=swing_reasons
     else:mode="NONE";selected=max(scalp,swing);reasons=scalp_reasons if scalp>=swing else swing_reasons
-    return {"symbol":symbol,"score":selected,"signal":"BUY" if mode!="NONE" else "HOLD","trade_mode":mode,"swing_score":swing,"scalp_score":scalp,"swing_signal":swing_signal,"scalp_signal":scalp_signal,"scalp_gate":gate,"scalp_min_volume_ratio":SCALP_MIN_VOLUME_RATIO,"reasons":reasons,"swing_reasons":swing_reasons,"scalp_reasons":scalp_reasons,"price":price,"ema100":ema100,"rsi":r15,"rsi5m":r5,"atr":atr,"atr5m":atr5,"lower_band":lo15,"middle_band":mid15,"upper_band":up15,"lower_band_5m":lo5,"middle_band_5m":mid5,"upper_band_5m":up5,"volume_ratio":v15,"volume_ratio_5m":v5,"pattern":name,"pattern_confirmed":confirmed}
+    return {"symbol":symbol,"score":selected,"signal":"BUY" if mode!="NONE" else "HOLD","trade_mode":mode,"swing_score":swing,"scalp_score":scalp,"swing_signal":swing_signal,"scalp_signal":scalp_signal,"scalp_gate":gate,"scalp_min_volume_ratio":SCALP_MIN_VOLUME_RATIO,"scalp_max_rsi":SCALP_MAX_RSI,"reasons":reasons,"swing_reasons":swing_reasons,"scalp_reasons":scalp_reasons,"price":price,"ema100":ema100,"rsi":r15,"rsi5m":r5,"atr":atr,"atr5m":atr5,"lower_band":lo15,"middle_band":mid15,"upper_band":up15,"lower_band_5m":lo5,"middle_band_5m":mid5,"upper_band_5m":up5,"volume_ratio":v15,"volume_ratio_5m":v5,"pattern":name,"pattern_confirmed":confirmed}
