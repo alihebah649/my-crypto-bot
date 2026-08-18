@@ -4,7 +4,7 @@ import pandas as pd
 
 # Scalping is intentionally easier to trigger than Swing, but still requires
 # a confirmed 5m bullish setup plus macro support and minimum liquidity.
-SCALP_SCORE_THRESHOLD = 60
+SCALP_SCORE_THRESHOLD = 65
 SWING_SCORE_THRESHOLD = 80
 BUY_SCORE_THRESHOLD = SWING_SCORE_THRESHOLD
 SCALP_MIN_VOLUME_RATIO = 0.75
