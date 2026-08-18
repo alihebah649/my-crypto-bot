@@ -46,6 +46,11 @@ class PositionSizingConfig:
 class DailyRiskConfig:
     max_daily_loss_percent: float=5.0; max_weekly_loss_percent: float=10.0; max_monthly_loss_percent: float=20.0
     stop_trading_after_limit: bool=True
+    # A realized losing trade arms the Part-6 entry lock. This is deliberately
+    # separate from the percentage loss limits: the limits protect the account
+    # from aggregate losses, while this gate prevents immediate re-entry after
+    # a realized loss and gives the strategy time to reassess.
+    lock_after_realized_loss: bool=True
 @dataclass(slots=True)
 class ExposureConfig:
     max_open_positions: int=5; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
@@ -174,9 +179,23 @@ class RiskController:
     def __init__(self, config: Optional[RiskConfig]=None, loss_tracker: Optional[LossTracker]=None, lock_manager: Optional[RiskLockManager]=None):
         self.config=config or RiskConfig();self.loss_tracker=loss_tracker or LossTracker();self.lock_manager=lock_manager or RiskLockManager()
     def evaluate(self, *, account: PortfolioSnapshot, symbol: str, signal: Any, market: MarketContext, symbol_exposure: Optional[SymbolExposure]=None, correlation_score: float=0.0)->RiskEvaluation:
-        if self.lock_manager.is_locked():return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.RISK_LOCKED,metadata={"lock_reason":self.lock_manager.reason})
-        if not symbol or market.last_price<=0 or account.account_equity<=0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.INVALID_MARKET_DATA)
         c=self.config
+        loss=self.loss_tracker.snapshot();limits=c.daily_risk
+
+        # Realized-loss gate must be evaluated before the generic lock state.
+        # The loss ledger is the source of truth for closed trades. Once a
+        # realized loss is present, arm the Part-6 lock before allowing another
+        # entry. The percentage limits below remain the aggregate account guard.
+        if c.options.enable_daily_loss_control and limits.lock_after_realized_loss and loss.daily_pnl < 0:
+            if limits.stop_trading_after_limit:
+                self.lock_manager.lock(reason=RiskRejectReason.DAILY_LOSS_LIMIT.name)
+            return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.DAILY_LOSS_LIMIT,
+                                  metadata={"daily_pnl": loss.daily_pnl, "lock_reason": RiskRejectReason.DAILY_LOSS_LIMIT.name,
+                                            "gate": "REALIZED_LOSS_REENTRY_LOCK"})
+
+        if self.lock_manager.is_locked():
+            return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.RISK_LOCKED,metadata={"lock_reason":self.lock_manager.reason})
+        if not symbol or market.last_price<=0 or account.account_equity<=0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.INVALID_MARKET_DATA)
         if account.open_positions>=c.exposure.max_open_positions:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_POSITIONS)
         if symbol_exposure:
             if not c.exposure.allow_multiple_positions_same_symbol and symbol_exposure.open_positions>0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE)
@@ -186,7 +205,6 @@ class RiskController:
         if c.options.enable_market_filters:
             if market.spread_percent>c.market.maximum_spread_percent:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.SPREAD_TOO_HIGH)
             if market.volume<c.market.minimum_volume_usdt:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.INVALID_MARKET_DATA)
-        loss=self.loss_tracker.snapshot();limits=c.daily_risk
         checks=((loss.daily_pnl,limits.max_daily_loss_percent,RiskRejectReason.DAILY_LOSS_LIMIT),(loss.weekly_pnl,limits.max_weekly_loss_percent,RiskRejectReason.WEEKLY_LOSS_LIMIT),(loss.monthly_pnl,limits.max_monthly_loss_percent,RiskRejectReason.MONTHLY_LOSS_LIMIT))
         if c.options.enable_daily_loss_control:
             for pnl,limit,reason in checks:
