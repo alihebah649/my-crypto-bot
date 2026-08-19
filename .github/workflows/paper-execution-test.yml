@@ -8,6 +8,7 @@ on:
       - tm-integration-work
       - dual-mode-safe-calibration
       - scalp-calibration-v2
+      - reward-risk-profit-floor-v2
     paths:
       - "core/**"
       - "trade_manager/**"
