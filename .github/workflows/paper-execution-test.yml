@@ -2,6 +2,7 @@ name: Paper Execution Test
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches:
       - main
@@ -29,11 +30,10 @@ jobs:
       - name: Checkout tested ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
           fetch-depth: 1
       - name: Show tested commit
         run: |
-          echo "Testing ref: ${{ github.ref }}"
           echo "Testing commit: $(git rev-parse HEAD)"
           git log -1 --oneline
       - name: Set up Python
