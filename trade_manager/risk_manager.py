@@ -65,6 +65,12 @@ class PositionRiskManager:
         self._update_position_metrics(position)
         position.hold_context = self._get_market_context(position.symbol)
 
+        # Preserve the original stop before any break-even mutation. The
+        # reward/risk floor must always be measured against entry risk, not a
+        # later break-even/trailing stop value.
+        if "initial_stop_loss" not in position.metadata:
+            position.metadata["initial_stop_loss"] = position.stop_loss
+
         if self.should_move_to_break_even(position):
             be = self.calculator.break_even_price(position)
             if position.stop_loss < be:
@@ -196,10 +202,16 @@ class PositionRiskManager:
         return PositionExitDecision(False, PositionExitReason.NONE)
 
     def _required_net_profit_percent(self, position: Position) -> float:
-        """Return the larger of the absolute floor and the configured R-multiple floor."""
+        """Return the larger of the absolute floor and the configured R-multiple floor.
+
+        The risk anchor is the original entry stop. It is persisted in position
+        metadata so activating break-even cannot silently reduce the required R
+        multiple to zero.
+        """
+        initial_stop_loss = position.metadata.get("initial_stop_loss", position.stop_loss)
         stop_risk_percent = 0.0
-        if position.entry_price > 0 and position.stop_loss > 0:
-            stop_risk_percent = abs(position.entry_price - position.stop_loss) / position.entry_price * 100.0
+        if position.entry_price > 0 and initial_stop_loss > 0:
+            stop_risk_percent = abs(position.entry_price - initial_stop_loss) / position.entry_price * 100.0
         return max(self.min_net_profit_percent, stop_risk_percent * self.reward_to_risk_ratio)
 
     def _minimum_profitable_exit_price(self, position: Position) -> float:
