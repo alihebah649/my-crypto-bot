@@ -148,6 +148,9 @@ class PositionManagementFacade:
         position.entry_metadata["entry_time"] = time.time()
         position.entry_metadata["execution_source"] = outcome.metadata.get("source", "CORE_EXECUTION_GATEWAY")
         position.entry_metadata["risk_metadata"] = risk_metadata
+        # Persist the immutable entry risk anchor used by the reward/risk floor.
+        # This must not change when break-even later moves position.stop_loss.
+        position.metadata["initial_stop_loss"] = stop_loss
         self.repository.add(position)
         self.last_entry_diagnostic["result"] = "POSITION_COMMITTED"
         self.last_entry_diagnostic["position_id"] = position.position_id

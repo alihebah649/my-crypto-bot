@@ -36,7 +36,7 @@ def test_trailing_stop_never_locks_a_net_loss_after_fees():
 
 
 def test_trailing_stop_can_exit_only_after_fee_aware_profit_floor():
-    position = make_position(100.0, 101.0)
+    position = make_position(100.0, 101.25)
     position.highest_price = 102.0
     manager = PositionRiskManager(
         atr_provider=lambda _symbol: 0.20,
@@ -49,7 +49,7 @@ def test_trailing_stop_can_exit_only_after_fee_aware_profit_floor():
 
     assert decision.should_exit is True
     assert decision.reason is PositionExitReason.TRAILING_STOP
-    assert decision.exit_price == 101.0
+    assert decision.exit_price == 101.25
 
 
 def test_fee_aware_profit_floor_is_above_fee_break_even():

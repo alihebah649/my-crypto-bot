@@ -59,3 +59,9 @@ jobs:
 
       - name: Run Paper Trading restart/state continuity tests
         run: python -m pytest -q tests/test_paper_restart_continuity.py
+
+      - name: Run reward-risk profit floor regression tests
+        run: python -m pytest -q tests/test_reward_risk_profit_floor.py
+
+      - name: Run full Python regression suite
+        run: python -m pytest -q

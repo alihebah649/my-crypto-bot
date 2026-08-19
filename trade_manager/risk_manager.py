@@ -41,9 +41,12 @@ class PositionRiskManager:
                  max_holding_days: float = 7.0,
                  min_recovery_score: float = 0.40,
                  min_net_profit_percent: float = 0.30,
+                 reward_to_risk_ratio: float = 1.0,
                  calculator: Optional[PositionCalculator] = None):
         if min_net_profit_percent < 0:
             raise ValueError("min_net_profit_percent must be non-negative")
+        if reward_to_risk_ratio < 0:
+            raise ValueError("reward_to_risk_ratio must be non-negative")
         self.market_context_provider = market_context_provider
         self.atr_provider = atr_provider
         self.ema_provider = ema_provider
@@ -53,6 +56,7 @@ class PositionRiskManager:
         self.max_holding_days = max_holding_days
         self.min_recovery_score = min_recovery_score
         self.min_net_profit_percent = min_net_profit_percent
+        self.reward_to_risk_ratio = reward_to_risk_ratio
         self.calculator = calculator or PositionCalculator()
         self._hold_decisions = []
         self._review_decisions = []
@@ -61,14 +65,18 @@ class PositionRiskManager:
         self._update_position_metrics(position)
         position.hold_context = self._get_market_context(position.symbol)
 
+        # Preserve the original stop before any break-even mutation. The
+        # reward/risk floor must always be measured against entry risk, not a
+        # later break-even/trailing stop value.
+        if "initial_stop_loss" not in position.metadata:
+            position.metadata["initial_stop_loss"] = position.stop_loss
+
         if self.should_move_to_break_even(position):
             be = self.calculator.break_even_price(position)
             if position.stop_loss < be:
                 position.stop_loss = be
                 position.metadata["break_even_activated"] = True
 
-        # Review deadline must be checked before HOLD; otherwise a healthy recovery
-        # score would keep a 7-day HOLD alive forever.
         review = self._check_review_required(position)
         if review.review_required:
             return review
@@ -193,26 +201,43 @@ class PositionRiskManager:
                                         position.current_price, "Take Profit Triggered")
         return PositionExitDecision(False, PositionExitReason.NONE)
 
+    def _required_net_profit_percent(self, position: Position) -> float:
+        """Return the larger of the absolute floor and the configured R-multiple floor.
+
+        The risk anchor is the original entry stop. It is persisted in position
+        metadata so activating break-even cannot silently reduce the required R
+        multiple to zero.
+        """
+        initial_stop_loss = position.metadata.get("initial_stop_loss", position.stop_loss)
+        stop_risk_percent = 0.0
+        if position.entry_price > 0 and initial_stop_loss > 0:
+            stop_risk_percent = abs(position.entry_price - initial_stop_loss) / position.entry_price * 100.0
+        return max(self.min_net_profit_percent, stop_risk_percent * self.reward_to_risk_ratio)
+
     def _minimum_profitable_exit_price(self, position: Position) -> float:
         """Return the exit price required for the configured minimum NET profit.
 
-        The calculation includes both entry and exit fees. This prevents a
-        trailing stop from turning a small gross winner into a net loser.
+        The floor includes both fees and the initial stop risk. With the default
+        1.0 reward-to-risk ratio, a trailing exit must have at least one unit of
+        net reward relative to the original stop risk, while still respecting the
+        absolute minimum net-profit floor.
         """
         break_even = self.calculator.break_even_price(position)
-        return break_even * (1.0 + self.min_net_profit_percent / 100.0)
+        required_net_profit_percent = self._required_net_profit_percent(position)
+        return break_even * (1.0 + required_net_profit_percent / 100.0)
 
     def _check_trailing_stop(self, position: Position) -> PositionExitDecision:
+        required_net_profit_percent = self._required_net_profit_percent(position)
         minimum_profitable_price = self._minimum_profitable_exit_price(position)
         net_pnl_percent = self.calculator.calculate(
             position, position.current_price
         ).net_pnl_percent
-        if net_pnl_percent < self.min_net_profit_percent:
+        if net_pnl_percent < required_net_profit_percent:
             return PositionExitDecision(
                 False,
                 PositionExitReason.NONE,
                 position.current_price,
-                f"TRAILING_WAIT_NET_PROFIT:{net_pnl_percent:.3f}%<{self.min_net_profit_percent:.3f}%",
+                f"TRAILING_WAIT_NET_PROFIT:{net_pnl_percent:.3f}%<{required_net_profit_percent:.3f}%",
             )
 
         atr_percent = self._get_atr_percent(position.symbol)
@@ -224,7 +249,7 @@ class PositionRiskManager:
         if position.current_price <= trailing_price and position.current_price < position.highest_price:
             return PositionExitDecision(True, PositionExitReason.TRAILING_STOP,
                                         position.current_price,
-                                        f"Fee-aware Trailing Stop (ATR: {atr_percent:.2f}%, Distance: {distance:.2f}%, Min Net: {self.min_net_profit_percent:.2f}%)")
+                                        f"Fee-aware R:R Trailing Stop (ATR: {atr_percent:.2f}%, Distance: {distance:.2f}%, Required Net: {required_net_profit_percent:.2f}%, R:R: {self.reward_to_risk_ratio:.2f})")
         return PositionExitDecision(False, PositionExitReason.NONE)
 
     def _check_review_required(self, position: Position) -> PositionExitDecision:
