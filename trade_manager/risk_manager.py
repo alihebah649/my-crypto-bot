@@ -40,7 +40,10 @@ class PositionRiskManager:
                  break_even_trigger_percent: float = 1.5,
                  max_holding_days: float = 7.0,
                  min_recovery_score: float = 0.40,
+                 min_net_profit_percent: float = 0.30,
                  calculator: Optional[PositionCalculator] = None):
+        if min_net_profit_percent < 0:
+            raise ValueError("min_net_profit_percent must be non-negative")
         self.market_context_provider = market_context_provider
         self.atr_provider = atr_provider
         self.ema_provider = ema_provider
@@ -49,6 +52,7 @@ class PositionRiskManager:
         self.break_even_trigger = break_even_trigger_percent
         self.max_holding_days = max_holding_days
         self.min_recovery_score = min_recovery_score
+        self.min_net_profit_percent = min_net_profit_percent
         self.calculator = calculator or PositionCalculator()
         self._hold_decisions = []
         self._review_decisions = []
@@ -189,16 +193,38 @@ class PositionRiskManager:
                                         position.current_price, "Take Profit Triggered")
         return PositionExitDecision(False, PositionExitReason.NONE)
 
+    def _minimum_profitable_exit_price(self, position: Position) -> float:
+        """Return the exit price required for the configured minimum NET profit.
+
+        The calculation includes both entry and exit fees. This prevents a
+        trailing stop from turning a small gross winner into a net loser.
+        """
+        break_even = self.calculator.break_even_price(position)
+        return break_even * (1.0 + self.min_net_profit_percent / 100.0)
+
     def _check_trailing_stop(self, position: Position) -> PositionExitDecision:
+        minimum_profitable_price = self._minimum_profitable_exit_price(position)
+        net_pnl_percent = self.calculator.calculate(
+            position, position.current_price
+        ).net_pnl_percent
+        if net_pnl_percent < self.min_net_profit_percent:
+            return PositionExitDecision(
+                False,
+                PositionExitReason.NONE,
+                position.current_price,
+                f"TRAILING_WAIT_NET_PROFIT:{net_pnl_percent:.3f}%<{self.min_net_profit_percent:.3f}%",
+            )
+
         atr_percent = self._get_atr_percent(position.symbol)
         if atr_percent is None or atr_percent <= 0:
             atr_percent = 0.40
         distance = atr_percent * self.trailing_atr_multiplier
-        trailing_price = position.highest_price * (1 - distance / 100.0)
+        raw_trailing_price = position.highest_price * (1 - distance / 100.0)
+        trailing_price = max(raw_trailing_price, minimum_profitable_price)
         if position.current_price <= trailing_price and position.current_price < position.highest_price:
             return PositionExitDecision(True, PositionExitReason.TRAILING_STOP,
                                         position.current_price,
-                                        f"Trailing Stop (ATR: {atr_percent:.2f}%, Distance: {distance:.2f}%)")
+                                        f"Fee-aware Trailing Stop (ATR: {atr_percent:.2f}%, Distance: {distance:.2f}%, Min Net: {self.min_net_profit_percent:.2f}%)")
         return PositionExitDecision(False, PositionExitReason.NONE)
 
     def _check_review_required(self, position: Position) -> PositionExitDecision:
