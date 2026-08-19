@@ -145,6 +145,26 @@ class ShadowTradeManagerRuntime:
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
                                                risk_gateway=self.risk_gateway)
+
+        # Keep the Part-6 realized-loss ledger current immediately after a
+        # successful close. The live application can therefore not open the
+        # next position in the same cycle using a stale daily-loss snapshot.
+        original_close_position = self.facade.close_position
+        original_execute_decision = self.facade.execute_decision
+
+        def close_position_and_sync(*args: Any, **kwargs: Any) -> Optional[Position]:
+            result = original_close_position(*args, **kwargs)
+            self.loss_ledger.sync(self.repository.get_closed_positions())
+            return result
+
+        def execute_decision_and_sync(*args: Any, **kwargs: Any) -> Optional[Position]:
+            result = original_execute_decision(*args, **kwargs)
+            self.loss_ledger.sync(self.repository.get_closed_positions())
+            return result
+
+        self.facade.close_position = close_position_and_sync
+        self.facade.execute_decision = execute_decision_and_sync
+
         if hasattr(self.execution_adapter, "connect"): self.execution_adapter.connect()
         self.loss_ledger.sync(self.repository.get_closed_positions())
 
