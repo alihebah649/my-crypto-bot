@@ -53,7 +53,7 @@ def test_trailing_stop_can_exit_only_after_fee_aware_profit_floor():
 
 
 def test_fee_aware_profit_floor_is_above_fee_break_even():
-    position = make_position(100.0, 100.7)
+    position = make_position(100.0, 100.3)
     manager = PositionRiskManager(calculator=PositionCalculator(0.001, 0.001))
 
     break_even = manager.calculator.break_even_price(position)
