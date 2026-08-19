@@ -81,7 +81,8 @@ def test_realized_loss_feeds_part6_and_locks_next_entry():
     runtime.update_market("BTCUSDT", price=70.0, **MARKET)
     closed = runtime.facade.close_position(position.position_id, 70.0)
     assert closed is not None and closed.realized_pnl < 0.0
-    runtime.update_market("BTCUSDT", price=70.0, **MARKET)
+    # The realized-loss ledger must be current immediately after the close;
+    # a second market tick is not required before Part-6 can reject re-entry.
     loss = runtime.loss_tracker.snapshot()
     assert loss.daily_pnl == pytest.approx(closed.realized_pnl)
     assert loss.weekly_pnl == pytest.approx(closed.realized_pnl)
