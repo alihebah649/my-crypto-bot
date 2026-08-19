@@ -42,6 +42,42 @@ def _home():
 app.view_functions["home"] = _home
 
 
+def _notify_closed_positions() -> int:
+    """Send exactly-once SELL notifications for closed Paper positions.
+
+    The execution lifecycle is authoritative: a notification is considered
+    sent only after the position is already CLOSED and Telegram acknowledges
+    the message. The sent marker is persisted with the position, so a restart
+    retries genuinely unsent notifications without re-sending acknowledged
+    ones.
+    """
+    sent = 0
+    for position in runtime.repository.get_closed_positions():
+        if position.exit_metadata.get("telegram_notification_sent"):
+            continue
+        reason = getattr(position.close_reason, "name", str(position.close_reason))
+        exit_price = float(position.exit_metadata.get("exit_price", position.current_price))
+        message = (
+            "=== PAPER SELL ===\n"
+            f"Symbol: {position.symbol}\n"
+            f"Reason: {reason}\n"
+            f"Quantity: {position.quantity:.12f}\n"
+            f"Entry: {position.entry_price:.8f}\n"
+            f"Exit: {exit_price:.8f}\n"
+            f"Gross P&L: {position.gross_pnl:+.4f}$\n"
+            f"Fees: {position.total_fees:.4f}$\n"
+            f"Net P&L: {position.realized_pnl:+.4f}$\n"
+            f"Paper cash: ${runtime.execution_adapter.balance.cash:.2f}\n"
+            "PAPER ONLY"
+        )
+        if _legacy.send_telegram_message(message):
+            position.exit_metadata["telegram_notification_sent"] = True
+            position.exit_metadata["telegram_notification_sent_at"] = time.time()
+            runtime.repository.update(position)
+            sent += 1
+    return sent
+
+
 async def _dual_mode_engine():
     _legacy.send_telegram_message(
         "🟢 Paper Trading dual-mode strategy engine started on Render\n"
@@ -51,12 +87,23 @@ async def _dual_mode_engine():
         "Trade Manager: Parts 1-8\n"
         "No real exchange orders are submitted."
     )
+    # Flush any SELL notifications that were successfully executed but not
+    # acknowledged by Telegram before a previous process restart.
+    _notify_closed_positions()
     while True:
         started = time.monotonic()
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
         except Exception:
             _legacy.logger.exception("Dual-mode paper market cycle failed")
+        finally:
+            # Exit notification is deliberately outside the strategy path: a
+            # Telegram outage must never prevent Trade Manager state from being
+            # CLOSED or prevent the next market cycle from running.
+            try:
+                _notify_closed_positions()
+            except Exception:
+                _legacy.logger.exception("Paper SELL notification reconciliation failed")
         elapsed = time.monotonic() - started
         await asyncio.sleep(max(1.0, _legacy.LOOP_SECONDS - elapsed))
 
