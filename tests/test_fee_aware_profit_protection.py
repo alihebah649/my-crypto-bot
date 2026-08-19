@@ -6,7 +6,7 @@ from trade_manager.models import Position, PositionSide, PositionStatus
 from trade_manager.risk_manager import PositionExitReason, PositionRiskManager
 
 
-def make_position(entry: float, current: float, atr_percent: float = 0.20) -> Position:
+def make_position(entry: float, current: float) -> Position:
     return Position(
         position_id="POS-FEE-AWARE-001",
         symbol="AVAXUSDT",
@@ -16,6 +16,7 @@ def make_position(entry: float, current: float, atr_percent: float = 0.20) -> Po
         entry_price=entry,
         current_price=current,
         stop_loss=entry * 0.99,
+        take_profit=None,
     )
 
 
