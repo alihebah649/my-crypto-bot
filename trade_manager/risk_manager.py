@@ -262,9 +262,9 @@ class PositionRiskManager:
 
         Once a trade reaches the configured activation multiple (default 2R),
         the bot locks a configurable amount of the original risk behind the
-        peak (default 1R). This is deliberately additive to the ATR trail:
-        whichever floor is tighter wins. The result lets strong winners keep
-        running while progressively protecting more of the already-earned gain.
+        peak (default 1R). The adaptive profit lock becomes the primary trail
+        at that point, preventing a very tight ATR trail from cutting off a
+        strong winner too early. The absolute 1R floor is still preserved.
         """
         if not self.trailing_take_profit_enabled:
             return required_net_profit_percent
@@ -312,11 +312,17 @@ class PositionRiskManager:
         trailing_take_profit_price = self._price_for_net_profit_percent(
             position, trailing_take_profit_percent
         )
-        trailing_price = max(
-            raw_trailing_price,
-            minimum_profitable_price,
-            trailing_take_profit_price,
-        )
+        if trailing_take_profit_percent > required_net_profit_percent:
+            # Once the adaptive TP trail is active, choose the looser of the
+            # ATR trail and the profit-lock target, but never below the original
+            # fee-aware minimum profitable floor.
+            trailing_price = max(
+                minimum_profitable_price,
+                min(raw_trailing_price, trailing_take_profit_price),
+            )
+        else:
+            # Before activation, preserve the existing ATR trailing behavior.
+            trailing_price = max(raw_trailing_price, minimum_profitable_price)
 
         if position.current_price <= trailing_price and position.current_price < position.highest_price:
             peak_net_profit_percent = self.calculator.calculate(
