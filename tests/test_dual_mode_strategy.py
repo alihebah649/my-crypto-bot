@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shadow_main
 import shadow_main_legacy
+import dual_mode_strategy
 from dual_mode_strategy import BUY_SCORE_THRESHOLD, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, score_symbol
 
 
@@ -17,6 +18,7 @@ def test_dual_mode_thresholds_are_separated():
     assert SCALP_SCORE_THRESHOLD < SWING_SCORE_THRESHOLD
     assert BUY_SCORE_THRESHOLD == SWING_SCORE_THRESHOLD
     assert SCALP_SCORE_THRESHOLD == 65
+    assert dual_mode_strategy.SCALP_MAX_RSI == 55.0
     assert shadow_main.score_symbol is score_symbol
 
 
@@ -45,6 +47,34 @@ def test_scalp_gate_rejects_without_confirmed_reversal():
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
     assert result["scalp_signal"] == "HOLD"
     assert result["scalp_gate"] is False
+
+
+def test_scalp_gate_accepts_confirmed_reversal_at_rsi_50(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 50.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_max_rsi"] == 55.0
+    assert result["scalp_gate"] is True
+    assert result["scalp_signal"] == "BUY"
+    assert result["trade_mode"] == "SCALP"
+
+
+def test_scalp_gate_rejects_confirmed_reversal_above_rsi_55(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 56.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
 
 
 def test_existing_swing_lane_can_still_reach_buy():
