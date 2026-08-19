@@ -68,3 +68,35 @@ def test_reward_risk_floor_never_drops_below_configured_absolute_floor():
     required = manager._required_net_profit_percent(position)
 
     assert required == 0.30
+
+
+def test_reward_risk_floor_survives_break_even_activation():
+    """Break-even must not erase the original 1R risk anchor."""
+    position = make_position(100.0, 102.0, 98.0)
+    manager = PositionRiskManager(
+        atr_provider=lambda _symbol: 0.20,
+        trailing_atr_multiplier=1.5,
+        break_even_trigger_percent=1.5,
+        min_net_profit_percent=0.30,
+        reward_to_risk_ratio=1.0,
+        calculator=PositionCalculator(0.001, 0.001),
+    )
+
+    manager.evaluate(position)
+
+    assert position.metadata["initial_stop_loss"] == 98.0
+    assert position.stop_loss > 98.0
+    assert manager._required_net_profit_percent(position) == 2.0
+
+
+def test_required_reward_risk_uses_persisted_entry_stop_after_restart_state():
+    """A persisted position with a moved stop still retains its entry risk."""
+    position = make_position(100.0, 102.0, 100.1001)
+    position.metadata["initial_stop_loss"] = 98.0
+    manager = PositionRiskManager(
+        min_net_profit_percent=0.30,
+        reward_to_risk_ratio=1.0,
+        calculator=PositionCalculator(0.001, 0.001),
+    )
+
+    assert manager._required_net_profit_percent(position) == 2.0
