@@ -81,6 +81,25 @@ def _notify_closed_positions() -> int:
     return sent
 
 
+def _sanitize_entry_diagnostics() -> None:
+    """Prevent a later rejected BUY attempt from inheriting a prior fill trace.
+
+    ``shadow_main_legacy.process_market_cycle`` historically used ``setdefault``
+    for the per-symbol trace. When the same symbol was bought successfully and
+    later rejected because it already had a position, the new rejection updated
+    ``result`` but left the old ``execution=FILLED`` and facade fields intact.
+    That made /paper/diagnostics report an impossible mixed lifecycle.
+    """
+    for trace in runtime.last_entry_diagnostics.values():
+        result = str(trace.get("result", ""))
+        if result.startswith("REJECTED_"):
+            trace["execution"] = "NOT_RUN"
+            trace["execution_outcome"] = None
+            trace["facade"] = "NOT_RUN"
+            trace.pop("facade_diagnostic", None)
+            trace.pop("position_id", None)
+
+
 async def _dual_mode_engine():
     _legacy.send_telegram_message(
         "🟢 Paper Trading dual-mode strategy engine started on Render\n"
@@ -97,6 +116,7 @@ async def _dual_mode_engine():
         started = time.monotonic()
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
+            _sanitize_entry_diagnostics()
         except Exception:
             _legacy.logger.exception("Dual-mode paper market cycle failed")
         finally:
