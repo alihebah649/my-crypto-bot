@@ -240,6 +240,12 @@ class PositionRiskManager:
         stop_risk_percent = self._initial_stop_risk_percent(position)
         return max(self.min_net_profit_percent, stop_risk_percent * self.reward_to_risk_ratio)
 
+    def _price_for_net_profit_percent(self, position: Position, target_net_profit_percent: float) -> float:
+        """Return the exact exit price for a target NET profit after both fees."""
+        return position.entry_price * (
+            1.0 + self.calculator.entry_fee_rate + target_net_profit_percent / 100.0
+        ) / (1.0 - self.calculator.exit_fee_rate)
+
     def _minimum_profitable_exit_price(self, position: Position) -> float:
         """Return the exit price required for the configured minimum NET profit.
 
@@ -248,9 +254,8 @@ class PositionRiskManager:
         net reward relative to the original stop risk, while still respecting the
         absolute minimum net-profit floor.
         """
-        break_even = self.calculator.break_even_price(position)
         required_net_profit_percent = self._required_net_profit_percent(position)
-        return break_even * (1.0 + required_net_profit_percent / 100.0)
+        return self._price_for_net_profit_percent(position, required_net_profit_percent)
 
     def _trailing_take_profit_floor_percent(self, position: Position, required_net_profit_percent: float) -> float:
         """Return a dynamic NET-profit floor based on the peak profit.
@@ -304,8 +309,8 @@ class PositionRiskManager:
         trailing_take_profit_percent = self._trailing_take_profit_floor_percent(
             position, required_net_profit_percent
         )
-        trailing_take_profit_price = self.calculator.break_even_price(position) * (
-            1.0 + trailing_take_profit_percent / 100.0
+        trailing_take_profit_price = self._price_for_net_profit_percent(
+            position, trailing_take_profit_percent
         )
         trailing_price = max(
             raw_trailing_price,
