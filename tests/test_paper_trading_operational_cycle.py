@@ -48,12 +48,13 @@ def test_full_paper_operational_cycle(tmp_path):
     assert signal == "BUY"
 
     # 3) Part-6 risk approval -> Trade Manager -> Core Paper Execution.
+    # Runtime entries use the configured $50 target notional.
     position = runtime.open_position("BTCUSDT", 100.0, 98.0)
     assert position is not None
     assert position.status is PositionStatus.OPEN
-    assert position.quantity == pytest.approx(5.0)
-    assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(5.0)
-    assert runtime.execution_adapter.balance.cash == pytest.approx(499.5)
+    assert position.quantity == pytest.approx(0.5)
+    assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(0.5)
+    assert runtime.execution_adapter.balance.cash == pytest.approx(949.95)
 
     # 4) Adverse move: Smart Hold/Recovery must retain ownership instead of
     # immediately selling a modest loss when recovery conditions are healthy.
@@ -63,7 +64,7 @@ def test_full_paper_operational_cycle(tmp_path):
     assert held is not None
     assert held.status is PositionStatus.HOLD
     assert held.hold_reason
-    assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(5.0)
+    assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(0.5)
 
     # 5) Recovery: once sufficiently profitable, HOLD returns to OPEN and the
     # Part-8 break-even protection can activate without forcing a sale.
@@ -82,15 +83,15 @@ def test_full_paper_operational_cycle(tmp_path):
     closed = runtime.facade.close_position(position.position_id, 103.0)
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
-    assert closed.realized_pnl == pytest.approx(13.985)
-    assert closed.total_fees == pytest.approx(1.015)
+    assert closed.realized_pnl == pytest.approx(1.3985)
+    assert closed.total_fees == pytest.approx(0.1015)
     assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(0.0)
-    assert runtime.execution_adapter.balance.cash == pytest.approx(1013.985)
+    assert runtime.execution_adapter.balance.cash == pytest.approx(1001.3985)
 
-    # 7) The runtime synchronizes the Part-6 loss ledger on the next market
-    # update. This mirrors the application's live-tick lifecycle.
+    # 7) The runtime updates the Part-6 loss ledger immediately after a
+    # successful close; a following market update must produce the same value.
     market(runtime, "BTCUSDT", 103.0, ema=90.0)
-    assert runtime.loss_tracker.snapshot().daily_pnl == pytest.approx(13.985)
+    assert runtime.loss_tracker.snapshot().daily_pnl == pytest.approx(1.3985)
     assert len(runtime.repository.get_closed_positions()) == 1
 
     # 8) Restart continuity: position and paper account remain consistent.
@@ -102,8 +103,8 @@ def test_full_paper_operational_cycle(tmp_path):
     restored = restarted.repository.get(position.position_id)
     assert restored is not None
     assert restored.status is PositionStatus.CLOSED
-    assert restored.realized_pnl == pytest.approx(13.985)
-    assert restarted.execution_adapter.balance.cash == pytest.approx(1013.985)
+    assert restored.realized_pnl == pytest.approx(1.3985)
+    assert restarted.execution_adapter.balance.cash == pytest.approx(1001.3985)
     assert restarted.execution_adapter.balance.assets.get("BTCUSDT", 0.0) == pytest.approx(0.0)
 
 
@@ -146,4 +147,4 @@ def test_operational_cycle_failed_exit_preserves_owned_position(tmp_path):
     stored = runtime.repository.get(position.position_id)
     assert stored is not None
     assert stored.status is PositionStatus.OPEN
-    assert runtime.execution_adapter.balance.cash == pytest.approx(499.5)
+    assert runtime.execution_adapter.balance.cash == pytest.approx(949.95)
