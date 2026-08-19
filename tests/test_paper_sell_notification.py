@@ -51,7 +51,6 @@ def test_closed_paper_position_gets_sell_notification_once(monkeypatch):
     assert position.exit_metadata["telegram_notification_sent"] is True
     assert repository.updated == [position]
 
-    # Reconciliation is idempotent: an acknowledged notification is not sent again.
     assert shadow_main._notify_closed_positions() == 0
     assert len(sent_messages) == 1
 
