@@ -24,15 +24,21 @@ def test_closed_loss_updates_daily_weekly_monthly_risk_snapshot():
     )
     closed = runtime.facade.close_position(position.position_id, 70.0)
     assert closed is not None
-    assert closed.realized_pnl < -50.0
+    # Runtime entries target $50, so this is a real net loss of roughly $15,
+    # not the obsolete $50+ loss expected by the former $500 entry contract.
+    assert closed.realized_pnl < 0.0
 
-    # The runtime's next market synchronization feeds the closed result into
-    # the Part-6 daily/weekly/monthly loss snapshot.
+    # The runtime now synchronizes the ledger immediately after a successful
+    # close; the next market tick must preserve the same totals.
+    loss = runtime.loss_tracker.snapshot()
+    assert loss.daily_pnl == closed.realized_pnl
+    assert loss.weekly_pnl == closed.realized_pnl
+    assert loss.monthly_pnl == closed.realized_pnl
+
     runtime.update_market(
         "BTCUSDT", price=70.0, bid=69.99, ask=70.01,
         spread_percent=0.02, atr=2.0, volume_usdt=1_000_000.0, ema100=95.0,
     )
-
     loss = runtime.loss_tracker.snapshot()
     assert loss.daily_pnl == closed.realized_pnl
     assert loss.weekly_pnl == closed.realized_pnl
