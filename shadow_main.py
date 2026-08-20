@@ -57,6 +57,7 @@ def _notify_closed_positions() -> int:
             continue
         reason = getattr(position.close_reason, "name", str(position.close_reason))
         exit_price = float(position.exit_metadata.get("exit_price", position.current_price))
+        exit_message = str(position.exit_metadata.get("exit_message", "")).strip()
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
         message = (
@@ -70,7 +71,8 @@ def _notify_closed_positions() -> int:
             f"P&L %: {pnl_pct:+.2f}%\n"
             f"Fees: {position.total_fees:.4f}$\n"
             f"Net P&L: {position.realized_pnl:+.4f}$\n"
-            f"Paper cash: ${runtime.execution_adapter.balance.cash:.2f}\n"
+            + (f"Exit details: {exit_message}\n" if exit_message else "")
+            + f"Paper cash: ${runtime.execution_adapter.balance.cash:.2f}\n"
             "PAPER ONLY"
         )
         if _legacy.send_telegram_message(message):

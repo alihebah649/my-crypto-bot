@@ -23,7 +23,7 @@ class RiskRejectReason(Enum):
 @dataclass(slots=True)
 class RiskLimits:
     max_daily_loss_percent: float=5.0; max_weekly_loss_percent: float=10.0; max_monthly_loss_percent: float=20.0
-    max_open_positions: int=5; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
+    max_open_positions: int=10; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
     max_risk_per_trade_percent: float=1.0
 @dataclass(slots=True)
 class PositionSizeResult:
@@ -53,7 +53,7 @@ class DailyRiskConfig:
     lock_after_realized_loss: bool=True
 @dataclass(slots=True)
 class ExposureConfig:
-    max_open_positions: int=5; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
+    max_open_positions: int=10; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
     allow_multiple_positions_same_symbol: bool=False
 @dataclass(slots=True)
 class CorrelationConfig:

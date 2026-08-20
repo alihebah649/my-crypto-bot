@@ -20,7 +20,8 @@ class _FakeRepository:
 def _closed_position():
     return SimpleNamespace(symbol="ADAUSDT", quantity=0.5, entry_price=0.20, current_price=0.19,
                            close_reason=SimpleNamespace(name="STOP_LOSS"), gross_pnl=-0.005,
-                           total_fees=0.000195, realized_pnl=-0.005195, exit_metadata={"exit_price": 0.19})
+                           total_fees=0.000195, realized_pnl=-0.005195,
+                           exit_metadata={"exit_price": 0.19, "exit_message": "Stop Loss / Break Even Triggered"})
 
 
 def test_closed_paper_position_gets_sell_notification_once(monkeypatch):
@@ -33,6 +34,7 @@ def test_closed_paper_position_gets_sell_notification_once(monkeypatch):
     assert len(sent_messages) == 1
     assert "PAPER SELL" in sent_messages[0] and "ADAUSDT" in sent_messages[0]
     assert "Net P&L: -0.0052$" in sent_messages[0]
+    assert "Exit details: Stop Loss / Break Even Triggered" in sent_messages[0]
     assert position.exit_metadata["telegram_notification_sent"] is True
     assert repository.updated == [position]
     assert shadow_main._notify_closed_positions() == 0

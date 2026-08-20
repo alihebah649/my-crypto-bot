@@ -25,7 +25,7 @@ class RiskEngine:
         self,
         max_portfolio_exposure: float = 0.70,
         exposure_buffer: float = 0.005,  # هامش أمان بنسبة 0.5% لتفادي فروقات الكسور
-        max_open_trades: int = 8,
+        max_open_trades: int = 10,
     ):
         self.max_portfolio_exposure = max_portfolio_exposure
         self.exposure_buffer = exposure_buffer
