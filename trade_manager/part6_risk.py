@@ -15,7 +15,8 @@ class RiskDecision(Enum):
     APPROVED=auto(); REJECTED=auto()
 class RiskRejectReason(Enum):
     NONE=auto(); DAILY_LOSS_LIMIT=auto(); WEEKLY_LOSS_LIMIT=auto(); MONTHLY_LOSS_LIMIT=auto()
-    MAX_OPEN_POSITIONS=auto(); MAX_SYMBOL_EXPOSURE=auto(); MAX_PORTFOLIO_EXPOSURE=auto(); CORRELATION_LIMIT=auto()
+    MAX_OPEN_POSITIONS=auto(); MAX_OPEN_SCALP_POSITIONS=auto(); MAX_OPEN_SWING_POSITIONS=auto()
+    MAX_SYMBOL_EXPOSURE=auto(); MAX_PORTFOLIO_EXPOSURE=auto(); CORRELATION_LIMIT=auto()
     ACCOUNT_BALANCE_TOO_LOW=auto(); INVALID_STOP_DISTANCE=auto(); INVALID_POSITION_SIZE=auto(); INVALID_RISK_PERCENT=auto()
     INVALID_MARKET_DATA=auto(); SPREAD_TOO_HIGH=auto(); SLIPPAGE_TOO_HIGH=auto(); MARKET_CLOSED=auto(); SYMBOL_DISABLED=auto()
     MIN_NOTIONAL_FAILED=auto(); LOT_SIZE_FAILED=auto(); PRICE_FILTER_FAILED=auto(); RISK_LOCKED=auto(); UNKNOWN_ERROR=auto()
@@ -23,7 +24,9 @@ class RiskRejectReason(Enum):
 @dataclass(slots=True)
 class RiskLimits:
     max_daily_loss_percent: float=5.0; max_weekly_loss_percent: float=10.0; max_monthly_loss_percent: float=20.0
-    max_open_positions: int=10; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
+    # Aggregate hard ceiling. The effective lane limits below are enforced
+    # independently: SCALP=15 and SWING=10.
+    max_open_positions: int=25; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
     max_risk_per_trade_percent: float=1.0
 @dataclass(slots=True)
 class PositionSizeResult:
@@ -46,14 +49,14 @@ class PositionSizingConfig:
 class DailyRiskConfig:
     max_daily_loss_percent: float=5.0; max_weekly_loss_percent: float=10.0; max_monthly_loss_percent: float=20.0
     stop_trading_after_limit: bool=True
-    # A realized losing trade arms the Part-6 entry lock. This is deliberately
-    # separate from the percentage loss limits: the limits protect the account
-    # from aggregate losses, while this gate prevents immediate re-entry after
-    # a realized loss and gives the strategy time to reassess.
     lock_after_realized_loss: bool=True
 @dataclass(slots=True)
 class ExposureConfig:
-    max_open_positions: int=10; max_symbol_exposure_percent: float=20.0; max_portfolio_exposure_percent: float=80.0
+    max_open_positions: int=25
+    max_scalp_positions: int=15
+    max_swing_positions: int=10
+    max_symbol_exposure_percent: float=20.0
+    max_portfolio_exposure_percent: float=80.0
     allow_multiple_positions_same_symbol: bool=False
 @dataclass(slots=True)
 class CorrelationConfig:
@@ -83,6 +86,7 @@ class RiskRequest:
 class PortfolioSnapshot:
     account_balance: float; account_equity: float; used_margin: float; free_margin: float; floating_pnl: float
     daily_pnl: float; weekly_pnl: float; monthly_pnl: float; open_positions: int
+    scalp_open_positions: int=0; swing_open_positions: int=0
 @dataclass(slots=True)
 class SymbolExposure:
     symbol: str; exposure_percent: float; open_positions: int; total_quantity: float; total_value: float
@@ -179,24 +183,34 @@ class RiskController:
     def __init__(self, config: Optional[RiskConfig]=None, loss_tracker: Optional[LossTracker]=None, lock_manager: Optional[RiskLockManager]=None):
         self.config=config or RiskConfig();self.loss_tracker=loss_tracker or LossTracker();self.lock_manager=lock_manager or RiskLockManager()
     def evaluate(self, *, account: PortfolioSnapshot, symbol: str, signal: Any, market: MarketContext, symbol_exposure: Optional[SymbolExposure]=None, correlation_score: float=0.0)->RiskEvaluation:
-        c=self.config
-        loss=self.loss_tracker.snapshot();limits=c.daily_risk
-
-        # Realized-loss gate must be evaluated before the generic lock state.
-        # The loss ledger is the source of truth for closed trades. Once a
-        # realized loss is present, arm the Part-6 lock before allowing another
-        # entry. The percentage limits below remain the aggregate account guard.
+        c=self.config; loss=self.loss_tracker.snapshot(); limits=c.daily_risk
         if c.options.enable_daily_loss_control and limits.lock_after_realized_loss and loss.daily_pnl < 0:
-            if limits.stop_trading_after_limit:
-                self.lock_manager.lock(reason=RiskRejectReason.DAILY_LOSS_LIMIT.name)
+            if limits.stop_trading_after_limit:self.lock_manager.lock(reason=RiskRejectReason.DAILY_LOSS_LIMIT.name)
             return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.DAILY_LOSS_LIMIT,
                                   metadata={"daily_pnl": loss.daily_pnl, "lock_reason": RiskRejectReason.DAILY_LOSS_LIMIT.name,
                                             "gate": "REALIZED_LOSS_REENTRY_LOCK"})
-
         if self.lock_manager.is_locked():
             return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.RISK_LOCKED,metadata={"lock_reason":self.lock_manager.reason})
         if not symbol or market.last_price<=0 or account.account_equity<=0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.INVALID_MARKET_DATA)
-        if account.open_positions>=c.exposure.max_open_positions:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_POSITIONS)
+
+        mode = str(signal or "SWING").upper()
+        if mode == "SCALP":
+            if account.scalp_open_positions >= c.exposure.max_scalp_positions:
+                return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_SCALP_POSITIONS,
+                                       metadata={"trade_mode":"SCALP","open_positions":account.scalp_open_positions,
+                                                 "max_open_positions":c.exposure.max_scalp_positions})
+        elif mode == "SWING":
+            if account.swing_open_positions >= c.exposure.max_swing_positions:
+                return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_SWING_POSITIONS,
+                                       metadata={"trade_mode":"SWING","open_positions":account.swing_open_positions,
+                                                 "max_open_positions":c.exposure.max_swing_positions})
+        elif account.open_positions >= c.exposure.max_open_positions:
+            return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_POSITIONS,
+                                   metadata={"trade_mode":mode,"open_positions":account.open_positions,
+                                             "max_open_positions":c.exposure.max_open_positions})
+
+        if account.open_positions>=c.exposure.max_open_positions:
+            return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_POSITIONS)
         if symbol_exposure:
             if not c.exposure.allow_multiple_positions_same_symbol and symbol_exposure.open_positions>0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE)
             if symbol_exposure.exposure_percent>=c.exposure.max_symbol_exposure_percent:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE)
