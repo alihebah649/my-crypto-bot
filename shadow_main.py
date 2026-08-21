@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from dataclasses import replace
 from flask import jsonify
 import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
@@ -19,6 +20,88 @@ _legacy.BUY_SCORE_THRESHOLD = BUY_SCORE_THRESHOLD
 app = _legacy.app
 runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
+
+# -----------------------------------------------------------------------------
+# Dual-mode Trade Manager boundary
+# -----------------------------------------------------------------------------
+# The legacy market cycle is intentionally preserved. This adapter carries the
+# already-selected strategy lane (SCALP/SWING) into both Part-6 risk checks and
+# the persisted position metadata, without creating a second risk/execution
+# implementation.
+_current_trade_mode = {"value": "SWING"}
+_original_controller_evaluate = runtime.risk_controller.evaluate
+_original_portfolio_snapshot = runtime.portfolio_provider.snapshot
+_original_runtime_open_position = runtime.open_position
+_original_send_telegram_message = _legacy.send_telegram_message
+
+
+def _mode_aware_risk_evaluate(*, account, symbol, signal, market, symbol_exposure=None, correlation_score=0.0):
+    mode = _current_trade_mode["value"]
+    return _original_controller_evaluate(
+        account=account,
+        symbol=symbol,
+        signal=mode,
+        market=market,
+        symbol_exposure=symbol_exposure,
+        correlation_score=correlation_score,
+    )
+
+
+runtime.risk_controller.evaluate = _mode_aware_risk_evaluate
+
+
+def _lane_aware_portfolio_snapshot():
+    snapshot = _original_portfolio_snapshot()
+    active = [
+        p for p in runtime.repository.get_open_positions()
+        if p.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
+    ]
+    scalp_count = sum(1 for p in active if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP")
+    swing_count = sum(1 for p in active if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING")
+    return replace(snapshot, scalp_open_positions=scalp_count, swing_open_positions=swing_count)
+
+
+runtime.portfolio_provider.snapshot = _lane_aware_portfolio_snapshot
+
+
+def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss: float):
+    mode = str(_legacy.latest_scores.get(symbol, {}).get("trade_mode", "SWING")).upper()
+    if mode not in {"SCALP", "SWING"}:
+        mode = "SWING"
+    _current_trade_mode["value"] = mode
+    position = _original_runtime_open_position(symbol, entry_price, stop_loss)
+    if position is not None:
+        position.entry_metadata["trade_mode"] = mode
+        position.metadata["trade_mode"] = mode
+        runtime.repository.update(position)
+        runtime.last_entry_diagnostics.setdefault(symbol, {})["trade_mode"] = mode
+    return position
+
+
+runtime.open_position = _open_position_with_selected_mode
+
+
+def _send_telegram_with_trade_type(message: str) -> bool:
+    if message.startswith("=== PAPER BUY ==="):
+        symbol = ""
+        for line in message.splitlines():
+            if line.startswith("Symbol:"):
+                symbol = line.split(":", 1)[1].strip().upper()
+                break
+        mode = str(_legacy.latest_scores.get(symbol, {}).get("trade_mode", _current_trade_mode["value"])).upper()
+        if mode not in {"SCALP", "SWING"}:
+            mode = _current_trade_mode["value"]
+        lines = message.splitlines()
+        try:
+            symbol_index = next(i for i, line in enumerate(lines) if line.startswith("Symbol:"))
+            lines.insert(symbol_index + 1, f"Trade Type: {mode}")
+            message = "\n".join(lines)
+        except StopIteration:
+            pass
+    return _original_send_telegram_message(message)
+
+
+_legacy.send_telegram_message = _send_telegram_with_trade_type
 
 
 def _home():
@@ -32,6 +115,10 @@ def _home():
         "trade_manager": "modular_parts_1_8",
         "symbols": TRADING_SYMBOLS,
         "open_positions": len(positions),
+        "scalp_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP"),
+        "swing_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING"),
+        "scalp_max_open_positions": runtime.risk_config.exposure.max_scalp_positions,
+        "swing_max_open_positions": runtime.risk_config.exposure.max_swing_positions,
         "metrics": getattr(metrics, "__dict__", str(metrics)),
         "score_threshold": SWING_SCORE_THRESHOLD,
         "scalp_score_threshold": SCALP_SCORE_THRESHOLD,
@@ -43,14 +130,7 @@ app.view_functions["home"] = _home
 
 
 def _notify_closed_positions() -> int:
-    """Send exactly-once SELL notifications for closed Paper positions.
-
-    The execution lifecycle is authoritative: a notification is considered
-    sent only after the position is already CLOSED and Telegram acknowledges
-    the message. The sent marker is persisted with the position, so a restart
-    retries genuinely unsent notifications without re-sending acknowledged
-    ones.
-    """
+    """Send exactly-once SELL notifications for closed Paper positions."""
     sent = 0
     for position in runtime.repository.get_closed_positions():
         if position.exit_metadata.get("telegram_notification_sent"):
@@ -84,14 +164,6 @@ def _notify_closed_positions() -> int:
 
 
 def _sanitize_entry_diagnostics() -> None:
-    """Prevent a later rejected BUY attempt from inheriting a prior fill trace.
-
-    ``shadow_main_legacy.process_market_cycle`` historically used ``setdefault``
-    for the per-symbol trace. When the same symbol was bought successfully and
-    later rejected because it already had a position, the new rejection updated
-    ``result`` but left the old ``execution=FILLED`` and facade fields intact.
-    That made /paper/diagnostics report an impossible mixed lifecycle.
-    """
     for trace in runtime.last_entry_diagnostics.values():
         result = str(trace.get("result", ""))
         if result.startswith("REJECTED_"):
@@ -106,13 +178,11 @@ async def _dual_mode_engine():
     _legacy.send_telegram_message(
         "🟢 Paper Trading dual-mode strategy engine started on Render\n"
         f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
-        f"Scalp: 5m reversal + 15m context | threshold {SCALP_SCORE_THRESHOLD}\n"
-        f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD}\n"
+        f"Scalp: 5m reversal + 15m context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
+        f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
         "Trade Manager: Parts 1-8\n"
         "No real exchange orders are submitted."
     )
-    # Flush any SELL notifications that were successfully executed but not
-    # acknowledged by Telegram before a previous process restart.
     _notify_closed_positions()
     while True:
         started = time.monotonic()
@@ -122,9 +192,6 @@ async def _dual_mode_engine():
         except Exception:
             _legacy.logger.exception("Dual-mode paper market cycle failed")
         finally:
-            # Exit notification is deliberately outside the strategy path: a
-            # Telegram outage must never prevent Trade Manager state from being
-            # CLOSED or prevent the next market cycle from running.
             try:
                 _notify_closed_positions()
             except Exception:
