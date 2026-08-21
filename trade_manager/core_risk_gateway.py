@@ -30,7 +30,13 @@ class CoreRiskGateway:
             portfolio = self.portfolio_provider.snapshot()
             market = self.market_provider.get_context(request.symbol)
             exposure = self.exposure_provider.get_exposure(request.symbol) if self.exposure_provider is not None else None
-            gate = self.controller.evaluate(account=portfolio, symbol=request.symbol, signal=None, market=market, symbol_exposure=exposure)
+            gate = self.controller.evaluate(
+                account=portfolio,
+                symbol=request.symbol,
+                signal=request.trade_mode,
+                market=market,
+                symbol_exposure=exposure,
+            )
             if gate.decision is not RiskDecision.APPROVED:
                 return self._reject(gate.reject_reason.name, metadata=gate.metadata)
 
@@ -59,6 +65,7 @@ class CoreRiskGateway:
                 "risk_quantity": float(sizing.quantity),
                 "risk_amount": float(sizing.risk_amount),
                 "stop_distance": float(sizing.stop_distance),
+                "trade_mode": request.trade_mode,
             }
             if prospective_exposure > max_exposure:
                 return self._reject(RiskRejectReason.MAX_PORTFOLIO_EXPOSURE.name, metadata={
@@ -87,6 +94,7 @@ class CoreRiskGateway:
                     "risk_position_value": sizing.position_value,
                     "source": "TradeManager.Part6",
                     "estimated_fee": max(request.estimated_fee, 0.0),
+                    "trade_mode": request.trade_mode,
                 },
             )
         except Exception as exc:
