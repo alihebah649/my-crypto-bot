@@ -37,6 +37,10 @@ class RiskSizingRequest:
     estimated_fee: float = 0.0
     maintenance_margin: float = 0.0
     leverage: float = 1.0
+    # Strategy lane selected by dual_mode_strategy.py. Keeping this in the
+    # risk request makes the independent SCALP/SWING limits authoritative at
+    # the Trade Manager boundary rather than at the Telegram/UI layer.
+    trade_mode: str = "SWING"
 
 
 @dataclass(frozen=True, slots=True)
