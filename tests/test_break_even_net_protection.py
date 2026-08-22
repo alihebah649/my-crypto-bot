@@ -23,14 +23,10 @@ def _position(current_price: float, *, break_even_activated: bool = False) -> Po
 
 
 def test_break_even_must_not_exit_below_fee_aware_net_break_even():
-    """Once BE is active, a price below the fee-aware BE must not close the trade.
-
-    With 0.1% entry and 0.1% exit fees, a 100.0 entry requires about 100.2002
-    to reach true net break-even. A price such as 100.10 is still a net loss.
-    """
+    """Once BE is active, a price below the fee-aware BE must not close the trade."""
     manager = PositionRiskManager(
         break_even_trigger_percent=1.5,
-        min_net_profit_percent=0.30,
+        min_net_profit_percent=0.0,
         reward_to_risk_ratio=1.0,
     )
     position = _position(100.10, break_even_activated=True)
@@ -45,7 +41,7 @@ def test_break_even_can_exit_at_or_above_fee_aware_net_break_even():
     """The BE protection may close once the executed price covers both fees."""
     manager = PositionRiskManager(
         break_even_trigger_percent=1.5,
-        min_net_profit_percent=0.30,
+        min_net_profit_percent=0.0,
         reward_to_risk_ratio=1.0,
     )
     position = _position(100.2003, break_even_activated=True)
