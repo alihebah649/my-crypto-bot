@@ -57,7 +57,10 @@ class ExposureConfig:
     max_swing_positions: int=10
     max_symbol_exposure_percent: float=20.0
     max_portfolio_exposure_percent: float=80.0
+    # Keep same-mode duplicate protection. A symbol may have at most one
+    # SCALP and one SWING position concurrently when this option is enabled.
     allow_multiple_positions_same_symbol: bool=False
+    allow_dual_mode_same_symbol: bool=True
 @dataclass(slots=True)
 class CorrelationConfig:
     enabled: bool=True; maximum_correlation: float=0.80; lookback_candles: int=200
@@ -90,6 +93,7 @@ class PortfolioSnapshot:
 @dataclass(slots=True)
 class SymbolExposure:
     symbol: str; exposure_percent: float; open_positions: int; total_quantity: float; total_value: float
+    open_trade_modes: tuple[str, ...]=()
 @dataclass(slots=True)
 class MarketContext:
     symbol: str; last_price: float; bid: float; ask: float; spread_percent: float; atr: float; volume: float
@@ -212,8 +216,24 @@ class RiskController:
         if account.open_positions>=c.exposure.max_open_positions:
             return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_OPEN_POSITIONS)
         if symbol_exposure:
-            if not c.exposure.allow_multiple_positions_same_symbol and symbol_exposure.open_positions>0:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE)
-            if symbol_exposure.exposure_percent>=c.exposure.max_symbol_exposure_percent:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE)
+            existing_modes={str(item).upper() for item in symbol_exposure.open_trade_modes if str(item).strip()}
+            if symbol_exposure.exposure_percent>=c.exposure.max_symbol_exposure_percent:
+                return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE,
+                                       metadata={"trade_mode":mode,"existing_trade_modes":sorted(existing_modes),
+                                                 "open_positions":symbol_exposure.open_positions})
+            if not c.exposure.allow_multiple_positions_same_symbol:
+                if c.exposure.allow_dual_mode_same_symbol and mode in {"SCALP","SWING"}:
+                    # Exactly one position per lane is allowed for a symbol.
+                    # A second position is valid only when it is the opposite lane.
+                    if symbol_exposure.open_positions >= 2 or mode in existing_modes:
+                        return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE,
+                                               metadata={"trade_mode":mode,"existing_trade_modes":sorted(existing_modes),
+                                                         "open_positions":symbol_exposure.open_positions,
+                                                         "rule":"ONE_SCALP_PLUS_ONE_SWING_PER_SYMBOL"})
+                elif symbol_exposure.open_positions>0:
+                    return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_SYMBOL_EXPOSURE,
+                                           metadata={"trade_mode":mode,"existing_trade_modes":sorted(existing_modes),
+                                                     "open_positions":symbol_exposure.open_positions})
         if c.options.enable_exposure_control and account.used_margin/account.account_equity*100>=c.exposure.max_portfolio_exposure_percent:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.MAX_PORTFOLIO_EXPOSURE)
         if c.options.enable_correlation_control and c.correlation.enabled and abs(correlation_score)>c.correlation.maximum_correlation:return RiskEvaluation(RiskDecision.REJECTED,RiskRejectReason.CORRELATION_LIMIT)
         if c.options.enable_market_filters:
