@@ -131,7 +131,7 @@ class PositionManagementFacade:
             ExecutionRequest(symbol=symbol, side=ExecutionSide.BUY, quantity=allowed_quantity,
                              order_type="MARKET", client_order_id=client_order_id,
                              metadata={"trade_manager_action": "SPOT_OPEN", "risk": risk_metadata,
-                                       "trade_mode": trade_mode})
+                                       "trade_mode": trade_mode, "trade_type": trade_mode})
         )
         self.last_entry_diagnostic["execution_gateway"] = "PASS" if outcome.success and outcome.executed_quantity > 0 and outcome.average_price > 0 else "REJECT"
         self.last_entry_diagnostic["execution_outcome"] = {
@@ -159,8 +159,6 @@ class PositionManagementFacade:
         position.entry_metadata["entry_time"] = time.time()
         position.entry_metadata["execution_source"] = outcome.metadata.get("source", "CORE_EXECUTION_GATEWAY")
         position.entry_metadata["risk_metadata"] = risk_metadata
-        # Persist the immutable entry risk anchor used by the reward/risk floor.
-        # This must not change when break-even later moves position.stop_loss.
         position.metadata["initial_stop_loss"] = stop_loss
         position.metadata["trade_mode"] = trade_mode
         self.repository.add(position)
