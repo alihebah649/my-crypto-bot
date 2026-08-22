@@ -58,6 +58,17 @@ class PositionController:
             if self.execution_gateway is None:
                 # Fail closed: local state must never claim a sale that was not executed.
                 return None
+
+            # A fee-aware Break-Even is a net-protection floor, not merely a
+            # price-above-entry trigger. Never submit a BE exit while the
+            # requested execution price is below the calculated round-trip
+            # fee-adjusted break-even price.
+            if decision.reason is PositionExitReason.BREAK_EVEN:
+                break_even_price = calculator.break_even_price(position)
+                requested_exit_price = decision.exit_price if decision.exit_price > 0 else position.current_price
+                if requested_exit_price < break_even_price:
+                    return position
+
             outcome=self.execution_gateway.close_spot(symbol=position.symbol,quantity=position.quantity,client_order_id=position.client_order_id)
             if not outcome.success or outcome.executed_quantity<=0 or outcome.average_price<=0:
                 return None
