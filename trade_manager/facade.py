@@ -58,15 +58,19 @@ class PositionManagementFacade:
     def _approve_entry(self, *, symbol: str, quantity: float, entry_price: float,
                        stop_loss: float, take_profit: Optional[float],
                        account_equity: Optional[float], free_balance: Optional[float],
-                       estimated_fee: float) -> Tuple[bool, float, Dict[str, Any]]:
+                       estimated_fee: float, trade_mode: str = "SWING") -> Tuple[bool, float, Dict[str, Any]]:
         """Return (approved, allowed_quantity, metadata). Fail closed."""
         if self.risk_gateway is not None:
             if account_equity is None or free_balance is None:
                 return False, 0.0, {"reason": "ACCOUNT_SNAPSHOT_REQUIRED"}
+            mode = str(trade_mode or "SWING").upper()
+            if mode not in {"SCALP", "SWING"}:
+                mode = "SWING"
             approval = self.risk_gateway.approve(
                 RiskSizingRequest(symbol=symbol, entry_price=entry_price, stop_loss=stop_loss,
                                   account_equity=account_equity, free_balance=free_balance,
-                                  estimated_fee=estimated_fee, maintenance_margin=0.0, leverage=1.0)
+                                  estimated_fee=estimated_fee, maintenance_margin=0.0, leverage=1.0,
+                                  trade_mode=mode)
             )
             if not approval.approved:
                 return False, 0.0, {"reason": approval.reason, **dict(approval.metadata)}
@@ -100,13 +104,19 @@ class PositionManagementFacade:
             self.last_entry_diagnostic.update({"validation": "REJECT", "result": "INVALID_ORDER_PARAMETERS"})
             return None
 
+        metadata = dict(entry_metadata or {})
+        trade_mode = str(metadata.get("trade_mode", "SWING") or "SWING").upper()
+        if trade_mode not in {"SCALP", "SWING"}:
+            trade_mode = "SWING"
+        metadata["trade_mode"] = trade_mode
         approved, allowed_quantity, risk_metadata = self._approve_entry(
             symbol=symbol, quantity=quantity, entry_price=entry_price, stop_loss=stop_loss,
             take_profit=take_profit, account_equity=account_equity, free_balance=free_balance,
-            estimated_fee=estimated_fee,
+            estimated_fee=estimated_fee, trade_mode=trade_mode,
         )
         self.last_entry_diagnostic["risk_gateway"] = "PASS" if approved else "REJECT"
         self.last_entry_diagnostic["risk_metadata"] = risk_metadata
+        self.last_entry_diagnostic["trade_mode"] = trade_mode
         if not approved:
             self.last_entry_diagnostic.update({"risk_reason": risk_metadata.get("reason"),
                                                 "result": "REJECTED_AT_FACADE_RISK_GATE"})
@@ -120,7 +130,8 @@ class PositionManagementFacade:
         outcome = self.execution_gateway.submit(
             ExecutionRequest(symbol=symbol, side=ExecutionSide.BUY, quantity=allowed_quantity,
                              order_type="MARKET", client_order_id=client_order_id,
-                             metadata={"trade_manager_action": "SPOT_OPEN", "risk": risk_metadata})
+                             metadata={"trade_manager_action": "SPOT_OPEN", "risk": risk_metadata,
+                                       "trade_mode": trade_mode})
         )
         self.last_entry_diagnostic["execution_gateway"] = "PASS" if outcome.success and outcome.executed_quantity > 0 and outcome.average_price > 0 else "REJECT"
         self.last_entry_diagnostic["execution_outcome"] = {
@@ -141,7 +152,7 @@ class PositionManagementFacade:
             position_id=f"POS-{uuid4().hex[:12]}", symbol=symbol, side=PositionSide.LONG,
             status=PositionStatus.OPEN, quantity=outcome.executed_quantity,
             entry_price=outcome.average_price, current_price=outcome.average_price,
-            stop_loss=stop_loss, take_profit=take_profit, entry_metadata=dict(entry_metadata or {}),
+            stop_loss=stop_loss, take_profit=take_profit, entry_metadata=metadata,
             client_order_id=client_order_id, exchange_order_id=outcome.exchange_order_id,
             entry_fee=outcome.commission, total_fees=outcome.commission,
         )
@@ -151,6 +162,7 @@ class PositionManagementFacade:
         # Persist the immutable entry risk anchor used by the reward/risk floor.
         # This must not change when break-even later moves position.stop_loss.
         position.metadata["initial_stop_loss"] = stop_loss
+        position.metadata["trade_mode"] = trade_mode
         self.repository.add(position)
         self.last_entry_diagnostic["result"] = "POSITION_COMMITTED"
         self.last_entry_diagnostic["position_id"] = position.position_id
