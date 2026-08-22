@@ -96,8 +96,13 @@ class _ExposureProvider:
         active = {PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED}
         positions = [p for p in self.repository.get_by_symbol(symbol) if p.status in active]
         total_value = sum(p.quantity * self.market.price.get(symbol, p.current_price) for p in positions)
+        open_trade_modes = tuple(
+            str(p.entry_metadata.get("trade_mode", "SWING")).upper()
+            for p in positions
+        )
         return SymbolExposure(symbol=symbol, exposure_percent=0.0, open_positions=len(positions),
-                              total_quantity=sum(p.quantity for p in positions), total_value=total_value)
+                              total_quantity=sum(p.quantity for p in positions), total_value=total_value,
+                              open_trade_modes=open_trade_modes)
 
 
 class _PaperLossPeriodLedger:
@@ -176,8 +181,11 @@ class ShadowTradeManagerRuntime:
         if hasattr(self.execution_adapter, "set_market_price"): self.execution_adapter.set_market_price(symbol, kwargs["price"])
         self.controller.update_market_price(symbol, kwargs["price"]); self.loss_ledger.sync(self.repository.get_closed_positions())
 
-    def open_position(self, symbol: str, entry_price: float, stop_loss: float) -> Optional[Position]:
-        trace = {"symbol": symbol, "started_at": time.time(), "risk_gateway": "NOT_RUN", "risk_reason": None,
+    def open_position(self, symbol: str, entry_price: float, stop_loss: float, trade_mode: str = "SWING") -> Optional[Position]:
+        mode = str(trade_mode or "SWING").upper()
+        if mode not in {"SCALP", "SWING"}:
+            mode = "SWING"
+        trace = {"symbol": symbol, "started_at": time.time(), "trade_mode": mode, "risk_gateway": "NOT_RUN", "risk_reason": None,
                  "risk_quantity": 0.0, "risk_position_value": 0.0, "risk_capital_required": 0.0, "risk_metadata": {},
                  "facade": "NOT_RUN", "execution": "NOT_RUN", "execution_outcome": None, "result": "UNKNOWN"}
         self.last_entry_diagnostics[symbol] = trace
@@ -190,7 +198,8 @@ class ShadowTradeManagerRuntime:
                       "risk_config": {"target_position_value": target, "risk_per_trade_percent": risk_percent,
                                       "max_portfolio_exposure_percent": max_exposure_percent}})
         approval = self.risk_gateway.approve(RiskSizingRequest(symbol=symbol, entry_price=entry_price, stop_loss=stop_loss,
-                                                              account_equity=account.account_equity, free_balance=account.free_margin, leverage=1.0))
+                                                              account_equity=account.account_equity, free_balance=account.free_margin,
+                                                              leverage=1.0, trade_mode=mode))
         trace.update({"risk_gateway": "PASS" if approval.approved else "REJECT", "risk_reason": approval.reason,
                       "risk_quantity": approval.quantity, "risk_position_value": approval.position_value,
                       "risk_capital_required": approval.capital_required, "risk_metadata": dict(approval.metadata)})
@@ -199,7 +208,7 @@ class ShadowTradeManagerRuntime:
         trace["facade"] = "CALLED"
         position = self.facade.open_position(symbol=symbol, quantity=approval.quantity, entry_price=entry_price,
                                               stop_loss=stop_loss, account_equity=account.account_equity,
-                                              free_balance=account.free_margin)
+                                              free_balance=account.free_margin, entry_metadata={"trade_mode": mode})
         facade_trace = dict(self.facade.last_entry_diagnostic)
         trace["facade_diagnostic"] = facade_trace
         if position is not None:
