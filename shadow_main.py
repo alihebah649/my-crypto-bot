@@ -22,6 +22,21 @@ runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
 # -----------------------------------------------------------------------------
+# Daily report: show realized net P&L only, without capital/cash in the result.
+# -----------------------------------------------------------------------------
+_original_build_daily_report = _legacy.build_daily_report
+
+
+def _net_only_daily_report(date_key=None) -> str:
+    report = _original_build_daily_report(date_key)
+    lines = [line for line in report.splitlines() if not line.startswith("💵 Paper cash:")]
+    report = "\n".join(lines)
+    return report.replace("TOTAL", "NET P&L", 1)
+
+
+_legacy.build_daily_report = _net_only_daily_report
+
+# -----------------------------------------------------------------------------
 # Dual-mode Trade Manager boundary
 # -----------------------------------------------------------------------------
 # The legacy market cycle is intentionally preserved. This adapter carries the
@@ -69,7 +84,7 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
     if mode not in {"SCALP", "SWING"}:
         mode = "SWING"
     _current_trade_mode["value"] = mode
-    position = _original_runtime_open_position(symbol, entry_price, stop_loss)
+    position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
     if position is not None:
         position.entry_metadata["trade_mode"] = mode
         position.metadata["trade_mode"] = mode
