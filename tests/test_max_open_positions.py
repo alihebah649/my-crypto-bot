@@ -1,6 +1,6 @@
 """Regression coverage for independent Paper Trading open-position limits."""
 
-from trade_manager.part6_risk import MarketContext, PortfolioSnapshot, RiskConfig, RiskController, RiskDecision
+from trade_manager.part6_risk import MarketContext, PortfolioSnapshot, RiskConfig, RiskController, RiskDecision, SymbolExposure
 
 
 def market():
@@ -30,6 +30,17 @@ def account(open_positions: int, scalp: int = 0, swing: int = 0):
         open_positions=open_positions,
         scalp_open_positions=scalp,
         swing_open_positions=swing,
+    )
+
+
+def exposure(*modes: str):
+    return SymbolExposure(
+        symbol="BTCUSDT",
+        exposure_percent=0.0,
+        open_positions=len(modes),
+        total_quantity=float(len(modes)),
+        total_value=float(len(modes) * 50),
+        open_trade_modes=tuple(modes),
     )
 
 
@@ -70,3 +81,49 @@ def test_part6_allows_25_combined_positions_when_each_lane_is_below_its_cap():
     )
     assert total_rejected.decision is RiskDecision.REJECTED
     assert total_rejected.reject_reason.name == "MAX_OPEN_SWING_POSITIONS"
+
+
+def test_same_symbol_allows_one_scalp_and_one_swing():
+    controller = RiskController(config=RiskConfig())
+
+    swing = controller.evaluate(
+        account=account(1, scalp=0, swing=1),
+        symbol="BTCUSDT",
+        signal="SCALP",
+        market=market(),
+        symbol_exposure=exposure("SWING"),
+    )
+    assert swing.decision is RiskDecision.APPROVED
+
+    scalp = controller.evaluate(
+        account=account(1, scalp=1, swing=0),
+        symbol="BTCUSDT",
+        signal="SWING",
+        market=market(),
+        symbol_exposure=exposure("SCALP"),
+    )
+    assert scalp.decision is RiskDecision.APPROVED
+
+
+def test_same_symbol_rejects_duplicate_same_mode_and_third_position():
+    controller = RiskController(config=RiskConfig())
+
+    duplicate_scalp = controller.evaluate(
+        account=account(1, scalp=1, swing=0),
+        symbol="BTCUSDT",
+        signal="SCALP",
+        market=market(),
+        symbol_exposure=exposure("SCALP"),
+    )
+    assert duplicate_scalp.decision is RiskDecision.REJECTED
+    assert duplicate_scalp.reject_reason.name == "MAX_SYMBOL_EXPOSURE"
+
+    third_position = controller.evaluate(
+        account=account(2, scalp=1, swing=1),
+        symbol="BTCUSDT",
+        signal="SCALP",
+        market=market(),
+        symbol_exposure=exposure("SCALP", "SWING"),
+    )
+    assert third_position.decision is RiskDecision.REJECTED
+    assert third_position.reject_reason.name == "MAX_SYMBOL_EXPOSURE"
