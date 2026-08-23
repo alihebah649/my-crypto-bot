@@ -29,7 +29,17 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
 
     @staticmethod
     def _trade_mode(position: Position) -> str:
-        return str(position.entry_metadata.get("trade_mode", "SWING")).upper()
+        # New positions store trade_mode in both metadata locations for
+        # compatibility. Persisted positions created by earlier revisions may
+        # have it in only one location, so recover it before falling back to
+        # SWING. This prevents an old SCALP from silently inheriting the
+        # unlimited Swing recovery lifecycle after a restart.
+        entry_metadata = position.entry_metadata or {}
+        metadata = position.metadata or {}
+        return str(
+            entry_metadata.get("trade_mode", metadata.get("trade_mode", "SWING"))
+            or "SWING"
+        ).upper()
 
     def _scalp_timeout(self, position: Position) -> PositionExitDecision:
         if self._trade_mode(position) != "SCALP":
@@ -40,8 +50,6 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
             return PositionExitDecision(False, PositionExitReason.NONE)
 
         pnl = self._get_pnl_percent(position)
-        # A scalp that has not produced a profitable exit inside its bounded
-        # execution window is no longer treated as a Swing-style recovery hold.
         return PositionExitDecision(
             True,
             PositionExitReason.RECOVERY_FAILED,
@@ -56,9 +64,6 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
         if "initial_stop_loss" not in position.metadata:
             position.metadata["initial_stop_loss"] = position.stop_loss
 
-        # HARD EXIT PRIORITY: Smart Hold must never suppress the actual stop.
-        # Break-even may move the stop upward, but the resulting stop is still
-        # checked before any recovery/hold decision.
         if self.should_move_to_break_even(position):
             be = self.calculator.break_even_price(position)
             if position.stop_loss < be:
@@ -73,9 +78,6 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
         if take_profit.should_exit:
             return take_profit
 
-        # SCALP gets a bounded lifecycle before the long-horizon Swing review
-        # path. This is deliberately before Smart Hold/review handling so a
-        # scalp cannot be converted into an indefinite hold by a recovery score.
         timeout = self._scalp_timeout(position)
         if timeout.should_exit:
             position.metadata["exit_policy"] = "SCALP_TIMEOUT"
@@ -85,8 +87,6 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
         if review.review_required:
             return review
 
-        # Winners are handled by the existing fee-aware trailing policy before
-        # any loss/recovery logic can turn them into a hold.
         if self._is_profitable(position):
             trailing = self._check_trailing_stop(position)
             if trailing.should_exit:
