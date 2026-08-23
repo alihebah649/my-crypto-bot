@@ -5,7 +5,7 @@ walk every active position, evaluate the existing Exit Policy, and submit an
 approved exit through the existing facade/execution boundary.
 
 It does not create a second exit strategy and it cannot bypass the existing
-risk/execution controls.  It also keeps a per-position diagnostic trace so a
+risk/execution controls. It also keeps a per-position diagnostic trace so a
 failed/ignored exit can be diagnosed from the runtime endpoint instead of
 being reduced to a single integer counter.
 """
@@ -42,8 +42,8 @@ class ExitWatchdog:
         evaluated = exit_signals = closed = failed = 0
         diagnostics: List[Dict[str, Any]] = []
 
-        # Snapshot the active positions first. Execution can mutate repository
-        # state, so never iterate a live repository collection while closing.
+        # Snapshot active positions first. Execution can mutate repository state,
+        # so never iterate a live repository collection while closing.
         positions: List[Position] = list(self.repository.get_open_positions())
 
         for position in positions:
@@ -80,6 +80,9 @@ class ExitWatchdog:
 
                 if not decision.should_exit and not decision.review_required:
                     trace["execution"] = "NOT_REQUIRED"
+                    # Keep HOLD traces: they are essential for diagnosing a
+                    # long-lived scalp that remains open without an exit signal.
+                    diagnostics.append(trace)
                     continue
 
                 exit_signals += 1
