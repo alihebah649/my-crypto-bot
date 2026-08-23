@@ -82,15 +82,25 @@ def test_partial_sell_keeps_remaining_owned_quantity_open():
     assert position is not None
     original_quantity = position.quantity
 
-    original_execute = runtime.execution_adapter.execute
-
+    # Keep the real Paper adapter for BUY, but make the SELL response a
+    # deterministic PARTIALLY_FILLED result. The controller consumes it
+    # through CoreExecutionGateway and retains the owned remainder.
     def partial_sell(request):
-        result = original_execute(request)
-        result.executed_quantity = request.quantity / 2.0
-        result.remaining_quantity = request.quantity - result.executed_quantity
-        result.status = OrderStatus.PARTIALLY_FILLED
-        runtime.execution_adapter.balance.assets["BTCUSDT"] = original_quantity - result.executed_quantity
-        return result
+        executed = request.quantity / 2.0
+        current_price = runtime.execution_adapter.market_prices[request.symbol]
+        fee = executed * current_price * runtime.execution_adapter.fee_rate
+        runtime.execution_adapter.balance.assets[request.symbol] = original_quantity - executed
+        runtime.execution_adapter.balance.cash += executed * current_price - fee
+        return SimpleNamespace(
+            status=OrderStatus.PARTIALLY_FILLED,
+            symbol=request.symbol,
+            executed_quantity=executed,
+            average_price=current_price,
+            exchange_order_id="PAPER-PARTIAL-1",
+            client_order_id=request.client_order_id,
+            fees=SimpleNamespace(total=fee),
+            message="forced paper partial fill",
+        )
 
     runtime.execution_adapter.execute = partial_sell
 
