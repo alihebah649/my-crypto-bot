@@ -21,6 +21,7 @@ from .controller import PositionController
 from .core_execution_gateway import CoreExecutionGateway
 from .core_risk_gateway import CoreRiskGateway
 from .exit_policy import ExitPolicyPositionRiskManager
+from .exit_watchdog import ExitWatchdog, ExitWatchdogResult
 from .facade import PositionManagementFacade
 from .integration_contracts import RiskSizingRequest
 from .models import Position, PositionStatus
@@ -129,6 +130,7 @@ class ShadowTradeManagerRuntime:
                  persistence_dir: Optional[str] = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
         self.last_entry_diagnostics: Dict[str, dict] = {}
+        self.last_exit_watchdog: Dict[str, Any] = {}
         position_state = paper_state = None
         if persistence_dir:
             os.makedirs(persistence_dir, exist_ok=True)
@@ -154,6 +156,7 @@ class ShadowTradeManagerRuntime:
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
                                                risk_gateway=self.risk_gateway)
+        self.exit_watchdog = ExitWatchdog(repository=self.repository, risk_manager=self.position_risk, facade=self.facade)
 
         # Keep the Part-6 realized-loss ledger current immediately after a
         # successful close. The live application can therefore not open the
@@ -227,6 +230,19 @@ class ShadowTradeManagerRuntime:
             if position.status not in {PositionStatus.OPEN, PositionStatus.HOLD}: continue
             decision = self.position_risk.evaluate(position); self.facade.execute_decision(position.position_id, decision)
         self.loss_ledger.sync(self.repository.get_closed_positions())
+
+    def run_exit_watchdog(self) -> ExitWatchdogResult:
+        """Evaluate every active position independently of entry scanning."""
+        result = self.exit_watchdog.run()
+        self.last_exit_watchdog = {
+            "evaluated": result.evaluated,
+            "exit_signals": result.exit_signals,
+            "closed": result.closed,
+            "failed": result.failed,
+            "timestamp": time.time(),
+        }
+        self.loss_ledger.sync(self.repository.get_closed_positions())
+        return result
 
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
         state = self.market.get(symbol); ema = self.market.ema100.get(symbol, 0.0)
