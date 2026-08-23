@@ -55,7 +55,7 @@ class PositionRiskManager:
         if trailing_take_profit_lock_r < 0:
             raise ValueError("trailing_take_profit_lock_r must be non-negative")
         if trailing_take_profit_enabled and trailing_take_profit_lock_r >= trailing_take_profit_activation_r:
-            raise ValueError("trailing_take_profit_lock_r must be below activation R")
+            raise ValueError("trailing_take_profit_lock_r must be below activation_r")
         self.market_context_provider = market_context_provider
         self.atr_provider = atr_provider
         self.ema_provider = ema_provider
@@ -76,10 +76,6 @@ class PositionRiskManager:
     def evaluate(self, position: Position) -> PositionExitDecision:
         self._update_position_metrics(position)
         position.hold_context = self._get_market_context(position.symbol)
-
-        # Preserve the original stop before any break-even mutation. The
-        # reward/risk floor must always be measured against entry risk, not a
-        # later break-even/trailing stop value.
         if "initial_stop_loss" not in position.metadata:
             position.metadata["initial_stop_loss"] = position.stop_loss
 
@@ -93,10 +89,6 @@ class PositionRiskManager:
         if review.review_required:
             return review
 
-        # HARD RISK BOUNDARY: Smart Hold/Recovery may delay discretionary exits,
-        # but it must never override an already-triggered stop-loss/break-even.
-        # This prevents losing positions from remaining open indefinitely while
-        # the market-context recovery score is positive.
         stop = self._check_stop_loss(position)
         if stop.should_exit:
             return stop
@@ -115,6 +107,21 @@ class PositionRiskManager:
                 return trailing
 
         return PositionExitDecision(False, PositionExitReason.NONE)
+
+    def should_move_to_break_even(self, position: Position) -> bool:
+        """Return True once the configured gross price gain reaches the BE trigger.
+
+        The helper is intentionally side-effect free.  The caller is responsible
+        for moving the stop to the fee-aware break-even price.  Keeping the trigger
+        separate from the mutation preserves the existing exit-policy ordering.
+        """
+        if position.entry_price <= 0 or position.current_price <= 0:
+            return False
+        if position.metadata.get("break_even_activated"):
+            return False
+        gain_percent = ((position.current_price - position.entry_price) /
+                        position.entry_price) * 100.0
+        return gain_percent >= self.break_even_trigger
 
     def _update_position_metrics(self, position: Position) -> None:
         position.update_highest_price(position.current_price)
@@ -233,9 +240,7 @@ class PositionRiskManager:
         return max(self.min_net_profit_percent, stop_risk_percent * self.reward_to_risk_ratio)
 
     def _price_for_net_profit_percent(self, position: Position, target_net_profit_percent: float) -> float:
-        return position.entry_price * (
-            1.0 + self.calculator.entry_fee_rate + target_net_profit_percent / 100.0
-        ) / (1.0 - self.calculator.exit_fee_rate)
+        return position.entry_price * (1.0 + self.calculator.entry_fee_rate + target_net_profit_percent / 100.0) / (1.0 - self.calculator.exit_fee_rate)
 
     def _minimum_profitable_exit_price(self, position: Position) -> float:
         required_net_profit_percent = self._required_net_profit_percent(position)
@@ -248,8 +253,7 @@ class PositionRiskManager:
         if risk_percent <= 0:
             return required_net_profit_percent
         peak_net_profit_percent = self.calculator.calculate(position, position.highest_price).net_pnl_percent
-        activation_percent = max(required_net_profit_percent,
-                                  risk_percent * self.trailing_take_profit_activation_r)
+        activation_percent = max(required_net_profit_percent, risk_percent * self.trailing_take_profit_activation_r)
         if peak_net_profit_percent < activation_percent:
             return required_net_profit_percent
         locked_percent = peak_net_profit_percent - (risk_percent * self.trailing_take_profit_lock_r)
@@ -260,8 +264,7 @@ class PositionRiskManager:
         minimum_profitable_price = self._minimum_profitable_exit_price(position)
         net_pnl_percent = self.calculator.calculate(position, position.current_price).net_pnl_percent
         if net_pnl_percent < required_net_profit_percent:
-            return PositionExitDecision(False, PositionExitReason.NONE,
-                                        position.current_price,
+            return PositionExitDecision(False, PositionExitReason.NONE, position.current_price,
                                         f"TRAILING_WAIT_NET_PROFIT:{net_pnl_percent:.3f}%<{required_net_profit_percent:.3f}%")
         atr_percent = self._get_atr_percent(position.symbol)
         if atr_percent is None or atr_percent <= 0:
@@ -271,15 +274,13 @@ class PositionRiskManager:
         trailing_take_profit_percent = self._trailing_take_profit_floor_percent(position, required_net_profit_percent)
         trailing_take_profit_price = self._price_for_net_profit_percent(position, trailing_take_profit_percent)
         if trailing_take_profit_percent > required_net_profit_percent:
-            trailing_price = max(minimum_profitable_price,
-                                 min(raw_trailing_price, trailing_take_profit_price))
+            trailing_price = max(minimum_profitable_price, min(raw_trailing_price, trailing_take_profit_price))
         else:
             trailing_price = max(raw_trailing_price, minimum_profitable_price)
         if position.current_price <= trailing_price and position.current_price < position.highest_price:
             peak_net_profit_percent = self.calculator.calculate(position, position.highest_price).net_pnl_percent
             lock_active = trailing_take_profit_percent > required_net_profit_percent
-            return PositionExitDecision(True, PositionExitReason.TRAILING_STOP,
-                                        position.current_price,
+            return PositionExitDecision(True, PositionExitReason.TRAILING_STOP, position.current_price,
                                         "Fee-aware Adaptive Trailing Take Profit "
                                         f"(ATR: {atr_percent:.2f}%, Distance: {distance:.2f}%, "
                                         f"Required Net: {required_net_profit_percent:.2f}%, "
@@ -297,13 +298,11 @@ class PositionRiskManager:
             if position.status != PositionStatus.REVIEW_REQUIRED:
                 position.status = PositionStatus.REVIEW_REQUIRED
                 position.review_required_at = time.time()
-                self._review_decisions.append({"symbol": position.symbol,
-                                               "holding_days": days,
+                self._review_decisions.append({"symbol": position.symbol, "holding_days": days,
                                                "pnl_percent": self._get_pnl_percent(position),
                                                "timestamp": time.time()})
             return PositionExitDecision(False, PositionExitReason.REVIEW_REQUIRED,
-                                        position.current_price,
-                                        f"Review required after {days:.1f} days",
+                                        position.current_price, f"Review required after {days:.1f} days",
                                         review_required=True)
         return PositionExitDecision(False, PositionExitReason.NONE)
 
