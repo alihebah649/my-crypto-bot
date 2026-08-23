@@ -69,13 +69,21 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
         if stop.should_exit:
             return stop
 
-        review = self._check_review_required(position)
-        if review.review_required:
-            return review
-
         take_profit = self._check_take_profit(position)
         if take_profit.should_exit:
             return take_profit
+
+        # SCALP gets a bounded lifecycle before the long-horizon Swing review
+        # path. This is deliberately before Smart Hold/review handling so a
+        # scalp cannot be converted into an indefinite hold by a recovery score.
+        timeout = self._scalp_timeout(position)
+        if timeout.should_exit:
+            position.metadata["exit_policy"] = "SCALP_TIMEOUT"
+            return timeout
+
+        review = self._check_review_required(position)
+        if review.review_required:
+            return review
 
         # Winners are handled by the existing fee-aware trailing policy before
         # any loss/recovery logic can turn them into a hold.
@@ -83,14 +91,6 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
             trailing = self._check_trailing_stop(position)
             if trailing.should_exit:
                 return trailing
-
-        # SCALP gets a bounded lifecycle. This is checked before Smart Hold so
-        # a high recovery score cannot turn a short-term trade into a multi-hour
-        # or multi-day position indefinitely.
-        timeout = self._scalp_timeout(position)
-        if timeout.should_exit:
-            position.metadata["exit_policy"] = "SCALP_TIMEOUT"
-            return timeout
 
         hold = self._check_hold_with_market_context(position)
         if hold.should_exit or hold.hold_reason:
