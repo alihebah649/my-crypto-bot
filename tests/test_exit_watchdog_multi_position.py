@@ -62,11 +62,8 @@ def test_watchdog_evaluates_all_active_positions_and_does_not_stop_after_one_exi
     risk = FakeRisk(decisions)
     facade = FakeFacade(positions)
 
-    result = ExitWatchdog(
-        repository=repository,
-        risk_manager=risk,
-        facade=facade,
-    ).run()
+    watchdog = ExitWatchdog(repository=repository, risk_manager=risk, facade=facade)
+    result = watchdog.run()
 
     assert result.evaluated == 5
     assert result.exit_signals == 3
@@ -80,6 +77,12 @@ def test_watchdog_evaluates_all_active_positions_and_does_not_stop_after_one_exi
     assert positions[3].status is PositionStatus.OPEN
     assert positions[4].status is PositionStatus.CLOSED
 
+    # Every evaluated position must have a diagnostic, including HOLDs.
+    assert [item["symbol"] for item in watchdog.last_diagnostics] == [p.symbol for p in positions]
+    assert watchdog.last_diagnostics[1]["decision"] == "HOLD"
+    assert watchdog.last_diagnostics[1]["execution"] == "NOT_REQUIRED"
+    assert watchdog.last_diagnostics[3]["decision"] == "HOLD"
+
 
 def test_watchdog_continues_when_one_position_evaluation_fails():
     positions = [make_position("GOOD1USDT"), make_position("BROKENUSDT"), make_position("GOOD2USDT")]
@@ -91,11 +94,12 @@ def test_watchdog_continues_when_one_position_evaluation_fails():
             return PositionExitDecision(True, PositionExitReason.STOP_LOSS, position.current_price)
 
     facade = FakeFacade(positions)
-    result = ExitWatchdog(
+    watchdog = ExitWatchdog(
         repository=FakeRepository(positions),
         risk_manager=RiskWithOneFailure(),
         facade=facade,
-    ).run()
+    )
+    result = watchdog.run()
 
     assert result.evaluated == 3
     assert result.exit_signals == 2
@@ -104,3 +108,5 @@ def test_watchdog_continues_when_one_position_evaluation_fails():
     assert positions[0].status is PositionStatus.CLOSED
     assert positions[1].status is PositionStatus.OPEN
     assert positions[2].status is PositionStatus.CLOSED
+    assert len(watchdog.last_diagnostics) == 3
+    assert watchdog.last_diagnostics[1]["execution"] == "EXCEPTION"
