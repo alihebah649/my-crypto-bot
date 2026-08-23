@@ -28,12 +28,23 @@ class BrainDecisionPipeline:
 
     def evaluate(self, context: Mapping[str, Any]) -> BrainPipelineResult:
         decision = self.reasoner.decide(context)
-        safe = self.safety_gate.evaluate(decision.action, context)
+        context_data = dict(context)
+        safe = self.safety_gate.evaluate(
+            decision.action,
+            hard_stop_triggered=bool(context_data.get("hard_stop_triggered", False)),
+            take_profit_triggered=bool(context_data.get("take_profit_triggered", False)),
+            risk_locked=bool(context_data.get("risk_locked", False)),
+            policy_action=str(
+                context_data.get("policy_action", context_data.get("exit_policy", {}).get("decision", "HOLD"))
+            ),
+            execution_allowed=bool(context_data.get("execution_allowed", True)),
+            context=context_data,
+        )
         return BrainPipelineResult(
             brain_decision=decision,
             final_action=safe.action,
             authority=safe.authority,
-            blocked=safe.blocked,
+            blocked=not safe.allowed,
             reason=safe.reason,
         )
 
