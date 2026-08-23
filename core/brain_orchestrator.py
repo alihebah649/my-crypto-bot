@@ -3,10 +3,11 @@
 This layer does not execute orders.  It produces a single lifecycle decision and
 keeps the authority boundaries explicit:
 
-1. Hard exits (hard stop / take profit) cannot be overridden.
-2. Recovery may hold a losing position, but cannot override a hard exit.
-3. Normal Brain decisions are advisory and never bypass Risk/Execution layers.
-4. A recovery engine score (0..6) is normalized to the Brain's 0..100 scale.
+1. Authoritative Exit Policy exits cannot be overridden.
+2. Hard exits (hard stop / take profit) cannot be overridden.
+3. Recovery may hold a losing position, but cannot override an authoritative exit.
+4. Normal Brain decisions are advisory and never bypass Risk/Execution layers.
+5. A recovery engine score (0..6) is normalized to the Brain's 0..100 scale.
 """
 
 from dataclasses import dataclass, field
@@ -58,11 +59,20 @@ class BrainPositionOrchestrator:
     ) -> PositionLifecycleDecision:
         """Evaluate one open position on every lifecycle cycle.
 
-        The caller is responsible for supplying the authoritative Exit Policy
-        flags and for executing a returned SELL through the normal execution
-        and validation stack.
+        The caller supplies Exit Policy signals. An explicit EXIT is authoritative
+        and is evaluated before Recovery/Brain; execution remains outside this layer.
         """
         pnl_percent = float(pnl_percent)
+        normalized_exit_signal = str(exit_signal).upper()
+
+        # Authoritative Exit Policy is evaluated before Recovery/Brain.
+        if normalized_exit_signal == "EXIT":
+            return PositionLifecycleDecision(
+                action="SELL",
+                reason="EXIT_POLICY",
+                authority="EXIT_POLICY",
+                metadata={"authoritative": True},
+            )
 
         # Hard exits are absolute and are evaluated before Recovery/Brain.
         if hard_stop_triggered:
@@ -94,7 +104,7 @@ class BrainPositionOrchestrator:
             )
 
         # A losing position enters Recovery once it crosses the configured
-        # recovery threshold.  Existing recovery state is preserved by the
+        # recovery threshold. Existing recovery state is preserved by the
         # position object itself.
         if pnl_percent < 0 and self.recovery.should_start_recovery(pnl_percent):
             if not getattr(position, "recovery_mode", False):
@@ -130,7 +140,7 @@ class BrainPositionOrchestrator:
             pnl_percent,
             recovery_active=recovery_active,
             recovery_score=recovery_score_percent,
-            exit_signal=exit_signal,
+            exit_signal=normalized_exit_signal,
             age_minutes=age_minutes,
         )
 
