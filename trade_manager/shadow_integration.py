@@ -158,9 +158,6 @@ class ShadowTradeManagerRuntime:
                                                risk_gateway=self.risk_gateway)
         self.exit_watchdog = ExitWatchdog(repository=self.repository, risk_manager=self.position_risk, facade=self.facade)
 
-        # Keep the Part-6 realized-loss ledger current immediately after a
-        # successful close. The live application can therefore not open the
-        # next position in the same cycle using a stale daily-loss snapshot.
         original_close_position = self.facade.close_position
         original_execute_decision = self.facade.execute_decision
 
@@ -240,6 +237,7 @@ class ShadowTradeManagerRuntime:
             "closed": result.closed,
             "failed": result.failed,
             "timestamp": time.time(),
+            "diagnostics": list(self.exit_watchdog.last_diagnostics),
         }
         self.loss_ledger.sync(self.repository.get_closed_positions())
         return result
