@@ -4,16 +4,16 @@ The watchdog is deliberately separate from entry scanning. Its only job is to
 walk every active position, evaluate the existing Exit Policy, and submit an
 approved exit through the existing facade/execution boundary.
 
-It does not create a second exit strategy and it cannot bypass the existing
-risk/execution controls. It also keeps a per-position diagnostic trace so a
-failed/ignored exit can be diagnosed from the runtime endpoint instead of
-being reduced to a single integer counter.
+The Brain is advisory only: its recommendation is recorded for comparison and
+analysis, but it never replaces the authoritative Risk/Exit decision.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 import time
 from typing import Any, Dict, List
+
+from core.brain_decision import BrainDecisionEngine
 
 from .facade import PositionManagementFacade
 from .models import Position
@@ -29,13 +29,15 @@ class ExitWatchdogResult:
 
 
 class ExitWatchdog:
-    """Run exit evaluation independently of entry/strategy scanning."""
+    """Run exit evaluation independently from entry/strategy scanning."""
 
     def __init__(self, *, repository, risk_manager: PositionRiskManager,
-                 facade: PositionManagementFacade) -> None:
+                 facade: PositionManagementFacade,
+                 brain: BrainDecisionEngine | None = None) -> None:
         self.repository = repository
         self.risk_manager = risk_manager
         self.facade = facade
+        self.brain = brain or BrainDecisionEngine()
         self.last_diagnostics: List[Dict[str, Any]] = []
 
     def run(self) -> ExitWatchdogResult:
@@ -48,21 +50,37 @@ class ExitWatchdog:
 
         for position in positions:
             evaluated += 1
+            age_minutes = max(0.0, (time.time() - position.opened_at) / 60.0)
+            pnl_percent = 0.0
+            if position.entry_price > 0:
+                pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100.0
+
             trace: Dict[str, Any] = {
                 "position_id": position.position_id,
                 "symbol": position.symbol,
                 "status_before": position.status.name,
-                "trade_mode": str(position.entry_metadata.get("trade_mode", "SWING")).upper(),
+                "trade_mode": str(
+                    position.entry_metadata.get(
+                        "trade_mode",
+                        position.metadata.get("trade_mode", "SWING"),
+                    )
+                ).upper(),
                 "current_price": position.current_price,
                 "stop_loss": position.stop_loss,
                 "opened_at": position.opened_at,
-                "age_minutes": max(0.0, (time.time() - position.opened_at) / 60.0),
+                "age_minutes": age_minutes,
+                "pnl_percent": pnl_percent,
                 "decision": "NOT_RUN",
                 "reason": None,
                 "should_exit": False,
                 "review_required": False,
                 "execution": "NOT_RUN",
                 "execution_message": None,
+                "brain_action": None,
+                "brain_confidence": None,
+                "brain_reason": None,
+                "brain_exception": None,
+                "brain_authority": "ADVISORY",
             }
             try:
                 decision: PositionExitDecision = self.risk_manager.evaluate(position)
@@ -78,10 +96,32 @@ class ExitWatchdog:
                     "status_after_evaluation": position.status.name,
                 })
 
+                # Shadow-mode Brain: observe the authoritative exit decision and
+                # produce an independent recommendation without mutating state.
+                brain_decision = self.brain.decide_position(
+                    pnl_percent=pnl_percent,
+                    hard_stop_triggered=decision.reason.name == "STOP_LOSS",
+                    take_profit_triggered=decision.reason.name == "TAKE_PROFIT",
+                    recovery_active=decision.recovery_score > 0 and pnl_percent < 0,
+                    recovery_score=decision.recovery_score,
+                    exit_signal="SELL" if decision.should_exit else "HOLD",
+                    age_minutes=age_minutes,
+                )
+                trace.update({
+                    "brain_action": brain_decision.action,
+                    "brain_confidence": brain_decision.confidence,
+                    "brain_reason": brain_decision.reason,
+                    "brain_exception": brain_decision.exception,
+                    "brain_metadata": dict(brain_decision.metadata),
+                    "brain_agrees_with_policy": (
+                        (brain_decision.action == "SELL") == decision.should_exit
+                        if not decision.review_required
+                        else None
+                    ),
+                })
+
                 if not decision.should_exit and not decision.review_required:
                     trace["execution"] = "NOT_REQUIRED"
-                    # Keep HOLD traces: they are essential for diagnosing a
-                    # long-lived scalp that remains open without an exit signal.
                     diagnostics.append(trace)
                     continue
 
