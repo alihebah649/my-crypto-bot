@@ -20,12 +20,12 @@ from .calculator import PositionCalculator
 from .controller import PositionController
 from .core_execution_gateway import CoreExecutionGateway
 from .core_risk_gateway import CoreRiskGateway
+from .exit_policy import ExitPolicyPositionRiskManager
 from .facade import PositionManagementFacade
 from .integration_contracts import RiskSizingRequest
 from .models import Position, PositionStatus
 from .part6_risk import LossTracker, MarketContext, PortfolioSnapshot, PositionSizeCalculator, RiskConfig, RiskController, SymbolExposure
 from .repository import PositionRepository
-from .risk_manager import PositionRiskManager
 
 
 @dataclass(slots=True)
@@ -143,12 +143,13 @@ class ShadowTradeManagerRuntime:
                                             portfolio_provider=self.portfolio_provider, market_provider=_MarketProvider(self.market),
                                             exposure_provider=_ExposureProvider(self.repository, self.market), quantity_normalizer=None)
         self.execution_gateway = CoreExecutionGateway(self.execution_adapter); self.calculator = PositionCalculator()
-        self.position_risk = PositionRiskManager(market_context_provider=self._position_market_context,
-                                                 atr_provider=self._atr_percent, ema_provider=self._ema_trend,
-                                                 trailing_atr_multiplier=1.5, break_even_trigger_percent=1.5,
-                                                 max_holding_days=7.0, min_net_profit_percent=0.30,
-                                                 reward_to_risk_ratio=1.0, trailing_take_profit_enabled=True,
-                                                 trailing_take_profit_activation_r=2.0, trailing_take_profit_lock_r=1.0)
+        self.position_risk = ExitPolicyPositionRiskManager(market_context_provider=self._position_market_context,
+                                                           atr_provider=self._atr_percent, ema_provider=self._ema_trend,
+                                                           trailing_atr_multiplier=1.5, break_even_trigger_percent=1.5,
+                                                           max_holding_days=7.0, min_net_profit_percent=0.30,
+                                                           reward_to_risk_ratio=1.0, trailing_take_profit_enabled=True,
+                                                           trailing_take_profit_activation_r=2.0, trailing_take_profit_lock_r=1.0,
+                                                           scalp_max_holding_minutes=120.0)
         self.controller = PositionController(self.position_risk, self.repository, self.execution_gateway)
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
