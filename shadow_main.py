@@ -39,10 +39,6 @@ _legacy.build_daily_report = _net_only_daily_report
 # -----------------------------------------------------------------------------
 # Dual-mode Trade Manager boundary
 # -----------------------------------------------------------------------------
-# The legacy market cycle is intentionally preserved. This adapter carries the
-# already-selected strategy lane (SCALP/SWING) into both Part-6 risk checks and
-# the persisted position metadata, without creating a second risk/execution
-# implementation.
 _current_trade_mode = {"value": "SWING"}
 _original_controller_evaluate = runtime.risk_controller.evaluate
 _original_portfolio_snapshot = runtime.portfolio_provider.snapshot
@@ -139,6 +135,7 @@ def _home():
         "scalp_score_threshold": SCALP_SCORE_THRESHOLD,
         "swing_score_threshold": SWING_SCORE_THRESHOLD,
         "telegram_configured": bool(_legacy.TELEGRAM_TOKEN and _legacy.TELEGRAM_CHAT_ID),
+        "exit_watchdog": runtime.last_exit_watchdog,
     }), 200
 
 app.view_functions["home"] = _home
@@ -203,6 +200,14 @@ async def _dual_mode_engine():
         started = time.monotonic()
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
+            # Independent lifecycle pass: exit management must not depend on
+            # the entry scanner or on a BUY signal for the same symbol.
+            watchdog = runtime.run_exit_watchdog()
+            if watchdog.exit_signals or watchdog.failed:
+                _legacy.logger.info(
+                    "Exit watchdog: evaluated=%d signals=%d closed=%d failed=%d",
+                    watchdog.evaluated, watchdog.exit_signals, watchdog.closed, watchdog.failed,
+                )
             _sanitize_entry_diagnostics()
         except Exception:
             _legacy.logger.exception("Dual-mode paper market cycle failed")
