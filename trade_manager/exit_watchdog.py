@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import time
 from typing import Any, Dict, List
 
+from core.brain_context import BrainContextBuilder
 from core.brain_decision import BrainDecisionEngine
 from core.brain_metrics import BrainMetrics
 
@@ -46,9 +47,6 @@ class ExitWatchdog:
         evaluated = exit_signals = closed = failed = 0
         diagnostics: List[Dict[str, Any]] = []
         self.metrics = BrainMetrics()
-
-        # Snapshot active positions first. Execution can mutate repository state,
-        # so never iterate a live repository collection while closing.
         positions: List[Position] = list(self.repository.get_open_positions())
 
         for position in positions:
@@ -99,14 +97,26 @@ class ExitWatchdog:
                     "status_after_evaluation": position.status.name,
                 })
 
+                context = BrainContextBuilder.build(
+                    position,
+                    age_minutes=age_minutes,
+                    recovery={"score": decision.recovery_score, "active": decision.recovery_score > 0},
+                    exit_policy={
+                        "decision": trace["decision"],
+                        "reason": decision.reason.name,
+                        "review_required": decision.review_required,
+                        "hold_reason": decision.hold_reason,
+                    },
+                    risk={"exit_authority": "PositionRiskManager"},
+                )
                 brain_decision = self.brain.decide_position(
-                    pnl_percent=pnl_percent,
+                    pnl_percent=context.pnl_percent,
                     hard_stop_triggered=decision.reason.name == "STOP_LOSS",
                     take_profit_triggered=decision.reason.name == "TAKE_PROFIT",
-                    recovery_active=decision.recovery_score > 0 and pnl_percent < 0,
-                    recovery_score=decision.recovery_score,
+                    recovery_active=bool(context.recovery.get("active")) and context.pnl_percent < 0,
+                    recovery_score=float(context.recovery.get("score", 0.0)),
                     exit_signal="SELL" if decision.should_exit else "HOLD",
-                    age_minutes=age_minutes,
+                    age_minutes=context.age_minutes,
                 )
                 self.metrics.record(
                     brain_action=brain_decision.action,
@@ -114,6 +124,7 @@ class ExitWatchdog:
                     review_required=decision.review_required,
                 )
                 trace.update({
+                    "brain_context": context.to_dict(),
                     "brain_action": brain_decision.action,
                     "brain_confidence": brain_decision.confidence,
                     "brain_reason": brain_decision.reason,
