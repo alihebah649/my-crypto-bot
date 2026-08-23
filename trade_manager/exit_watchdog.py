@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List
 
 from core.brain_decision import BrainDecisionEngine
+from core.brain_metrics import BrainMetrics
 
 from .facade import PositionManagementFacade
 from .models import Position
@@ -38,11 +39,13 @@ class ExitWatchdog:
         self.risk_manager = risk_manager
         self.facade = facade
         self.brain = brain or BrainDecisionEngine()
+        self.metrics = BrainMetrics()
         self.last_diagnostics: List[Dict[str, Any]] = []
 
     def run(self) -> ExitWatchdogResult:
         evaluated = exit_signals = closed = failed = 0
         diagnostics: List[Dict[str, Any]] = []
+        self.metrics = BrainMetrics()
 
         # Snapshot active positions first. Execution can mutate repository state,
         # so never iterate a live repository collection while closing.
@@ -96,8 +99,6 @@ class ExitWatchdog:
                     "status_after_evaluation": position.status.name,
                 })
 
-                # Shadow-mode Brain: observe the authoritative exit decision and
-                # produce an independent recommendation without mutating state.
                 brain_decision = self.brain.decide_position(
                     pnl_percent=pnl_percent,
                     hard_stop_triggered=decision.reason.name == "STOP_LOSS",
@@ -106,6 +107,11 @@ class ExitWatchdog:
                     recovery_score=decision.recovery_score,
                     exit_signal="SELL" if decision.should_exit else "HOLD",
                     age_minutes=age_minutes,
+                )
+                self.metrics.record(
+                    brain_action=brain_decision.action,
+                    policy_exit=decision.should_exit,
+                    review_required=decision.review_required,
                 )
                 trace.update({
                     "brain_action": brain_decision.action,
