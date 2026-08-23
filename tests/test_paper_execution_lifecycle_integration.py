@@ -34,6 +34,11 @@ def test_buy_then_successful_sell_closes_position_and_realizes_pnl():
     quantity = position.quantity
     assert runtime.execution_adapter.balance.assets["BTCUSDT"] == pytest.approx(quantity)
 
+    # close_position's requested price is a lifecycle decision price; the
+    # PaperExecutionAdapter fills at its current market price. Move the paper
+    # market to the intended profitable execution price before closing.
+    runtime.execution_adapter.market_prices["BTCUSDT"] = 110.0
+
     closed = runtime.facade.close_position(position.position_id, 110.0)
 
     assert closed is not None
