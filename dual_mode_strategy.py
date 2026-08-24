@@ -63,20 +63,29 @@ def score_symbol(symbol,ticker,candles_15m,candles_5m):
     c15=candles_15m[:-1] if len(candles_15m)>1 else [];c5=candles_5m[:-1] if len(candles_5m)>1 else [];price=float(ticker.get("lastPrice",0))
     if len(c15)<100 or len(c5)<4 or price<=0:return {"symbol":symbol,"score":0,"signal":"HOLD","swing_score":0,"scalp_score":0,"swing_signal":"HOLD","scalp_signal":"HOLD","trade_mode":"NONE","reasons":["INSUFFICIENT_DATA"],"price":price,"ema100":0.0,"rsi":0.0,"rsi5m":0.0,"atr":0.0}
     p15=[x["close"]for x in c15];p5=[x["close"]for x in c5];ema100=calculate_ema(p15);r15=calculate_rsi(p15);r5=calculate_rsi(p5);atr=calculate_atr(c15);atr5=calculate_atr(c5);lo15,mid15,up15=calculate_bollinger(c15);lo5,mid5,up5=calculate_bollinger(c5);v15=_volume_ratio(c15);v5=_volume_ratio(c5);found,name,confirmed=bullish_pattern(c5)
+    # Swing is a longer-horizon lane. Its score must reward both recovery
+    # entries and healthy bullish continuation; the previous weighting made a
+    # strong uptrend score poorly whenever price was above the lower Bollinger
+    # half or RSI was already above the recovery zone.
     swing=0;swing_reasons=[]
-    if price>ema100:swing+=20;swing_reasons.append("EMA100_TREND")
+    if price>ema100:swing+=25;swing_reasons.append("EMA100_TREND")
     if r15<=30:swing+=20;swing_reasons.append("RSI_DEEP_OVERSOLD")
     elif r15<40:swing+=15;swing_reasons.append("RSI_OVERSOLD")
-    elif r15<50:swing+=8;swing_reasons.append("RSI_RECOVERY_ZONE")
+    elif r15<55:swing+=12;swing_reasons.append("RSI_RECOVERY_ZONE")
+    else:swing+=15;swing_reasons.append("RSI_BULLISH_MOMENTUM")
     if lo15>0:
         dist=(price-lo15)/price
         if price<=lo15:swing+=25;swing_reasons.append("BOLLINGER_LOWER_SUPPORT")
         elif dist<=.005:swing+=18;swing_reasons.append("BOLLINGER_NEAR_SUPPORT")
-        elif price<=mid15:swing+=8;swing_reasons.append("BOLLINGER_LOWER_HALF")
+        elif price<=mid15:swing+=10;swing_reasons.append("BOLLINGER_LOWER_HALF")
+        elif price<=up15:swing+=8;swing_reasons.append("BOLLINGER_UPPER_HALF")
+        else:swing+=3;swing_reasons.append("BOLLINGER_UPPER_BREAKOUT")
     if v15>=1.20:swing+=15;swing_reasons.append("VOLUME_CONFIRMATION")
     elif v15>=1.05:swing+=8;swing_reasons.append("VOLUME_RISING")
     if found and confirmed:swing+=20;swing_reasons.append(f"5M_{name}_CONFIRMED")
     elif found:swing+=8;swing_reasons.append(f"5M_{name}")
+    if price>ema100 and r15>=50 and found and confirmed:
+        swing+=5;swing_reasons.append("BULLISH_TREND_CONTINUATION")
     swing=min(swing,100)
     macro_points,macro_reason=_macro_support(price,lo15,mid15);scalp=macro_points;scalp_reasons=[macro_reason] if macro_reason else []
     if r5<=25:scalp+=20;scalp_reasons.append("5M_RSI_DEEP_OVERSOLD")
@@ -94,10 +103,6 @@ def score_symbol(symbol,ticker,candles_15m,candles_5m):
     elif found:scalp+=8;scalp_reasons.append(f"5M_{name}")
     scalp=min(scalp,100)
 
-    # Two valid Scalp entry paths:
-    # 1) Confirmed 5m bullish reversal/breakout with macro support.
-    # 2) High-confidence recovery: score threshold reached from independent
-    #    support/oversold/liquidity evidence, without requiring a candle label.
     confirmed_reversal=bool(found and confirmed)
     high_confidence_recovery=bool(
         scalp>=SCALP_SCORE_THRESHOLD
