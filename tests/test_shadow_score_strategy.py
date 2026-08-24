@@ -58,7 +58,9 @@ def test_score_can_reach_buy_without_requiring_btc_specific_conditions():
 def test_bullish_continuation_can_trigger_swing_without_macro_support_dip():
     # Healthy uptrend: price is above EMA100 and in the upper half of the
     # 15m Bollinger channel. Swing must not require a lower-band pullback.
-    candles_15m = [candle(100.0, 100.1, 99.9, 100.0) for _ in range(100)]
+    # Provide 101 candles because the strategy intentionally removes the
+    # final forming candle before requiring 100 closed 15m candles.
+    candles_15m = [candle(100.0, 100.1, 99.9, 100.0) for _ in range(101)]
     for i in range(20):
         close = 100.0 + i * 0.01
         candles_15m[-20 + i] = candle(close - 0.005, close + 0.02, close - 0.02, close, 100.0)
