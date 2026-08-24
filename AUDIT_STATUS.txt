@@ -1,0 +1,6 @@
+Stable Paper Trading audit branch checkpoint.
+
+Swing continuation calibration added.
+Daily-loss lock semantics corrected.
+Risk-limit regression coverage added.
+CI validation pending.
