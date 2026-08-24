@@ -28,8 +28,8 @@ def test_closed_loss_updates_daily_weekly_monthly_risk_snapshot():
     # not the obsolete $50+ loss expected by the former $500 entry contract.
     assert closed.realized_pnl < 0.0
 
-    # The runtime now synchronizes the ledger immediately after a successful
-    # close; the next market tick must preserve the same totals.
+    # The runtime synchronizes the ledger immediately after a successful close;
+    # the next market tick must preserve the same totals.
     loss = runtime.loss_tracker.snapshot()
     assert loss.daily_pnl == closed.realized_pnl
     assert loss.weekly_pnl == closed.realized_pnl
@@ -44,11 +44,14 @@ def test_closed_loss_updates_daily_weekly_monthly_risk_snapshot():
     assert loss.weekly_pnl == closed.realized_pnl
     assert loss.monthly_pnl == closed.realized_pnl
 
+    # A loss of roughly 1.5% is below the configured 5% daily limit. It must
+    # not freeze the entire Paper Trading engine; only an actual limit breach
+    # should return DAILY_LOSS_LIMIT.
     approval = runtime.risk_gateway.approve(
         RiskSizingRequest(
             symbol="ETHUSDT", entry_price=100.0, stop_loss=98.0,
             account_equity=1000.0, free_balance=1000.0, leverage=1.0,
         )
     )
-    assert approval.approved is False
-    assert approval.reason == "DAILY_LOSS_LIMIT"
+    assert approval.approved is True
+    assert approval.reason == "APPROVED"
