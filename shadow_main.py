@@ -21,6 +21,12 @@ app = _legacy.app
 runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
+# Daily-loss control must use the configured percentage threshold. A small
+# realized loss is not itself a daily-loss-limit breach and must not freeze the
+# entire Paper Trading engine. This keeps the active paper composition aligned
+# with Part-6's explicit 5% daily limit.
+runtime.risk_controller.config.daily_risk.lock_after_realized_loss = False
+
 # -----------------------------------------------------------------------------
 # Daily report: show realized net P&L only, without capital/cash in the result.
 # -----------------------------------------------------------------------------
@@ -131,7 +137,7 @@ def _home():
         "scalp_max_open_positions": runtime.risk_config.exposure.max_scalp_positions,
         "swing_max_open_positions": runtime.risk_config.exposure.max_swing_positions,
         "metrics": getattr(metrics, "__dict__", str(metrics)),
-        "score_threshold": SWING_SCORE_THRESHOLD,
+        "score_threshold": BUY_SCORE_THRESHOLD,
         "scalp_score_threshold": SCALP_SCORE_THRESHOLD,
         "swing_score_threshold": SWING_SCORE_THRESHOLD,
         "telegram_configured": bool(_legacy.TELEGRAM_TOKEN and _legacy.TELEGRAM_CHAT_ID),
@@ -200,8 +206,6 @@ async def _dual_mode_engine():
         started = time.monotonic()
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
-            # Independent lifecycle pass: exit management must not depend on
-            # the entry scanner or on a BUY signal for the same symbol.
             watchdog = runtime.run_exit_watchdog()
             if watchdog.exit_signals or watchdog.failed:
                 _legacy.logger.info(
