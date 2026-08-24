@@ -55,6 +55,30 @@ def test_score_can_reach_buy_without_requiring_btc_specific_conditions():
     assert result["pattern_confirmed"] is True
 
 
+def test_bullish_continuation_can_trigger_swing_without_macro_support_dip():
+    # Healthy uptrend: price is above EMA100 and in the upper half of the
+    # 15m Bollinger channel. Swing must not require a lower-band pullback.
+    candles_15m = [candle(100.0, 100.1, 99.9, 100.0) for _ in range(100)]
+    for i in range(20):
+        close = 100.0 + i * 0.01
+        candles_15m[-20 + i] = candle(close - 0.005, close + 0.02, close - 0.02, close, 100.0)
+    candles_15m[-2] = candle(100.10, 100.13, 100.08, 100.12, 150.0)
+    candles_15m[-1] = candle(100.12, 100.15, 100.10, 100.13, 100.0)
+
+    candles_5m = [candle(100.0, 100.1, 99.9, 100.0) for _ in range(20)]
+    candles_5m[-3] = candle(99.8, 100.0, 99.7, 99.9, 100.0)
+    candles_5m[-2] = candle(99.9, 100.5, 99.85, 100.4, 150.0)
+    candles_5m[-1] = candle(100.4, 100.45, 100.2, 100.42, 100.0)
+
+    result = score_symbol("SWINGTESTUSDT", {"lastPrice": "100.3"}, candles_15m, candles_5m)
+
+    assert result["swing_score"] >= 80
+    assert result["swing_signal"] == "BUY"
+    assert result["trade_mode"] == "SWING"
+    assert result["scalp_signal"] == "HOLD"
+    assert "BULLISH_TREND_CONTINUATION" in result["swing_reasons"]
+
+
 def test_score_stays_hold_when_only_ema_condition_is_present():
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(20, 100.0)
