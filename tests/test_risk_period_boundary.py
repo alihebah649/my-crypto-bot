@@ -28,6 +28,7 @@ def _market() -> MarketContext:
 def test_sub_limit_realized_loss_does_not_lock():
     config = RiskConfig()
     controller = RiskController(config)
+    controller.loss_tracker.update(daily_pnl=-10.0, weekly_pnl=-10.0, monthly_pnl=-10.0)
     result = controller.evaluate(account=_account(-10.0), symbol="BTCUSDT", signal="SWING", market=_market())
     assert result.decision is RiskDecision.APPROVED
     assert controller.lock_manager.is_locked() is False
@@ -36,6 +37,7 @@ def test_sub_limit_realized_loss_does_not_lock():
 def test_daily_limit_breach_locks():
     config = RiskConfig()
     controller = RiskController(config)
+    controller.loss_tracker.update(daily_pnl=-50.0, weekly_pnl=-50.0, monthly_pnl=-50.0)
     result = controller.evaluate(account=_account(-50.0), symbol="BTCUSDT", signal="SWING", market=_market())
     assert result.decision is RiskDecision.REJECTED
     assert result.reject_reason.name == "DAILY_LOSS_LIMIT"
