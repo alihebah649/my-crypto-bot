@@ -10,6 +10,7 @@ on:
       - dual-mode-safe-calibration
       - scalp-calibration-v2
       - reward-risk-profit-floor-v2
+      - audit/swing-calibration-2026-08-23
     paths:
       - "core/**"
       - "trade_manager/**"
