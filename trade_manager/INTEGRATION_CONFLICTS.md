@@ -1,7 +1,7 @@
 # Trade Manager integration conflict register
 
 Target repository: `alihebah649/my-crypto-bot`
-Work branch: `tm-integration-work`
+Work branch: `audit/swing-calibration-2026-08-23`
 
 This file records integration issues explicitly instead of hiding them inside adapters.
 
@@ -35,6 +35,10 @@ This file records integration issues explicitly instead of hiding them inside ad
 26. **Universe gap** — `shadow_main.py` previously subscribed to only 7 Coinbase USD products while the established strategy universe contained 16 Binance Spot USDT pairs. The paper runtime now evaluates the full 16-symbol Binance Spot universe: BTC, ETH, SOL, LINK, ADA, DOT, NEAR, ARB, OP, RENDER, BNB, AVAX, ALGO, ATOM, FET and LTC.
 27. **Prospective exposure gap** — Part-6 previously checked only current portfolio exposure before sizing. The risk gateway now rejects a new position when current exposure plus the proposed position would exceed the configured portfolio exposure cap.
 28. **Score regression gate** — `tests/test_shadow_score_strategy.py` verifies the 16-symbol universe and verifies that BUY can be reached from the combined strategy conditions rather than an EMA-only shortcut.
+29. **Daily-loss lock calibration** — the previous Part-6 default treated any negative realized daily P&L as a `DAILY_LOSS_LIMIT` breach, even when the loss was far below the configured 5% limit. The active Paper baseline now leaves `lock_after_realized_loss` disabled by default and uses the explicit percentage circuit-breaker as the authoritative loss lock. A sub-limit loss must not freeze new entries.
+30. **Bullish Swing continuation gap** — the previous Swing scoring heavily rewarded oversold/lower-Bollinger recovery and provided no points for RSI bullish momentum or upper-half Bollinger continuation. In a healthy uptrend this made Swing structurally difficult to trigger. The audit branch now rewards bullish continuation while retaining the 80/100 Swing threshold and a confirmed 5m bullish pattern requirement.
+31. **Swing regression gate** — `tests/test_dual_mode_strategy.py` and `tests/test_shadow_score_strategy.py` include explicit bullish-continuation Swing scenarios and assert that the selected lane is `SWING`, while the Scalp gate remains closed.
+32. **Threshold diagnostics clarity** — the Paper home diagnostics now expose `score_threshold` as the unified BUY threshold while separately exposing the 65-point Scalp threshold and 80-point Swing threshold. The lane-specific scores remain visible in `/paper/diagnostics`.
 
 ## Remaining validation work / blockers
 
@@ -52,6 +56,9 @@ The paper strategy now uses Binance public REST market data for 15m/5m candles a
 
 ### E. Recovery reconciliation after process crash
 Persistence now restores local Position/account state. A live exchange reconciliation source is still required before live trading so the persisted state can be compared against actual broker holdings after an unexpected crash.
+
+### F. Risk period boundary/reset
+The Paper loss ledger currently rebuilds periods using UTC timestamps while the user-facing daily report uses `Asia/Aden`. The risk lock manager also needs explicit period-boundary behavior so a genuine daily/weekly/monthly limit lock cannot persist indefinitely across a completed period. This remains a validation item and is not silently considered solved.
 
 ## Rule for future integration
 
