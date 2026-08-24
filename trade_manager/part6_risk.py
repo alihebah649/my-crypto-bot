@@ -49,7 +49,10 @@ class PositionSizingConfig:
 class DailyRiskConfig:
     max_daily_loss_percent: float=5.0; max_weekly_loss_percent: float=10.0; max_monthly_loss_percent: float=20.0
     stop_trading_after_limit: bool=True
-    lock_after_realized_loss: bool=True
+    # A realized loss below the configured daily/weekly/monthly limits must
+    # not freeze the engine. The actual percentage thresholds below are the
+    # authoritative circuit breakers.
+    lock_after_realized_loss: bool=False
 @dataclass(slots=True)
 class ExposureConfig:
     max_open_positions: int=25
