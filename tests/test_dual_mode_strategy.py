@@ -93,6 +93,24 @@ def test_existing_swing_lane_can_still_reach_buy():
     assert result["pattern_confirmed"] is True
 
 
+def test_bullish_continuation_swing_can_reach_buy_without_support_dip(monkeypatch):
+    """A healthy uptrend should not be forced to wait for an oversold dip."""
+    monkeypatch.setattr(dual_mode_strategy, "calculate_ema", lambda prices, period=100: 100.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 55.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (90.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "115.0"}, candles_15m, candles_5m)
+    assert result["scalp_signal"] == "HOLD"
+    assert result["scalp_gate"] is False
+    assert result["swing_score"] >= SWING_SCORE_THRESHOLD
+    assert result["swing_signal"] == "BUY"
+    assert result["trade_mode"] == "SWING"
+    assert "BULLISH_TREND_CONTINUATION" in result["swing_reasons"]
+
+
 def test_strategy_universe_remains_16_spot_pairs():
     assert len(shadow_main.TRADING_SYMBOLS) == 16
 
