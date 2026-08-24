@@ -74,24 +74,24 @@ def test_failed_sell_preserves_owned_position_and_does_not_record_closed_pnl():
     assert stored is not None and stored.status is not PositionStatus.CLOSED
     assert runtime.loss_tracker.snapshot().daily_pnl == pytest.approx(0.0)
 
-def test_realized_loss_feeds_part6_and_locks_next_entry():
+def test_realized_loss_below_daily_limit_does_not_lock_next_entry():
     runtime = build_runtime()
     position = runtime.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
     runtime.update_market("BTCUSDT", price=70.0, **MARKET)
     closed = runtime.facade.close_position(position.position_id, 70.0)
     assert closed is not None and closed.realized_pnl < 0.0
-    # The realized-loss ledger must be current immediately after the close;
-    # a second market tick is not required before Part-6 can reject re-entry.
     loss = runtime.loss_tracker.snapshot()
     assert loss.daily_pnl == pytest.approx(closed.realized_pnl)
     assert loss.weekly_pnl == pytest.approx(closed.realized_pnl)
     assert loss.monthly_pnl == pytest.approx(closed.realized_pnl)
+    # A loss of about $15 on a $1,000 account is ~1.5%, below the configured
+    # 5% daily circuit breaker. It must not freeze subsequent entries.
+    assert abs(loss.daily_pnl) < 50.0
     approval = runtime.risk_gateway.approve(RiskSizingRequest(symbol="ETHUSDT", entry_price=100.0,
         stop_loss=98.0, account_equity=1000.0, free_balance=1000.0, leverage=1.0))
-    assert approval.approved is False
-    assert approval.reason == "DAILY_LOSS_LIMIT"
-    assert runtime.risk_controller.lock_manager.is_locked() is True
+    assert approval.approved is True
+    assert runtime.risk_controller.lock_manager.is_locked() is False
 
 def test_spot_contract_rejects_leverage_above_one():
     runtime = build_runtime()
