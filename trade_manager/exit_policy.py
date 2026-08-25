@@ -18,10 +18,17 @@ from .risk_manager import PositionExitDecision, PositionExitReason, PositionRisk
 class ExitPolicyPositionRiskManager(PositionRiskManager):
     """PositionRiskManager with explicit exit-policy ordering.
 
-    SCALP and SWING share the same authoritative protection boundary.  The
+    SCALP and SWING share the same authoritative protection boundary. The
     previous SCALP 120-minute timeout has intentionally been removed so that
     elapsed time alone cannot force an exit or masquerade as recovery failure.
+
+    ``scalp_max_holding_minutes`` is accepted only as a backwards-compatible
+    constructor argument for existing composition code. It is intentionally
+    ignored and has no effect on exit decisions.
     """
+
+    def __init__(self, *args, scalp_max_holding_minutes: float | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def evaluate(self, position: Position) -> PositionExitDecision:
         self._update_position_metrics(position)
@@ -47,8 +54,8 @@ class ExitPolicyPositionRiskManager(PositionRiskManager):
         if take_profit.should_exit:
             return take_profit
 
-        # No automatic SCALP timeout here. Elapsed time is diagnostic only and
-        # must never be converted into RECOVERY_FAILED.
+        # There is deliberately no automatic SCALP timeout. Elapsed time is
+        # diagnostic only and must never be converted into RECOVERY_FAILED.
 
         review = self._check_review_required(position)
         if review.review_required:
