@@ -42,13 +42,14 @@ def test_hard_stop_precedes_smart_hold():
     assert decision.reason is PositionExitReason.STOP_LOSS
 
 
-def test_scalp_timeout_prevents_indefinite_recovery_hold():
+def test_old_scalp_position_keeps_recovery_hold_after_120_minutes():
     position = make_position(current=99.0, stop=95.0)
     decision = manager().evaluate(position)
 
-    assert decision.should_exit is True
-    assert decision.reason is PositionExitReason.RECOVERY_FAILED
-    assert "SCALP_TIMEOUT" in decision.message
+    assert decision.should_exit is False
+    assert decision.reason is PositionExitReason.NONE
+    assert decision.hold_reason
+    assert position.status is PositionStatus.HOLD
 
 
 def test_swing_keeps_existing_recovery_hold_behavior():
