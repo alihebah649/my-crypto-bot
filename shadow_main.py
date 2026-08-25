@@ -14,12 +14,14 @@ from flask import jsonify
 import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
+from core.brain_shadow_runtime import BrainShadowRuntime
 
 _legacy.score_symbol = score_symbol
 _legacy.BUY_SCORE_THRESHOLD = BUY_SCORE_THRESHOLD
 app = _legacy.app
 runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
+brain_shadow_runtime = BrainShadowRuntime()
 
 # -----------------------------------------------------------------------------
 # Daily report: show realized net P&L only, without capital/cash in the result.
@@ -136,6 +138,7 @@ def _home():
         "swing_score_threshold": SWING_SCORE_THRESHOLD,
         "telegram_configured": bool(_legacy.TELEGRAM_TOKEN and _legacy.TELEGRAM_CHAT_ID),
         "exit_watchdog": runtime.last_exit_watchdog,
+        "brain_shadow": brain_shadow_runtime.snapshot(),
     }), 200
 
 app.view_functions["home"] = _home
@@ -186,6 +189,37 @@ def _sanitize_entry_diagnostics() -> None:
             trace.pop("position_id", None)
 
 
+def _run_brain_shadow_cycle() -> None:
+    """Evaluate Brain beside strategy output; never alter trading authority."""
+    latest = getattr(_legacy, "latest_scores", {}) or {}
+    open_symbols = {
+        str(position.symbol).upper()
+        for position in runtime.repository.get_open_positions()
+        if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
+    }
+    for symbol, strategy in latest.items():
+        try:
+            record = brain_shadow_runtime.evaluate_entry(
+                str(symbol).upper(),
+                strategy,
+                existing_position=str(symbol).upper() in open_symbols,
+            )
+            runtime.last_entry_diagnostics.setdefault(str(symbol).upper(), {})["brain_shadow"] = record.to_dict()
+            if not record.agreement:
+                _legacy.logger.info(
+                    "Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s",
+                    record.symbol,
+                    record.trade_mode,
+                    record.strategy_action,
+                    record.strategy_score,
+                    record.brain_action,
+                    record.brain_confidence,
+                    record.brain_reason,
+                )
+        except Exception:
+            _legacy.logger.exception("Brain shadow evaluation failed for %s", symbol)
+
+
 async def _dual_mode_engine():
     _legacy.send_telegram_message(
         "🟢 Paper Trading dual-mode strategy engine started on Render\n"
@@ -193,6 +227,7 @@ async def _dual_mode_engine():
         f"Scalp: 5m reversal + 15m context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
         f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
         "Trade Manager: Parts 1-8\n"
+        "Brain: SHADOW ONLY — no execution authority\n"
         "No real exchange orders are submitted."
     )
     _notify_closed_positions()
@@ -200,6 +235,7 @@ async def _dual_mode_engine():
         started = time.monotonic()
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
+            _run_brain_shadow_cycle()
             # Independent lifecycle pass: exit management must not depend on
             # the entry scanner or on a BUY signal for the same symbol.
             watchdog = runtime.run_exit_watchdog()

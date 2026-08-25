@@ -21,23 +21,24 @@ def make_position(*, age_minutes=121.0, price=99.0, stop_loss=95.0):
     )
 
 
-def test_scalp_timeout_wins_over_smart_hold():
+def test_elapsed_scalp_holding_does_not_force_exit():
     manager = ExitPolicyPositionRiskManager(
         market_context_provider=lambda symbol: {"ema_100": "BULLISH", "market": {"overall": "BULLISH"}},
-        scalp_max_holding_minutes=120.0,
     )
     position = make_position()
 
     decision = manager.evaluate(position)
 
-    assert decision.should_exit is True
-    assert decision.reason is PositionExitReason.RECOVERY_FAILED
-    assert "SCALP_TIMEOUT" in decision.message
-    assert position.metadata["exit_policy"] == "SCALP_TIMEOUT"
+    assert decision.should_exit is False
+    assert decision.reason is PositionExitReason.NONE
+    assert "TIMEOUT" not in decision.message
+    # Exit-policy evaluation decides whether to exit; it does not mutate
+    # PositionStatus from OPEN to HOLD as a side effect.
+    assert position.status is PositionStatus.OPEN
 
 
-def test_hard_stop_still_wins_over_scalp_timeout():
-    manager = ExitPolicyPositionRiskManager(scalp_max_holding_minutes=120.0)
+def test_hard_stop_still_wins_over_elapsed_holding_time():
+    manager = ExitPolicyPositionRiskManager()
     position = make_position(price=94.0, stop_loss=95.0)
 
     decision = manager.evaluate(position)
@@ -46,11 +47,12 @@ def test_hard_stop_still_wins_over_scalp_timeout():
     assert decision.reason is PositionExitReason.STOP_LOSS
 
 
-def test_swing_is_not_subject_to_scalp_timeout():
-    manager = ExitPolicyPositionRiskManager(scalp_max_holding_minutes=120.0)
+def test_swing_is_not_subject_to_elapsed_time_exit():
+    manager = ExitPolicyPositionRiskManager()
     position = make_position()
     position.entry_metadata["trade_mode"] = "SWING"
 
     decision = manager.evaluate(position)
 
+    assert decision.should_exit is False
     assert decision.reason is not PositionExitReason.RECOVERY_FAILED

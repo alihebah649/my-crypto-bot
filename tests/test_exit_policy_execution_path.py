@@ -32,7 +32,7 @@ class FakeExitGateway:
         raise AssertionError("cancel() is not part of the exit-path test")
 
 
-def test_scalp_timeout_decision_reaches_execution_and_closes_position():
+def test_old_scalp_position_does_not_reach_execution_from_elapsed_time():
     repository = PositionRepository()
     gateway = FakeExitGateway(price=99.0)
     risk = ExitPolicyPositionRiskManager(
@@ -43,12 +43,11 @@ def test_scalp_timeout_decision_reaches_execution_and_closes_position():
         },
         atr_provider=lambda symbol: 0.5,
         ema_provider=lambda symbol: "BULLISH",
-        scalp_max_holding_minutes=120.0,
     )
     controller = PositionController(risk, repository, gateway)
 
     position = Position(
-        position_id="scalp-timeout-e2e",
+        position_id="scalp-no-timeout-e2e",
         symbol="TESTUSDT",
         side=PositionSide.LONG,
         status=PositionStatus.OPEN,
@@ -63,14 +62,14 @@ def test_scalp_timeout_decision_reaches_execution_and_closes_position():
     repository.add(position)
 
     decision = risk.evaluate(position)
-    assert decision.should_exit is True
-    assert "SCALP_TIMEOUT" in decision.message
 
-    closed = controller.execute_exit_decision(position.position_id, decision, risk.calculator)
+    assert decision.should_exit is False
+    assert decision.reason.name == "NONE"
+    assert "TIMEOUT" not in decision.message
+    assert position.status is PositionStatus.HOLD
 
-    assert closed is not None
-    assert closed.status is PositionStatus.CLOSED
-    assert closed.close_reason.name == "RECOVERY_FAILED"
-    assert gateway.calls == [("TESTUSDT", 5.0, None)]
-    assert closed.realized_pnl < 0
-    assert closed.exit_metadata["exit_reason"] == "RECOVERY_FAILED"
+    result = controller.execute_exit_decision(position.position_id, decision, risk.calculator)
+
+    assert result is position
+    assert result.status is PositionStatus.HOLD
+    assert gateway.calls == []
