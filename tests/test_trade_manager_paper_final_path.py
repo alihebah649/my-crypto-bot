@@ -4,6 +4,7 @@ import time
 import pytest
 from trade_manager.integration_contracts import RiskSizingRequest
 from trade_manager.models import PositionStatus
+from trade_manager.part6_risk import DailyRiskConfig, RiskConfig
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 
 MARKET = dict(bid=99.99, ask=100.01, spread_percent=0.02, atr=2.0,
@@ -20,8 +21,6 @@ def test_full_paper_buy_and_successful_manual_close_path():
     position = runtime.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
     assert position.status is PositionStatus.OPEN
-    # Normal entries target the configured $50 notional, while Part 6 still
-    # caps that amount by the account-risk calculation.
     assert position.quantity == pytest.approx(0.5)
     assert position.entry_price * position.quantity == pytest.approx(50.0)
     assert position.entry_fee == pytest.approx(position.quantity * position.entry_price * 0.001)
@@ -75,14 +74,18 @@ def test_failed_sell_preserves_owned_position_and_does_not_record_closed_pnl():
     assert runtime.loss_tracker.snapshot().daily_pnl == pytest.approx(0.0)
 
 def test_realized_loss_feeds_part6_and_locks_next_entry():
-    runtime = build_runtime()
+    runtime = ShadowTradeManagerRuntime(
+        initial_cash=1000.0,
+        fee_rate=0.001,
+        risk_config=RiskConfig(daily_risk=DailyRiskConfig(lock_after_realized_loss=True)),
+    )
+    runtime.update_market("BTCUSDT", price=100.0, **MARKET)
+    runtime.update_market("ETHUSDT", price=100.0, **MARKET)
     position = runtime.open_position("BTCUSDT", 100.0, 96.0)
     assert position is not None
     runtime.update_market("BTCUSDT", price=70.0, **MARKET)
     closed = runtime.facade.close_position(position.position_id, 70.0)
     assert closed is not None and closed.realized_pnl < 0.0
-    # The realized-loss ledger must be current immediately after the close;
-    # a second market tick is not required before Part-6 can reject re-entry.
     loss = runtime.loss_tracker.snapshot()
     assert loss.daily_pnl == pytest.approx(closed.realized_pnl)
     assert loss.weekly_pnl == pytest.approx(closed.realized_pnl)
