@@ -52,7 +52,7 @@ def test_scalp_can_remain_in_smart_hold_after_long_age():
             "volatility": "NORMAL",
         },
     )
-    position = make_position(age_minutes=240.0, price=97.0, stop_loss=95.0)
+    position = make_position(age_minutes=240.0, price=98.5, stop_loss=95.0)
 
     decision = manager.evaluate(position)
 
