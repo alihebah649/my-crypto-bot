@@ -32,7 +32,9 @@ def test_elapsed_scalp_holding_does_not_force_exit():
     assert decision.should_exit is False
     assert decision.reason is PositionExitReason.NONE
     assert "TIMEOUT" not in decision.message
-    assert position.status is PositionStatus.HOLD
+    # Exit-policy evaluation decides whether to exit; it does not mutate
+    # PositionStatus from OPEN to HOLD as a side effect.
+    assert position.status is PositionStatus.OPEN
 
 
 def test_hard_stop_still_wins_over_elapsed_holding_time():
