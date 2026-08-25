@@ -64,11 +64,16 @@ def test_old_scalp_position_does_not_reach_execution_from_elapsed_time():
     repository.add(position)
 
     decision = risk.evaluate(position)
+
+    # Elapsed time alone must never create an exit decision. The existing
+    # recovery policy may legitimately move a losing position into HOLD, but
+    # that is a state transition—not an execution request.
     assert decision.should_exit is False
     assert decision.reason is PositionExitReason.NONE
+    assert "SCALP_TIMEOUT" not in decision.message
 
     result = controller.execute_exit_decision(position.position_id, decision, risk.calculator)
 
     assert result is not None
-    assert result.status is PositionStatus.OPEN
+    assert result.status in {PositionStatus.OPEN, PositionStatus.HOLD}
     assert gateway.calls == []
