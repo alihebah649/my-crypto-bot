@@ -62,6 +62,23 @@ def test_scalp_can_remain_in_smart_hold_after_long_age():
     assert position.status is PositionStatus.HOLD
 
 
+def test_recovery_failed_remains_a_real_market_loss_exit():
+    manager = ExitPolicyPositionRiskManager(
+        market_context_provider=lambda symbol: {
+            "ema_100": "BEARISH",
+            "market": {"overall": "BEARISH"},
+            "volatility": "HIGH",
+        },
+    )
+    position = make_position(age_minutes=240.0, price=94.0, stop_loss=90.0)
+
+    decision = manager.evaluate(position)
+
+    assert decision.should_exit is True
+    assert decision.reason is PositionExitReason.RECOVERY_FAILED
+    assert "Large loss" in decision.message
+
+
 def test_swing_is_unaffected_by_scalp_timeout_removal():
     manager = ExitPolicyPositionRiskManager()
     position = make_position(age_minutes=240.0, price=99.0, stop_loss=95.0)
