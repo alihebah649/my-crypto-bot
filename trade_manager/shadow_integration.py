@@ -150,8 +150,7 @@ class ShadowTradeManagerRuntime:
                                                            trailing_atr_multiplier=1.5, break_even_trigger_percent=1.5,
                                                            max_holding_days=7.0, min_net_profit_percent=0.30,
                                                            reward_to_risk_ratio=1.0, trailing_take_profit_enabled=True,
-                                                           trailing_take_profit_activation_r=2.0, trailing_take_profit_lock_r=1.0,
-                                                           scalp_max_holding_minutes=120.0)
+                                                           trailing_take_profit_activation_r=2.0, trailing_take_profit_lock_r=1.0)
         self.controller = PositionController(self.position_risk, self.repository, self.execution_gateway)
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
