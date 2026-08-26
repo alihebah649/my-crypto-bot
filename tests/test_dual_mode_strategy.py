@@ -19,6 +19,8 @@ def test_dual_mode_thresholds_are_separated():
     assert BUY_SCORE_THRESHOLD == SWING_SCORE_THRESHOLD
     assert SCALP_SCORE_THRESHOLD == 65
     assert dual_mode_strategy.SCALP_MAX_RSI == 55.0
+    assert dual_mode_strategy.SCALP_RSI_RISE_MIN == 1.5
+    assert dual_mode_strategy.SCALP_RECOVERY_TRIGGER_MIN == 2
     assert shadow_main.score_symbol is score_symbol
 
 
@@ -39,11 +41,50 @@ def test_score_exposes_independent_scalp_and_swing_lanes():
     assert result["swing_signal"] in {"BUY", "HOLD"}
 
 
+def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
+    """Support + oversold + volume can make 65, but cannot authorize a buy."""
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 35.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    candles_5m[-3] = candle(100.0, 100.2, 98.5, 99.0, 120.0)
+    candles_5m[-2] = candle(99.0, 99.2, 97.8, 98.0, 120.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.0"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_context_only"] is True
+    assert result["scalp_recovery_confirmation"] is False
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert "SCALP_CONTEXT_ONLY_NO_RECOVERY_TRIGGER" in result["scalp_gate_reasons"]
+
+
+def test_scalp_recovery_trigger_can_authorize_65_plus_without_pattern(monkeypatch):
+    """A modest 5m recovery can keep Scalp alive without requiring Swing."""
+    rsi_values = iter([40.0, 35.0, 33.0])
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    candles_5m[-3] = candle(99.0, 99.5, 97.8, 98.0, 120.0)
+    candles_5m[-2] = candle(98.0, 99.0, 97.9, 98.6, 120.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.6"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_recovery_trigger_count"] >= dual_mode_strategy.SCALP_RECOVERY_TRIGGER_MIN
+    assert result["scalp_recovery_confirmation"] is True
+    assert result["scalp_gate"] is True
+    assert result["scalp_signal"] == "BUY"
+    assert result["trade_mode"] == "SCALP"
+
+
 def test_scalp_gate_rejects_without_confirmed_reversal():
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
-    candles_5m[-2] = candle(99.0, 101.0, 98.5, 100.2, 160.0)
-    candles_5m[-1] = candle(100.2, 100.4, 99.8, 100.0, 100.0)
+    candles_5m[-3] = candle(99.0, 101.0, 98.5, 100.2, 160.0)
+    candles_5m[-2] = candle(100.2, 100.4, 99.8, 100.0, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
     assert result["scalp_signal"] == "HOLD"
     assert result["scalp_gate"] is False
