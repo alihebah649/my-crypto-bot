@@ -142,6 +142,18 @@ class CoreExecutionGateway(ExecutionGateway):
             outcome = ExecutionOutcome.FAILED
 
         fees = getattr(getattr(result, "fees", None), "total", 0.0)
+        metadata = {"core_status": status_value}
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict):
+            # Paper execution records the exact post-execution cash balance.
+            # Propagate it through the Trade Manager boundary so the eventual
+            # SELL notification can show the balance at that specific exit,
+            # rather than the balance after later trades in the same cycle.
+            if "paper_cash_after" in raw_response:
+                metadata["paper_cash_after"] = float(raw_response["paper_cash_after"])
+            if "source" in raw_response:
+                metadata["source"] = raw_response["source"]
+
         return ExecutionOutcomeRecord(
             success=outcome in (ExecutionOutcome.SUCCESS, ExecutionOutcome.PARTIAL),
             outcome=outcome,
@@ -154,7 +166,7 @@ class CoreExecutionGateway(ExecutionGateway):
             client_order_id=getattr(result, "client_order_id", None),
             commission=float(fees),
             message=str(getattr(result, "message", "")),
-            metadata={"core_status": status_value},
+            metadata=metadata,
         )
 
     @staticmethod
