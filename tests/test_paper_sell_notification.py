@@ -41,6 +41,26 @@ def test_closed_paper_position_gets_sell_notification_once(monkeypatch):
     assert len(sent_messages) == 1
 
 
+def test_execution_time_cash_snapshot_is_used_for_delayed_notification(monkeypatch):
+    first = _closed_position()
+    first.symbol = "BTCUSDT"
+    first.exit_metadata["paper_cash_after"] = 501.23
+    second = _closed_position()
+    second.symbol = "ETHUSDT"
+    second.exit_metadata["paper_cash_after"] = 552.34
+    repository = _FakeRepository([first, second])
+    # This is the final cash after both sells. Notifications must not reuse it
+    # for both positions.
+    fake_runtime = SimpleNamespace(repository=repository, execution_adapter=SimpleNamespace(balance=SimpleNamespace(cash=552.34)))
+    sent_messages = []
+    monkeypatch.setattr(shadow_main, "runtime", fake_runtime)
+    monkeypatch.setattr(shadow_main._legacy, "send_telegram_message", lambda message: sent_messages.append(message) or True)
+
+    assert shadow_main._notify_closed_positions() == 2
+    assert "Paper cash: $501.23" in sent_messages[0]
+    assert "Paper cash: $552.34" in sent_messages[1]
+
+
 def test_failed_telegram_delivery_is_retried(monkeypatch):
     position = _closed_position(); repository = _FakeRepository([position])
     fake_runtime = SimpleNamespace(repository=repository, execution_adapter=SimpleNamespace(balance=SimpleNamespace(cash=949.90)))
