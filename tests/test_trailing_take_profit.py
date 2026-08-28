@@ -85,16 +85,18 @@ def test_trailing_exit_floor_moves_up_with_a_higher_peak_and_never_moves_down():
         position, risk_manager._required_net_profit_percent(position)
     )
 
-    # A new peak must raise the protected profit floor. A shallow pullback
-    # should therefore exit at a higher level than it would have before the
-    # new peak, while a deeper reversal is still allowed to trigger the trail.
+    # A new peak must raise the protected profit floor. A genuinely shallow
+    # pullback should remain inside the ATR trail, while a deeper reversal
+    # should trigger the exit. At this test's ATR (0.20%) and multiplier (1.5),
+    # 106 is already a ~1.85% reversal from the 108 peak and is therefore not
+    # a shallow pullback.
     position.highest_price = 108.0
     second_floor = risk_manager._trailing_take_profit_floor_percent(
         position, risk_manager._required_net_profit_percent(position)
     )
     assert second_floor > first_floor
 
-    position.current_price = 106.0
+    position.current_price = 107.8
     decision = risk_manager._check_trailing_stop(position)
     assert decision.should_exit is False
 
