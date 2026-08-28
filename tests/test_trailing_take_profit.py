@@ -76,6 +76,34 @@ def test_adaptive_profit_lock_allows_upside_then_exits_after_a_real_pullback():
     assert "Locked Net:" in decision.message
 
 
+def test_trailing_exit_floor_moves_up_with_a_higher_peak_and_never_moves_down():
+    position = make_position(100.0, 104.0, 99.0)
+    risk_manager = manager()
+
+    position.highest_price = 104.0
+    first_floor = risk_manager._trailing_take_profit_floor_percent(
+        position, risk_manager._required_net_profit_percent(position)
+    )
+
+    # A new peak must raise the protected profit floor. A shallow pullback
+    # should therefore exit at a higher level than it would have before the
+    # new peak, while a deeper reversal is still allowed to trigger the trail.
+    position.highest_price = 108.0
+    second_floor = risk_manager._trailing_take_profit_floor_percent(
+        position, risk_manager._required_net_profit_percent(position)
+    )
+    assert second_floor > first_floor
+
+    position.current_price = 106.0
+    decision = risk_manager._check_trailing_stop(position)
+    assert decision.should_exit is False
+
+    position.current_price = 105.0
+    decision = risk_manager._check_trailing_stop(position)
+    assert decision.should_exit is True
+    assert decision.reason is PositionExitReason.TRAILING_STOP
+
+
 def test_disabling_trailing_take_profit_preserves_hard_take_profit_behavior():
     position = make_position(100.0, 102.0, 99.0, take_profit=102.0)
     risk_manager = PositionRiskManager(
