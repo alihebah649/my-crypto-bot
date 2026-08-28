@@ -155,6 +155,13 @@ def _notify_closed_positions() -> int:
         exit_message = str(position.exit_metadata.get("exit_message", "")).strip()
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
+        # The notification can be delayed until after a full market cycle. Use
+        # the balance snapshot captured at the exact SELL execution when
+        # available; falling back to the live balance keeps compatibility with
+        # positions created before this snapshot was introduced.
+        paper_cash = position.exit_metadata.get("paper_cash_after")
+        if paper_cash is None:
+            paper_cash = runtime.execution_adapter.balance.cash
         message = (
             "=== PAPER SELL ===\n"
             f"Symbol: {position.symbol}\n"
@@ -167,7 +174,7 @@ def _notify_closed_positions() -> int:
             f"Fees: {position.total_fees:.4f}$\n"
             f"Net P&L: {position.realized_pnl:+.4f}$\n"
             + (f"Exit details: {exit_message}\n" if exit_message else "")
-            + f"Paper cash: ${runtime.execution_adapter.balance.cash:.2f}\n"
+            + f"Paper cash: ${float(paper_cash):.2f}\n"
             "PAPER ONLY"
         )
         if _legacy.send_telegram_message(message):
