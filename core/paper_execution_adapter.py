@@ -106,6 +106,7 @@ class PaperExecutionAdapter(ExecutionAdapter):
         else:
             return self._rejected(request, RejectReason.UNKNOWN)
 
+        cash_after = float(self.balance.cash)
         now = datetime.now(timezone.utc)
         trade_type = request.context.metadata.get("trade_type", TradeType.SCALPING_SWING.value)
         order_id = f"PAPER-{uuid4().hex[:16]}"
@@ -130,7 +131,14 @@ class PaperExecutionAdapter(ExecutionAdapter):
             submitted_at=now,
             completed_at=now,
             exchange=self.exchange_name,
-            raw_response={"source": ExecutionSource.PAPER.value, "trade_type": trade_type},
+            raw_response={
+                "source": ExecutionSource.PAPER.value,
+                "trade_type": trade_type,
+                # Snapshot the balance at the exact execution boundary. This
+                # prevents delayed SELL notifications from all showing the
+                # final cash balance after several later executions.
+                "paper_cash_after": cash_after,
+            },
         )
         self.orders[order_id] = result
         self._persist_state()
