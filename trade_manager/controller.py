@@ -83,6 +83,8 @@ class PositionController:
                 position.total_fees += outcome.commission
                 position.exit_metadata={"partial_exit_quantity":executed_qty,"partial_exit_price":exit_price,
                                         "partial_exit_time":time.time(),"execution_order_id":outcome.exchange_order_id}
+                if "paper_cash_after" in outcome.metadata:
+                    position.exit_metadata["paper_cash_after"] = float(outcome.metadata["paper_cash_after"])
                 position.status=PositionStatus.OPEN
                 self.repository.update(position)
                 return position
@@ -101,6 +103,8 @@ class PositionController:
                                     "exit_time":time.time(),"exchange_order_id":outcome.exchange_order_id,
                                     "executed_quantity":outcome.executed_quantity,"commission":outcome.commission,
                                     "max_profit_percent":position.max_profit_percent,"max_drawdown_percent":position.max_drawdown_percent}
+            if "paper_cash_after" in outcome.metadata:
+                position.exit_metadata["paper_cash_after"] = float(outcome.metadata["paper_cash_after"])
             self.repository.update(position);return position
 
     def execute_review_decision(self, position_id: str, should_exit: bool,
