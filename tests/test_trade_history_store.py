@@ -28,8 +28,8 @@ class FakeBinanceClient:
 
 def test_upsert_keeps_single_record_per_trade_id(tmp_path):
     store = TradeHistoryStore(tmp_path / "trade_history.json")
-    store.upsert(TradeHistoryRecord(trade_id="1", symbol="BTCUSDT", source="PAPER"))
-    store.upsert(TradeHistoryRecord(trade_id="1", symbol="BTCUSDT", source="PAPER", price=101.0))
+    store.upsert(TradeHistoryRecord(trade_id="1", symbol="BTCUSDT", source="PAPER", side="BUY"))
+    store.upsert(TradeHistoryRecord(trade_id="1", symbol="BTCUSDT", source="PAPER", side="BUY", price=101.0))
 
     records = store.all()
     assert len(records) == 1
