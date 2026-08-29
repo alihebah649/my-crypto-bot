@@ -16,6 +16,7 @@ import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
+from core.mtf_context_cache import MTFContextCache
 
 # -----------------------------------------------------------------------------
 # Multi-timeframe candle context
@@ -23,23 +24,44 @@ from core.brain_shadow_runtime import BrainShadowRuntime
 # The legacy market cycle still requests its original 5m/15m data. This adapter
 # adds 1h/4h data without changing the legacy fetch_strategy_data contract, then
 # injects those closed candles into the optional parameters of score_symbol.
+# 1h/4h are slow-moving context, so they are cached by timeframe. This keeps the
+# fast 5m/15m execution path responsive while still refreshing context before it
+# becomes stale. The cache is context-only and never creates an entry trigger.
 _mtf_candles: dict[str, dict[str, list[dict]]] = {}
+_mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
 
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
+
+    # Only fetch missing/expired higher-timeframe context. Fresh 1h/4h data is
+    # served directly from the cache, avoiding a 32-request MTF burst each cycle.
+    for symbol in TRADING_SYMBOLS:
+        for timeframe in ("1h", "4h"):
+            cached = _mtf_cache.get(symbol, timeframe)
+            if cached is not None:
+                result[symbol][timeframe] = cached
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         for symbol in TRADING_SYMBOLS:
-            jobs[executor.submit(_legacy.fetch_klines, symbol, "1h", 60)] = (symbol, "1h")
-            jobs[executor.submit(_legacy.fetch_klines, symbol, "4h", 60)] = (symbol, "4h")
+            for timeframe in ("1h", "4h"):
+                if timeframe in result[symbol]:
+                    continue
+                jobs[executor.submit(_legacy.fetch_klines, symbol, timeframe, 60)] = (symbol, timeframe)
+
         for future in concurrent.futures.as_completed(jobs):
             symbol, timeframe = jobs[future]
             try:
-                result[symbol][timeframe] = future.result()
+                candles = future.result()
+                _mtf_cache.put(symbol, timeframe, candles)
+                result[symbol][timeframe] = candles
             except Exception as exc:
                 _legacy.logger.warning("MTF kline fetch failed for %s %s: %s", symbol, timeframe, exc)
+                # A failed refresh must not silently substitute stale data. The
+                # strategy receives an empty context for this timeframe.
+
     return result
 
 
