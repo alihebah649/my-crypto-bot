@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from multi_timeframe_context import analyze_multi_timeframe_context
+
 # Scalp and Swing remain separate lanes. The scalp threshold stays at 65;
 # however, a context score alone is not an entry trigger anymore.
 SCALP_SCORE_THRESHOLD = 65
@@ -104,14 +106,7 @@ def _macro_support(price, lower, middle):
 
 
 def _scalp_recovery_confirmation(candles, current_rsi):
-    """Confirm that a 5m oversold/support candidate is actually recovering.
-
-    The previous implementation allowed the additive 65-point context score
-    itself to authorize a scalp entry. That made support + oversold + volume
-    sufficient even while price was still falling. This function deliberately
-    uses independent short-term trigger evidence instead of another additive
-    context score.
-    """
+    """Confirm that a 5m oversold/support candidate is actually recovering."""
     if len(candles) < 2:
         return False, 0, []
 
@@ -136,9 +131,17 @@ def _scalp_recovery_confirmation(candles, current_rsi):
     return count >= SCALP_RECOVERY_TRIGGER_MIN, count, reasons
 
 
-def score_symbol(symbol, ticker, candles_15m, candles_5m):
+def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candles_4h=None):
+    """Score one symbol while preserving the original four-argument contract.
+
+    5m remains the scalp trigger. 15m remains the setup timeframe. 1h and 4h
+    are context only and can penalize a weak counter-trend recovery, but they
+    cannot by themselves authorize an entry.
+    """
     c15 = candles_15m[:-1] if len(candles_15m) > 1 else []
     c5 = candles_5m[:-1] if len(candles_5m) > 1 else []
+    c1h = candles_1h[:-1] if candles_1h and len(candles_1h) > 1 else []
+    c4h = candles_4h[:-1] if candles_4h and len(candles_4h) > 1 else []
     price = float(ticker.get("lastPrice", 0))
     if len(c15) < 100 or len(c5) < 4 or price <= 0:
         return {
@@ -170,6 +173,11 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
     v15 = _volume_ratio(c15)
     v5 = _volume_ratio(c5)
     found, name, confirmed = bullish_pattern(c5)
+
+    mtf = analyze_multi_timeframe_context({"5m": c5, "15m": c15, "1h": c1h, "4h": c4h})
+    mtf_frames = mtf.get("frames", {})
+    mtf_bearish = bool(mtf.get("weak_countertrend_recovery"))
+    mtf_bullish = bool(mtf.get("aligned_bullish"))
 
     swing = 0
     swing_reasons = []
@@ -208,6 +216,9 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
     elif found:
         swing += 8
         swing_reasons.append(f"5M_{name}")
+    if mtf_bullish:
+        swing += 4
+        swing_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
     swing = min(swing, 100)
 
     macro_points, macro_reason = _macro_support(price, lo15, mid15)
@@ -248,13 +259,19 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
     elif found:
         scalp += 8
         scalp_reasons.append(f"5M_{name}")
-    scalp = min(scalp, 100)
 
-    # Root entry-quality rule:
-    # 65 is still the Scalp context score threshold, but context is NOT the
-    # trigger. A Scalp BUY needs either a confirmed bullish pattern or a
-    # genuine 5m recovery trigger. This prevents support/oversold/volume from
-    # authorizing a falling-knife entry merely because their points add to 65+.
+    # Multi-timeframe context is deliberately a light adjustment, not a new
+    # score lane. This preserves the 65-point Scalp identity while rewarding
+    # aligned higher-timeframe structure and penalizing the riskiest setup:
+    # a weak 5m recovery against bearish 15m + 1h + 4h structure.
+    if mtf_bullish:
+        scalp += 4
+        scalp_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
+    elif mtf_bearish:
+        scalp -= 8
+        scalp_reasons.append("MTF_COUNTERTREND_WARNING")
+    scalp = max(0, min(scalp, 100))
+
     confirmed_reversal = bool(found and confirmed)
     recovery_confirmation, recovery_trigger_count, recovery_trigger_reasons = _scalp_recovery_confirmation(c5, r5)
     high_confidence_recovery = bool(
@@ -262,13 +279,19 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
         and r5 <= 45.0
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and recovery_confirmation
+        and not mtf_bearish
     )
 
+    # Strong higher-timeframe bearish alignment vetoes only a weak recovery.
+    # A confirmed 5m reversal remains eligible so the scalp lane is not turned
+    # into a hidden swing strategy.
+    mtf_countertrend_veto = bool(mtf_bearish and not confirmed_reversal)
     gate = bool(
         macro_points > 0
         and r5 <= SCALP_MAX_RSI
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and (confirmed_reversal or recovery_confirmation)
+        and not mtf_countertrend_veto
     )
 
     gate_reasons = []
@@ -278,6 +301,10 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
         gate_reasons.append("5M_RSI_TOO_HIGH")
     if v5 < SCALP_MIN_VOLUME_RATIO:
         gate_reasons.append("5M_VOLUME_TOO_LOW")
+    if mtf_countertrend_veto:
+        gate_reasons.append("MTF_STRONG_COUNTERTREND_VETO")
+    elif mtf_bullish:
+        gate_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
     if confirmed_reversal:
         gate_reasons.append("CONFIRMED_5M_REVERSAL")
     elif recovery_confirmation:
@@ -302,6 +329,15 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
         selected = max(scalp, swing)
         reasons = scalp_reasons if scalp >= swing else swing_reasons
 
+    frame_bias = {
+        timeframe: str(ctx.get("bias", "UNKNOWN"))
+        for timeframe, ctx in mtf_frames.items()
+    }
+    frame_strength = {
+        timeframe: int(ctx.get("strength", 0) or 0)
+        for timeframe, ctx in mtf_frames.items()
+    }
+
     return {
         "symbol": symbol,
         "score": selected,
@@ -323,6 +359,22 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m):
         "scalp_max_rsi": SCALP_MAX_RSI,
         "scalp_rsi_rise_min": SCALP_RSI_RISE_MIN,
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
+        "mtf_context_available": bool(mtf.get("available")),
+        "mtf_bias": str(mtf.get("bias", "UNKNOWN")),
+        "mtf_net": int(mtf.get("net", 0) or 0),
+        "mtf_weighted_bull": int(mtf.get("weighted_bull", 0) or 0),
+        "mtf_weighted_bear": int(mtf.get("weighted_bear", 0) or 0),
+        "mtf_higher_timeframes_bearish": bool(mtf.get("higher_timeframes_bearish")),
+        "mtf_higher_timeframes_bullish": bool(mtf.get("higher_timeframes_bullish")),
+        "mtf_countertrend_warning": mtf_bearish,
+        "mtf_countertrend_veto": mtf_countertrend_veto,
+        "mtf_aligned_bullish": mtf_bullish,
+        "mtf_timeframe_bias": frame_bias,
+        "mtf_timeframe_strength": frame_strength,
+        "mtf_patterns": {
+            timeframe: list(ctx.get("patterns", []))
+            for timeframe, ctx in mtf_frames.items()
+        },
         "reasons": reasons,
         "swing_reasons": swing_reasons,
         "scalp_reasons": scalp_reasons,

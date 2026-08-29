@@ -7,6 +7,7 @@ cycle remain owned by the legacy runtime.
 """
 from __future__ import annotations
 import asyncio
+import concurrent.futures
 import threading
 import time
 from dataclasses import replace
@@ -16,7 +17,53 @@ from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
 
-_legacy.score_symbol = score_symbol
+# -----------------------------------------------------------------------------
+# Multi-timeframe candle context
+# -----------------------------------------------------------------------------
+# The legacy market cycle still requests its original 5m/15m data. This adapter
+# adds 1h/4h data without changing the legacy fetch_strategy_data contract, then
+# injects those closed candles into the optional parameters of score_symbol.
+_mtf_candles: dict[str, dict[str, list[dict]]] = {}
+_original_fetch_strategy_data = _legacy.fetch_strategy_data
+
+
+def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
+    result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
+    jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        for symbol in TRADING_SYMBOLS:
+            jobs[executor.submit(_legacy.fetch_klines, symbol, "1h", 60)] = (symbol, "1h")
+            jobs[executor.submit(_legacy.fetch_klines, symbol, "4h", 60)] = (symbol, "4h")
+        for future in concurrent.futures.as_completed(jobs):
+            symbol, timeframe = jobs[future]
+            try:
+                result[symbol][timeframe] = future.result()
+            except Exception as exc:
+                _legacy.logger.warning("MTF kline fetch failed for %s %s: %s", symbol, timeframe, exc)
+    return result
+
+
+def _fetch_strategy_data_with_mtf():
+    global _mtf_candles
+    base = _original_fetch_strategy_data()
+    _mtf_candles = _fetch_mtf_context()
+    return base
+
+
+def _score_symbol_with_mtf(symbol, ticker, candles_15m, candles_5m):
+    context = _mtf_candles.get(symbol, {})
+    return score_symbol(
+        symbol,
+        ticker,
+        candles_15m,
+        candles_5m,
+        context.get("1h", []),
+        context.get("4h", []),
+    )
+
+
+_legacy.fetch_strategy_data = _fetch_strategy_data_with_mtf
+_legacy.score_symbol = _score_symbol_with_mtf
 _legacy.BUY_SCORE_THRESHOLD = BUY_SCORE_THRESHOLD
 app = _legacy.app
 runtime = _legacy.runtime
@@ -124,7 +171,7 @@ def _home():
         "status": "healthy",
         "mode": "PAPER",
         "entrypoint": "shadow_main.py",
-        "strategy": "SCALP 5m reversal + 15m context / SWING 15m macro + 5m confirmation",
+        "strategy": "SCALP 5m trigger + 15m setup + 1h/4h multi-candle context / SWING 15m macro + 5m confirmation",
         "trade_manager": "modular_parts_1_8",
         "symbols": TRADING_SYMBOLS,
         "open_positions": len(positions),
@@ -155,10 +202,6 @@ def _notify_closed_positions() -> int:
         exit_message = str(position.exit_metadata.get("exit_message", "")).strip()
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
-        # The notification can be delayed until after a full market cycle. Use
-        # the balance snapshot captured at the exact SELL execution when
-        # available; falling back to the live balance keeps compatibility with
-        # positions created before this snapshot was introduced.
         paper_cash = position.exit_metadata.get("paper_cash_after")
         if paper_cash is None:
             paper_cash = runtime.execution_adapter.balance.cash
@@ -231,7 +274,7 @@ async def _dual_mode_engine():
     _legacy.send_telegram_message(
         "🟢 Paper Trading dual-mode strategy engine started on Render\n"
         f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
-        f"Scalp: 5m reversal + 15m context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
+        f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
         f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
         "Trade Manager: Parts 1-8\n"
         "Brain: SHADOW ONLY — no execution authority\n"
@@ -243,8 +286,6 @@ async def _dual_mode_engine():
         try:
             await asyncio.to_thread(_legacy.process_market_cycle)
             _run_brain_shadow_cycle()
-            # Independent lifecycle pass: exit management must not depend on
-            # the entry scanner or on a BUY signal for the same symbol.
             watchdog = runtime.run_exit_watchdog()
             if watchdog.exit_signals or watchdog.failed:
                 _legacy.logger.info(
