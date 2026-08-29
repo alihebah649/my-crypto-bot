@@ -15,10 +15,6 @@ def bearish(count=60, start=110.0):
     return [candle(start - i * 0.2, start - i * 0.1, start - i * 0.3, start - i * 0.25) for i in range(count)]
 
 
-def bullish(count=60, start=90.0):
-    return [candle(start + i * 0.2, start + i * 0.3, start + i * 0.1, start + i * 0.25) for i in range(count)]
-
-
 def test_optional_mtf_arguments_preserve_existing_contract():
     result = score_symbol("TESTUSDT", {"lastPrice": "106.5"}, rising(), rising(30))
     assert result["mtf_context_available"] is True
@@ -26,10 +22,6 @@ def test_optional_mtf_arguments_preserve_existing_contract():
 
 
 def test_strong_higher_timeframe_bearish_context_can_veto_weak_scalp_recovery(monkeypatch):
-    # Force the ordinary 5m setup above the 65 context threshold, while making
-    # the multi-timeframe layer see a bearish 15m/1h/4h structure. No confirmed
-    # 5m reversal is supplied, so this is the exact falling-knife case we want
-    # to reject.
     monkeypatch.setattr("dual_mode_strategy.calculate_rsi", lambda prices, period=14: 35.0)
     monkeypatch.setattr("dual_mode_strategy.calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr("dual_mode_strategy._volume_ratio", lambda candles, window=20: 1.20)
@@ -42,14 +34,7 @@ def test_strong_higher_timeframe_bearish_context_can_veto_weak_scalp_recovery(mo
     c1h = bearish(60)
     c4h = bearish(60)
 
-    result = score_symbol(
-        "TESTUSDT",
-        {"lastPrice": "98.7"},
-        c15,
-        c5,
-        c1h,
-        c4h,
-    )
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.7"}, c15, c5, c1h, c4h)
 
     assert result["mtf_higher_timeframes_bearish"] is True
     assert result["mtf_countertrend_warning"] is True
@@ -58,23 +43,14 @@ def test_strong_higher_timeframe_bearish_context_can_veto_weak_scalp_recovery(mo
     assert "MTF_STRONG_COUNTERTREND_VETO" in result["scalp_gate_reasons"]
 
 
-def test_confirmed_5m_reversal_is_not_blocked_by_higher_timeframe_context():
+def test_confirmed_5m_reversal_is_not_blocked_by_higher_timeframe_context(monkeypatch):
+    monkeypatch.setattr("dual_mode_strategy.bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
     c15 = bearish(130)
     c5 = rising(30, 100.0)
     c1h = bearish(60)
     c4h = bearish(60)
 
-    result = score_symbol(
-        "TESTUSDT",
-        {"lastPrice": "106.0"},
-        c15,
-        c5,
-        c1h,
-        c4h,
-    )
+    result = score_symbol("TESTUSDT", {"lastPrice": "106.0"}, c15, c5, c1h, c4h)
 
-    # The test focuses on the architectural rule: higher timeframes cannot
-    # veto a confirmed 5m reversal merely because their own candle context is
-    # bearish. Exact BUY eligibility still depends on the normal 15m setup.
     assert result["mtf_higher_timeframes_bearish"] is True
     assert result["mtf_countertrend_veto"] is False
