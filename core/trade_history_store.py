@@ -14,7 +14,7 @@ class TradeHistoryRecord:
     trade_id: str
     symbol: str
     source: str
-    side: str
+    side: str = ""
     order_id: str = ""
     price: float = 0.0
     quantity: float = 0.0
