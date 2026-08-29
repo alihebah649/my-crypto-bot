@@ -72,3 +72,35 @@ def test_does_not_claim_entry_or_change_existing_score():
     assert result["window_5"] == 5
     assert result["window_7"] == 7
     assert result["window_8"] == 8
+
+
+def test_three_bullish_advance_has_correct_chronological_order():
+    candles = [
+        candle(100, 101.2, 99.8, 101),
+        candle(101, 102.2, 100.8, 102),
+        candle(102, 103.2, 101.8, 103),
+        candle(103, 104, 102, 103.5),
+        candle(103.5, 104.5, 102.5, 104),
+        candle(104, 105, 103, 104.5),
+        candle(104.5, 105.5, 103.5, 105),
+        candle(105, 106, 104, 105.5),
+    ]
+    result = analyze_multi_candle_context(candles)
+    assert "THREE_BULLISH_ADVANCE" in result["patterns"]
+    assert "THREE_BEARISH_DECLINE" not in result["patterns"]
+
+
+def test_three_bearish_decline_has_correct_chronological_order():
+    candles = [
+        candle(103, 103.2, 101.8, 102),
+        candle(102, 102.2, 100.8, 101),
+        candle(101, 101.2, 99.8, 100),
+        candle(100, 100.5, 99, 99.5),
+        candle(99.5, 100, 98.5, 99),
+        candle(99, 99.5, 98, 98.5),
+        candle(98.5, 99, 97.5, 98),
+        candle(98, 98.5, 97, 97.5),
+    ]
+    result = analyze_multi_candle_context(candles)
+    assert "THREE_BEARISH_DECLINE" in result["patterns"]
+    assert "THREE_BULLISH_ADVANCE" not in result["patterns"]
