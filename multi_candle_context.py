@@ -74,12 +74,14 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
     bull_score = 0
     bear_score = 0
 
-    # Three-candle directional structure.
+    # Three-candle directional structure. Candles are chronological (oldest -> newest).
+    # The previous implementation compared closes in the reverse direction and
+    # could label a falling sequence as a bullish advance (and vice versa).
     a, b, c = c3
-    if _bull(a) and _bull(b) and _bull(c) and float(a["close"]) > float(b["close"]) > float(c["close"]):
+    if _bull(a) and _bull(b) and _bull(c) and float(a["close"]) < float(b["close"]) < float(c["close"]):
         patterns.append("THREE_BULLISH_ADVANCE")
         bull_score += 2
-    if _bear(a) and _bear(b) and _bear(c) and float(a["close"]) < float(b["close"]) < float(c["close"]):
+    if _bear(a) and _bear(b) and _bear(c) and float(a["close"]) > float(b["close"]) > float(c["close"]):
         patterns.append("THREE_BEARISH_DECLINE")
         bear_score += 2
 
