@@ -1,5 +1,7 @@
 """8.8 - Closed-position history and archival."""
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import json
+import os
 import threading
 import time
 from typing import Dict, List, Optional
@@ -37,13 +39,39 @@ class PositionHistoryRecord:
 
 
 class PositionHistoryRepository:
-    def __init__(self):
+    def __init__(self, path: Optional[str] = None):
         self._records: Dict[str, PositionHistoryRecord] = {}
         self._lock = threading.RLock()
+        self.path = path or os.path.join("data", "position_history.json")
+        self._load()
+
+    def _load(self) -> None:
+        with self._lock:
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if not isinstance(payload, list):
+                    return
+                for item in payload:
+                    record = PositionHistoryRecord(**item)
+                    self._records[record.position_id] = record
+            except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError):
+                return
+
+    def _persist(self) -> None:
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp = self.path + ".tmp"
+        payload = [asdict(record) for record in self._records.values()]
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, self.path)
 
     def add_record(self, record: PositionHistoryRecord) -> None:
         with self._lock:
             self._records[record.position_id] = record
+            self._persist()
 
     def get_all_records(self) -> List[PositionHistoryRecord]:
         with self._lock:
@@ -51,8 +79,8 @@ class PositionHistoryRepository:
 
 
 class PositionHistoryService:
-    def __init__(self, calculator=None):
-        self.repository = PositionHistoryRepository()
+    def __init__(self, calculator=None, repository=None):
+        self.repository = repository or PositionHistoryRepository()
 
     def record_closed_position(self, position: Position) -> PositionHistoryRecord:
         if position.status != PositionStatus.CLOSED:
