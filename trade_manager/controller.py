@@ -58,7 +58,13 @@ class PositionController:
             if not decision.should_exit:return position
             if position.status not in {PositionStatus.OPEN,PositionStatus.HOLD,PositionStatus.REVIEW_REQUIRED}:return None
             if self.execution_gateway is None:
+                # Fail closed: local state must never claim a sale that was not executed.
                 return None
+
+            # A fee-aware Break-Even is a net-protection floor, not merely a
+            # price-above-entry trigger. Never submit a BE exit while the
+            # requested execution price is below the calculated round-trip
+            # fee-adjusted break-even price.
             if decision.reason is PositionExitReason.BREAK_EVEN:
                 break_even_price = calculator.break_even_price(position)
                 requested_exit_price = decision.exit_price if decision.exit_price > 0 else position.current_price
@@ -70,8 +76,12 @@ class PositionController:
                 return None
             executed_qty=min(position.quantity,outcome.executed_quantity)
             exit_price=outcome.average_price
+            # Some lightweight test/integration gateways predate the optional
+            # outcome metadata field. Treat missing metadata as empty metadata;
+            # the execution itself remains authoritative for closing the trade.
             outcome_metadata = getattr(outcome, "metadata", {}) or {}
             if executed_qty < position.quantity:
+                # Preserve the remaining owned asset as an active spot position.
                 original_qty=position.quantity
                 position.quantity=original_qty-executed_qty
                 position.current_price=exit_price
