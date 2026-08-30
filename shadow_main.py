@@ -18,15 +18,6 @@ from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_
 from core.brain_shadow_runtime import BrainShadowRuntime
 from core.mtf_context_cache import MTFContextCache
 
-# -----------------------------------------------------------------------------
-# Multi-timeframe candle context
-# -----------------------------------------------------------------------------
-# The legacy market cycle still requests its original 5m/15m data. This adapter
-# adds 1h/4h data without changing the legacy fetch_strategy_data contract, then
-# injects those closed candles into the optional parameters of score_symbol.
-# 1h/4h are slow-moving context, so they are cached by timeframe. This keeps the
-# fast 5m/15m execution path responsive while still refreshing context before it
-# becomes stale. The cache is context-only and never creates an entry trigger.
 _mtf_candles: dict[str, dict[str, list[dict]]] = {}
 _mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
@@ -35,22 +26,17 @@ _original_fetch_strategy_data = _legacy.fetch_strategy_data
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
-
-    # Only fetch missing/expired higher-timeframe context. Fresh 1h/4h data is
-    # served directly from the cache, avoiding a 32-request MTF burst each cycle.
     for symbol in TRADING_SYMBOLS:
         for timeframe in ("1h", "4h"):
             cached = _mtf_cache.get(symbol, timeframe)
             if cached is not None:
                 result[symbol][timeframe] = cached
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         for symbol in TRADING_SYMBOLS:
             for timeframe in ("1h", "4h"):
                 if timeframe in result[symbol]:
                     continue
                 jobs[executor.submit(_legacy.fetch_klines, symbol, timeframe, 60)] = (symbol, timeframe)
-
         for future in concurrent.futures.as_completed(jobs):
             symbol, timeframe = jobs[future]
             try:
@@ -59,9 +45,6 @@ def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
                 result[symbol][timeframe] = candles
             except Exception as exc:
                 _legacy.logger.warning("MTF kline fetch failed for %s %s: %s", symbol, timeframe, exc)
-                # A failed refresh must not silently substitute stale data. The
-                # strategy receives an empty context for this timeframe.
-
     return result
 
 
@@ -74,14 +57,7 @@ def _fetch_strategy_data_with_mtf():
 
 def _score_symbol_with_mtf(symbol, ticker, candles_15m, candles_5m):
     context = _mtf_candles.get(symbol, {})
-    return score_symbol(
-        symbol,
-        ticker,
-        candles_15m,
-        candles_5m,
-        context.get("1h", []),
-        context.get("4h", []),
-    )
+    return score_symbol(symbol, ticker, candles_15m, candles_5m, context.get("1h", []), context.get("4h", []))
 
 
 _legacy.fetch_strategy_data = _fetch_strategy_data_with_mtf
@@ -92,24 +68,16 @@ runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 brain_shadow_runtime = BrainShadowRuntime()
 
-# -----------------------------------------------------------------------------
-# Daily report: show realized net P&L only, without capital/cash in the result.
-# -----------------------------------------------------------------------------
 _original_build_daily_report = _legacy.build_daily_report
 
 
 def _net_only_daily_report(date_key=None) -> str:
     report = _original_build_daily_report(date_key)
     lines = [line for line in report.splitlines() if not line.startswith("💵 Paper cash:")]
-    report = "\n".join(lines)
-    return report.replace("TOTAL", "NET P&L", 1)
+    return "\n".join(lines).replace("TOTAL", "NET P&L", 1)
 
 
 _legacy.build_daily_report = _net_only_daily_report
-
-# -----------------------------------------------------------------------------
-# Dual-mode Trade Manager boundary
-# -----------------------------------------------------------------------------
 _current_trade_mode = {"value": "SWING"}
 _original_controller_evaluate = runtime.risk_controller.evaluate
 _original_portfolio_snapshot = runtime.portfolio_provider.snapshot
@@ -119,14 +87,7 @@ _original_send_telegram_message = _legacy.send_telegram_message
 
 def _mode_aware_risk_evaluate(*, account, symbol, signal, market, symbol_exposure=None, correlation_score=0.0):
     mode = _current_trade_mode["value"]
-    return _original_controller_evaluate(
-        account=account,
-        symbol=symbol,
-        signal=mode,
-        market=market,
-        symbol_exposure=symbol_exposure,
-        correlation_score=correlation_score,
-    )
+    return _original_controller_evaluate(account=account, symbol=symbol, signal=mode, market=market, symbol_exposure=symbol_exposure, correlation_score=correlation_score)
 
 
 runtime.risk_controller.evaluate = _mode_aware_risk_evaluate
@@ -134,10 +95,7 @@ runtime.risk_controller.evaluate = _mode_aware_risk_evaluate
 
 def _lane_aware_portfolio_snapshot():
     snapshot = _original_portfolio_snapshot()
-    active = [
-        p for p in runtime.repository.get_open_positions()
-        if p.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
-    ]
+    active = [p for p in runtime.repository.get_open_positions() if p.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}]
     scalp_count = sum(1 for p in active if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP")
     swing_count = sum(1 for p in active if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING")
     return replace(snapshot, scalp_open_positions=scalp_count, swing_open_positions=swing_count)
@@ -147,14 +105,20 @@ runtime.portfolio_provider.snapshot = _lane_aware_portfolio_snapshot
 
 
 def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss: float):
-    mode = str(_legacy.latest_scores.get(symbol, {}).get("trade_mode", "SWING")).upper()
+    decision = _legacy.latest_scores.get(symbol, {}) or {}
+    mode = str(decision.get("trade_mode", "SWING")).upper()
     if mode not in {"SCALP", "SWING"}:
         mode = "SWING"
     _current_trade_mode["value"] = mode
     position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
     if position is not None:
+        # Preserve the complete strategy decision snapshot at the moment of entry.
+        # This is observational metadata only; it does not affect execution.
+        strategy_context = dict(decision)
         position.entry_metadata["trade_mode"] = mode
+        position.entry_metadata["strategy_context"] = strategy_context
         position.metadata["trade_mode"] = mode
+        position.metadata["strategy_context"] = strategy_context
         runtime.repository.update(position)
         runtime.last_entry_diagnostics.setdefault(symbol, {})["trade_mode"] = mode
     return position
@@ -189,32 +153,10 @@ _legacy.send_telegram_message = _send_telegram_with_trade_type
 def _home():
     positions = runtime.facade.get_open_positions()
     metrics = runtime.facade.get_metrics()
-    return jsonify({
-        "status": "healthy",
-        "mode": "PAPER",
-        "entrypoint": "shadow_main.py",
-        "strategy": "SCALP 5m trigger + 15m setup + 1h/4h multi-candle context / SWING 15m macro + 5m confirmation",
-        "trade_manager": "modular_parts_1_8",
-        "symbols": TRADING_SYMBOLS,
-        "open_positions": len(positions),
-        "scalp_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP"),
-        "swing_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING"),
-        "scalp_max_open_positions": runtime.risk_config.exposure.max_scalp_positions,
-        "swing_max_open_positions": runtime.risk_config.exposure.max_swing_positions,
-        "metrics": getattr(metrics, "__dict__", str(metrics)),
-        "score_threshold": SWING_SCORE_THRESHOLD,
-        "scalp_score_threshold": SCALP_SCORE_THRESHOLD,
-        "swing_score_threshold": SWING_SCORE_THRESHOLD,
-        "telegram_configured": bool(_legacy.TELEGRAM_TOKEN and _legacy.TELEGRAM_CHAT_ID),
-        "exit_watchdog": runtime.last_exit_watchdog,
-        "brain_shadow": brain_shadow_runtime.snapshot(),
-    }), 200
-
-app.view_functions["home"] = _home
+    return jsonify({"status": "healthy", "mode": "PAPER", "entrypoint": "shadow_main.py", "strategy": "SCALP 5m trigger + 15m setup + 1h/4h multi-candle context / SWING 15m macro + 5m confirmation", "trade_manager": "modular_parts_1_8", "symbols": TRADING_SYMBOLS, "open_positions": len(positions), "scalp_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP"), "swing_open_positions": sum(1 for p in positions if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING"), "scalp_max_open_positions": runtime.risk_config.exposure.max_scalp_positions, "swing_max_open_positions": runtime.risk_config.exposure.max_swing_positions, "metrics": getattr(metrics, "__dict__", str(metrics)), "score_threshold": SWING_SCORE_THRESHOLD, "scalp_score_threshold": SCALP_SCORE_THRESHOLD, "swing_score_threshold": SWING_SCORE_THRESHOLD, "telegram_configured": bool(_legacy.TELEGRAM_TOKEN and _legacy.TELEGRAM_CHAT_ID), "exit_watchdog": runtime.last_exit_watchdog, "brain_shadow": brain_shadow_runtime.snapshot()}), 200
 
 
 def _notify_closed_positions() -> int:
-    """Send exactly-once SELL notifications for closed Paper positions."""
     sent = 0
     for position in runtime.repository.get_closed_positions():
         if position.exit_metadata.get("telegram_notification_sent"):
@@ -227,21 +169,7 @@ def _notify_closed_positions() -> int:
         paper_cash = position.exit_metadata.get("paper_cash_after")
         if paper_cash is None:
             paper_cash = runtime.execution_adapter.balance.cash
-        message = (
-            "=== PAPER SELL ===\n"
-            f"Symbol: {position.symbol}\n"
-            f"Reason: {reason}\n"
-            f"Quantity: {position.quantity:.12f}\n"
-            f"Entry: {position.entry_price:.8f}\n"
-            f"Exit: {exit_price:.8f}\n"
-            f"Gross P&L: {position.gross_pnl:+.4f}$\n"
-            f"P&L %: {pnl_pct:+.2f}%\n"
-            f"Fees: {position.total_fees:.4f}$\n"
-            f"Net P&L: {position.realized_pnl:+.4f}$\n"
-            + (f"Exit details: {exit_message}\n" if exit_message else "")
-            + f"Paper cash: ${float(paper_cash):.2f}\n"
-            "PAPER ONLY"
-        )
+        message = ("=== PAPER SELL ===\n" f"Symbol: {position.symbol}\n" f"Reason: {reason}\n" f"Quantity: {position.quantity:.12f}\n" f"Entry: {position.entry_price:.8f}\n" f"Exit: {exit_price:.8f}\n" f"Gross P&L: {position.gross_pnl:+.4f}$\n" f"P&L %: {pnl_pct:+.2f}%\n" f"Fees: {position.total_fees:.4f}$\n" f"Net P&L: {position.realized_pnl:+.4f}$\n" + (f"Exit details: {exit_message}\n" if exit_message else "") + f"Paper cash: ${float(paper_cash):.2f}\n" "PAPER ONLY")
         if _legacy.send_telegram_message(message):
             position.exit_metadata["telegram_notification_sent"] = True
             position.exit_metadata["telegram_notification_sent_at"] = time.time()
@@ -262,46 +190,20 @@ def _sanitize_entry_diagnostics() -> None:
 
 
 def _run_brain_shadow_cycle() -> None:
-    """Evaluate Brain beside strategy output; never alter trading authority."""
     latest = getattr(_legacy, "latest_scores", {}) or {}
-    open_symbols = {
-        str(position.symbol).upper()
-        for position in runtime.repository.get_open_positions()
-        if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
-    }
+    open_symbols = {str(position.symbol).upper() for position in runtime.repository.get_open_positions() if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}}
     for symbol, strategy in latest.items():
         try:
-            record = brain_shadow_runtime.evaluate_entry(
-                str(symbol).upper(),
-                strategy,
-                existing_position=str(symbol).upper() in open_symbols,
-            )
+            record = brain_shadow_runtime.evaluate_entry(str(symbol).upper(), strategy, existing_position=str(symbol).upper() in open_symbols)
             runtime.last_entry_diagnostics.setdefault(str(symbol).upper(), {})["brain_shadow"] = record.to_dict()
             if not record.agreement:
-                _legacy.logger.info(
-                    "Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s",
-                    record.symbol,
-                    record.trade_mode,
-                    record.strategy_action,
-                    record.strategy_score,
-                    record.brain_action,
-                    record.brain_confidence,
-                    record.brain_reason,
-                )
+                _legacy.logger.info("Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s", record.symbol, record.trade_mode, record.strategy_action, record.strategy_score, record.brain_action, record.brain_confidence, record.brain_reason)
         except Exception:
             _legacy.logger.exception("Brain shadow evaluation failed for %s", symbol)
 
 
 async def _dual_mode_engine():
-    _legacy.send_telegram_message(
-        "🟢 Paper Trading dual-mode strategy engine started on Render\n"
-        f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
-        f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
-        f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
-        "Trade Manager: Parts 1-8\n"
-        "Brain: SHADOW ONLY — no execution authority\n"
-        "No real exchange orders are submitted."
-    )
+    _legacy.send_telegram_message("🟢 Paper Trading dual-mode strategy engine started on Render\n" f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n" f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n" f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n" "Trade Manager: Parts 1-8\n" "Brain: SHADOW ONLY — no execution authority\n" "No real exchange orders are submitted.")
     _notify_closed_positions()
     while True:
         started = time.monotonic()
@@ -310,10 +212,7 @@ async def _dual_mode_engine():
             _run_brain_shadow_cycle()
             watchdog = runtime.run_exit_watchdog()
             if watchdog.exit_signals or watchdog.failed:
-                _legacy.logger.info(
-                    "Exit watchdog: evaluated=%d signals=%d closed=%d failed=%d",
-                    watchdog.evaluated, watchdog.exit_signals, watchdog.closed, watchdog.failed,
-                )
+                _legacy.logger.info("Exit watchdog: evaluated=%d signals=%d closed=%d failed=%d", watchdog.evaluated, watchdog.exit_signals, watchdog.closed, watchdog.failed)
             _sanitize_entry_diagnostics()
         except Exception:
             _legacy.logger.exception("Dual-mode paper market cycle failed")
