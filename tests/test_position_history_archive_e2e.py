@@ -1,7 +1,7 @@
 import pytest
 
 from trade_manager.controller import PositionController
-from trade_manager.history import PositionHistoryService
+from trade_manager.history import PositionHistoryRepository, PositionHistoryService
 from trade_manager.models import Position, PositionSide, PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 
@@ -65,9 +65,10 @@ class _Calculator:
         return Result()
 
 
-def test_closed_position_is_archived_with_entry_and_exit_metadata():
+def test_closed_position_is_archived_with_entry_and_exit_metadata(tmp_path):
     repo = _Repository()
-    history = PositionHistoryService()
+    history_repo = PositionHistoryRepository(str(tmp_path / "position_history.json"))
+    history = PositionHistoryService(repository=history_repo)
     controller = PositionController(_Risk(), repo, _Gateway(), history_service=history)
 
     position = Position(
@@ -98,7 +99,7 @@ def test_closed_position_is_archived_with_entry_and_exit_metadata():
     assert record.realized_pnl == pytest.approx(0.799)
 
 
-def test_failed_exit_does_not_archive_position():
+def test_failed_exit_does_not_archive_position(tmp_path):
     class FailedGateway:
         def close_spot(self, **kwargs):
             class Outcome:
@@ -111,7 +112,8 @@ def test_failed_exit_does_not_archive_position():
             return Outcome()
 
     repo = _Repository()
-    history = PositionHistoryService()
+    history_repo = PositionHistoryRepository(str(tmp_path / "position_history.json"))
+    history = PositionHistoryService(repository=history_repo)
     controller = PositionController(_Risk(), repo, FailedGateway(), history_service=history)
     position = Position(
         position_id="pos-2", symbol="BTCUSDT", side=PositionSide.LONG,
