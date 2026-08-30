@@ -16,10 +16,12 @@ from .risk_manager import PositionExitDecision, PositionExitReason, PositionRisk
 
 class PositionController:
     def __init__(self, risk_manager: PositionRiskManager, repository: PositionRepository,
-                 execution_gateway: Optional[ExecutionGateway] = None):
+                 execution_gateway: Optional[ExecutionGateway] = None,
+                 history_service=None):
         self.repository = repository
         self._risk_manager = risk_manager
         self.execution_gateway = execution_gateway
+        self.history_service = history_service
         self._lock = threading.RLock()
 
     def add_position(self, position: Position) -> None:
@@ -109,7 +111,10 @@ class PositionController:
                                     "max_profit_percent":position.max_profit_percent,"max_drawdown_percent":position.max_drawdown_percent}
             if "paper_cash_after" in outcome_metadata:
                 position.exit_metadata["paper_cash_after"] = float(outcome_metadata["paper_cash_after"])
-            self.repository.update(position);return position
+            self.repository.update(position)
+            if self.history_service is not None:
+                self.history_service.record_closed_position(position)
+            return position
 
     def execute_review_decision(self, position_id: str, should_exit: bool,
                                 calculator: PositionCalculator) -> Optional[Position]:
