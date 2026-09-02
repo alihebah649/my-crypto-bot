@@ -3,12 +3,27 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import shadow_main
+from trade_manager.models import Position, PositionSide, PositionStatus
+
+
+def _position() -> Position:
+    return Position(
+        position_id="test-scalp-handoff",
+        symbol="FETUSDT",
+        side=PositionSide.LONG,
+        status=PositionStatus.OPEN,
+        quantity=0.5,
+        entry_price=100.0,
+        current_price=100.0,
+        stop_loss=96.0,
+        take_profit=None,
+    )
 
 
 def test_shadow_entry_handoff_preserves_explicit_scalp_mode(monkeypatch):
     symbol = "FETUSDT"
     captured = {}
-    position = SimpleNamespace(entry_metadata={}, metadata={})
+    position = _position()
 
     def fake_runtime_open_position(symbol, entry_price, stop_loss, trade_mode="SWING"):
         captured["trade_mode"] = trade_mode
@@ -29,7 +44,7 @@ def test_shadow_entry_handoff_preserves_explicit_scalp_mode(monkeypatch):
 
 def test_invalid_strategy_mode_falls_back_to_swing(monkeypatch):
     captured = {}
-    position = SimpleNamespace(entry_metadata={}, metadata={})
+    position = _position()
 
     def fake_runtime_open_position(symbol, entry_price, stop_loss, trade_mode="SWING"):
         captured["trade_mode"] = trade_mode
