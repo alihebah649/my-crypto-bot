@@ -13,14 +13,25 @@ def candles(count: int = 30) -> list[dict]:
 
 def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
     """Lock the observed calibration gap without changing production scoring."""
-    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 48.66 if len(prices) >= 29 else 47.0)
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "calculate_rsi",
+        lambda prices, period=14: 48.66,
+    )
     monkeypatch.setattr(
         dual_mode_strategy,
         "calculate_bollinger",
-        lambda candles, period=20, deviations=2.0: (99.5, 110.0, 121.0),
+        lambda candles, period=20, deviations=2.0: (
+            (95.0, 110.0, 121.0) if len(candles) >= 100 else (99.5, 110.0, 121.0)
+        ),
     )
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.127)
     monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "_scalp_recovery_confirmation",
+        lambda candles, current_rsi: (True, 2, ["5M_PRICE_RECOVERY", "5M_BULLISH_BODY"]),
+    )
     monkeypatch.setattr(
         dual_mode_strategy,
         "analyze_multi_timeframe_context",
@@ -40,10 +51,6 @@ def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
 
     candles_15m = candles(130)
     candles_5m = candles(30)
-    # score_symbol excludes the still-forming last candle, so the recovery
-    # pair must be placed at [-3] and [-2] in the raw input list.
-    candles_5m[-3] = candle(100.0, 100.5, 98.5, 99.0, 112.7)
-    candles_5m[-2] = candle(99.0, 101.0, 98.8, 100.0, 112.7)
 
     result = dual_mode_strategy.score_symbol(
         "FETUSDT",
@@ -52,6 +59,8 @@ def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
         candles_5m,
     )
 
+    # 15m macro support = 6, 5m near support = 16, volume = 8,
+    # recovery confirmation = 4 => 34. RSI 48.66 contributes no points.
     assert result["scalp_gate"] is True
     assert result["scalp_recovery_confirmation"] is True
     assert result["scalp_score"] == 34
