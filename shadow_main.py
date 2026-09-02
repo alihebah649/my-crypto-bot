@@ -11,6 +11,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import replace
+import requests
 from flask import jsonify
 import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
@@ -21,6 +22,111 @@ from core.mtf_context_cache import MTFContextCache
 _mtf_candles: dict[str, dict[str, list[dict]]] = {}
 _mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
+
+# -----------------------------------------------------------------------------
+# Binance REST rate-limit / IP-ban guard
+# -----------------------------------------------------------------------------
+# A Binance 418/429 must not cause the paper engine to hammer the same endpoint
+# every 30 seconds. The guard is deliberately limited to public market-data
+# access and has no effect on strategy thresholds, Trade Manager, or execution.
+_binance_block_until = 0.0
+_binance_backoff_seconds = 300.0
+_binance_guard = {
+    "state": "READY",
+    "status_code": None,
+    "blocked_until": 0.0,
+    "retry_after_seconds": 0.0,
+    "last_error": None,
+    "last_path": None,
+}
+_original_fetch_24h_tickers = _legacy.fetch_24h_tickers
+_original_fetch_klines = _legacy.fetch_klines
+
+
+def _retry_after_seconds(exc: Exception, default: float) -> float:
+    response = getattr(exc, "response", None)
+    header = response.headers.get("Retry-After") if response is not None else None
+    if header:
+        try:
+            return max(1.0, float(header))
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def _set_binance_block(exc: Exception, path: str) -> None:
+    global _binance_block_until, _binance_backoff_seconds
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    retry_after = _retry_after_seconds(exc, _binance_backoff_seconds)
+    _binance_block_until = time.time() + retry_after
+    _binance_guard.update({
+        "state": "BLOCKED",
+        "status_code": status,
+        "blocked_until": _binance_block_until,
+        "retry_after_seconds": retry_after,
+        "last_error": f"{type(exc).__name__}: {exc}",
+        "last_path": path,
+    })
+    if status == 418:
+        _binance_backoff_seconds = min(max(_binance_backoff_seconds * 2.0, retry_after), 3600.0)
+    else:
+        _binance_backoff_seconds = min(max(60.0, retry_after), 900.0)
+    _legacy.logger.warning(
+        "Binance market-data guard activated: HTTP %s path=%s retry_in=%.1fs",
+        status, path, retry_after,
+    )
+
+
+def _binance_guard_active() -> bool:
+    if time.time() < _binance_block_until:
+        return True
+    if _binance_guard.get("state") == "BLOCKED":
+        _binance_guard["state"] = "READY"
+        _binance_guard["blocked_until"] = 0.0
+    return False
+
+
+def _guarded_fetch_24h_tickers():
+    global _binance_backoff_seconds
+    if _binance_guard_active():
+        return {}
+    try:
+        data = _original_fetch_24h_tickers()
+        _binance_guard.update({"state": "READY", "status_code": None, "last_error": None, "last_path": None})
+        _binance_backoff_seconds = 300.0
+        return data
+    except requests.HTTPError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {418, 429}:
+            _set_binance_block(exc, "/api/v3/ticker/24hr")
+            return {}
+        raise
+
+
+def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
+    if _binance_guard_active():
+        return []
+    try:
+        return _original_fetch_klines(symbol, interval, limit)
+    except requests.HTTPError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {418, 429}:
+            _set_binance_block(exc, f"/api/v3/klines:{symbol}:{interval}")
+            return []
+        raise
+
+
+_legacy.fetch_24h_tickers = _guarded_fetch_24h_tickers
+_legacy.fetch_klines = _guarded_fetch_klines
+
+
+def _market_data_guard_snapshot() -> dict:
+    remaining = max(0.0, _binance_block_until - time.time())
+    snapshot = dict(_binance_guard)
+    snapshot["blocked_for_seconds"] = round(remaining, 1)
+    snapshot["blocked"] = remaining > 0
+    return snapshot
 
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
@@ -229,6 +335,7 @@ def _diagnostics():
         "swing_score_threshold": SWING_SCORE_THRESHOLD,
         "scores": rows,
         "score_errors": getattr(_legacy, "last_score_diagnostics", {}),
+        "market_data_guard": _market_data_guard_snapshot(),
         "entry_diagnostics": runtime.last_entry_diagnostics,
     }), 200
 
