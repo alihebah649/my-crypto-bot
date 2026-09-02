@@ -18,9 +18,6 @@ from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_
 from core.brain_shadow_runtime import BrainShadowRuntime
 from core.mtf_context_cache import MTFContextCache
 
-# -----------------------------------------------------------------------------
-# Multi-timeframe candle context
-# -----------------------------------------------------------------------------
 _mtf_candles: dict[str, dict[str, list[dict]]] = {}
 _mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
@@ -60,14 +57,7 @@ def _fetch_strategy_data_with_mtf():
 
 def _score_symbol_with_mtf(symbol, ticker, candles_15m, candles_5m):
     context = _mtf_candles.get(symbol, {})
-    return score_symbol(
-        symbol,
-        ticker,
-        candles_15m,
-        candles_5m,
-        context.get("1h", []),
-        context.get("4h", []),
-    )
+    return score_symbol(symbol, ticker, candles_15m, candles_5m, context.get("1h", []), context.get("4h", []))
 
 
 _legacy.fetch_strategy_data = _fetch_strategy_data_with_mtf
@@ -81,11 +71,6 @@ brain_shadow_runtime = BrainShadowRuntime()
 # -----------------------------------------------------------------------------
 # Diagnostic hardening
 # -----------------------------------------------------------------------------
-# The legacy cycle publishes latest_scores only after all symbols finish. A
-# single downstream exception can therefore leave /paper/diagnostics showing
-# data_count=0 even though strategy scoring already happened. Record each
-# successful score immediately, while keeping the original trading decision
-# path untouched.
 _original_dual_score_symbol = _score_symbol_with_mtf
 
 
@@ -129,9 +114,6 @@ def _process_market_cycle_with_diagnostics():
 
 _legacy.process_market_cycle = _process_market_cycle_with_diagnostics
 
-# -----------------------------------------------------------------------------
-# Daily report
-# -----------------------------------------------------------------------------
 _original_build_daily_report = _legacy.build_daily_report
 
 
@@ -144,9 +126,6 @@ def _net_only_daily_report(date_key=None) -> str:
 
 _legacy.build_daily_report = _net_only_daily_report
 
-# -----------------------------------------------------------------------------
-# Dual-mode Trade Manager boundary
-# -----------------------------------------------------------------------------
 _current_trade_mode = {"value": "SWING"}
 _original_controller_evaluate = runtime.risk_controller.evaluate
 _original_portfolio_snapshot = runtime.portfolio_provider.snapshot
@@ -234,6 +213,7 @@ def _home():
         "brain_shadow": brain_shadow_runtime.snapshot(),
     }), 200
 
+
 app.view_functions["home"] = _home
 
 
@@ -253,7 +233,9 @@ def _diagnostics():
     }), 200
 
 
-app.add_url_rule("/paper/diagnostics", "diagnostics_dual_mode", _diagnostics)
+# Replace the legacy view function for the already-registered URL rather than
+# adding a second competing Flask rule.
+app.view_functions["diagnostics"] = _diagnostics
 
 
 def _notify_closed_positions() -> int:
