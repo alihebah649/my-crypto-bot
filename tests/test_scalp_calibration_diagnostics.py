@@ -40,8 +40,10 @@ def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
 
     candles_15m = candles(130)
     candles_5m = candles(30)
-    candles_5m[-2] = candle(99.0, 100.0, 98.5, 99.0, 112.7)
-    candles_5m[-1] = candle(99.0, 101.0, 98.8, 100.0, 112.7)
+    # score_symbol excludes the still-forming last candle, so the recovery
+    # pair must be placed at [-3] and [-2] in the raw input list.
+    candles_5m[-3] = candle(100.0, 100.5, 98.5, 99.0, 112.7)
+    candles_5m[-2] = candle(99.0, 101.0, 98.8, 100.0, 112.7)
 
     result = dual_mode_strategy.score_symbol(
         "FETUSDT",
