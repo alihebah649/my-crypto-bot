@@ -24,7 +24,7 @@ _mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
 
 # -----------------------------------------------------------------------------
-# Binance REST rate-limit / IP-ban guard
+# Binance REST rate-limit / IP-ban guard + candle polling cache
 # -----------------------------------------------------------------------------
 # A Binance 418/429 must not cause the paper engine to hammer the same endpoint
 # every 30 seconds. The guard is deliberately limited to public market-data
@@ -41,6 +41,19 @@ _binance_guard = {
 }
 _original_fetch_24h_tickers = _legacy.fetch_24h_tickers
 _original_fetch_klines = _legacy.fetch_klines
+
+# The strategy only consumes CLOSED candles. Polling a 5m/15m candle every
+# 30 seconds therefore creates unnecessary REST traffic without adding signal
+# information. Cache each timeframe for roughly one candle plus a small margin.
+# MTF has its own longer-lived cache below.
+_KLINE_CACHE_TTL = {
+    "5m": 310.0,
+    "15m": 910.0,
+    "1h": 3610.0,
+    "4h": 14410.0,
+}
+_kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
+_kline_cache_lock = threading.RLock()
 
 
 def _retry_after_seconds(exc: Exception, default: float) -> float:
@@ -107,8 +120,18 @@ def _guarded_fetch_24h_tickers():
 def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     if _binance_guard_active():
         return []
+    key = (str(symbol).upper(), str(interval), int(limit))
+    now = time.time()
+    ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
+    with _kline_cache_lock:
+        cached = _kline_cache.get(key)
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1]
     try:
-        return _original_fetch_klines(symbol, interval, limit)
+        data = _original_fetch_klines(symbol, interval, limit)
+        with _kline_cache_lock:
+            _kline_cache[key] = (time.time(), data)
+        return data
     except requests.HTTPError as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in {418, 429}:
@@ -126,6 +149,8 @@ def _market_data_guard_snapshot() -> dict:
     snapshot = dict(_binance_guard)
     snapshot["blocked_for_seconds"] = round(remaining, 1)
     snapshot["blocked"] = remaining > 0
+    with _kline_cache_lock:
+        snapshot["kline_cache_entries"] = len(_kline_cache)
     return snapshot
 
 
@@ -147,8 +172,9 @@ def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
             symbol, timeframe = jobs[future]
             try:
                 candles = future.result()
-                _mtf_cache.put(symbol, timeframe, candles)
-                result[symbol][timeframe] = candles
+                if candles:
+                    _mtf_cache.put(symbol, timeframe, candles)
+                    result[symbol][timeframe] = candles
             except Exception as exc:
                 _legacy.logger.warning("MTF kline fetch failed for %s %s: %s", symbol, timeframe, exc)
     return result
@@ -340,8 +366,6 @@ def _diagnostics():
     }), 200
 
 
-# Replace the legacy view function for the already-registered URL rather than
-# adding a second competing Flask rule.
 app.view_functions["diagnostics"] = _diagnostics
 
 
