@@ -1,9 +1,4 @@
-"""Live-only startup sequence around Binance reconciliation.
-
-The coordinator is deliberately separate from Paper Trading and Trade Manager.
-It connects Binance, performs read-only reconciliation, then fails closed unless
-local positions, exchange balances, and exact exchange-side stop protection agree.
-"""
+"""Live-only startup sequence around Binance reconciliation."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,17 +17,17 @@ class LiveStartupResult:
 
 
 class LiveStartupCoordinator:
-    """Connect -> reconcile -> gate. No market scanning occurs on failure."""
+    """Connect -> reconcile -> exact protection check -> gate."""
 
     def __init__(self, adapter: BinanceExecutionAdapter, tracked_symbols: Iterable[str]) -> None:
         self._adapter = adapter
         self._tracked_symbols = tuple(symbol.upper() for symbol in tracked_symbols)
 
     @staticmethod
-    def _exact_protection_ok(adapter, positions: tuple[LocalPositionView, ...]) -> bool:
-        """Require exact quantity and stop match for every local position."""
-        for position in positions:
-            orders = adapter.get_open_orders_snapshot(position.symbol)
+    def _exact_protection_ok(snapshot) -> bool:
+        """Require an active SELL stop with matching quantity and stop price."""
+        for position in snapshot.local_positions:
+            orders = snapshot.open_orders_by_symbol.get(position.symbol.upper(), ())
             matched = False
             for order in orders:
                 if str(order.get("side", "")).upper() != "SELL":
@@ -41,12 +36,12 @@ class LiveStartupCoordinator:
                     continue
                 if str(order.get("type", "")).upper() not in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
                     continue
-                quantity = float(order.get("origQty", 0.0) or 0.0)
-                if abs(quantity - float(position.quantity)) > 1e-8:
+                if abs(float(order.get("origQty", 0.0) or 0.0) - float(position.quantity)) > 1e-8:
                     continue
                 if position.stop_price is not None:
                     stop = float(order.get("stopPrice", 0.0) or 0.0)
-                    if stop <= 0 or abs(stop - float(position.stop_price)) > max(abs(float(position.stop_price)) * 1e-8, 1e-12):
+                    expected = float(position.stop_price)
+                    if stop <= 0 or abs(stop - expected) > max(abs(expected) * 1e-8, 1e-12):
                         continue
                 matched = True
                 break
@@ -57,11 +52,9 @@ class LiveStartupCoordinator:
     def start(self, local_positions: Iterable[LocalPositionView]) -> LiveStartupResult:
         local = tuple(local_positions)
         self._adapter.connect()
-        reconciler = BinanceStartupReconciliation(self._adapter, self._tracked_symbols)
-        snapshot = reconciler.reconcile(local)
-        result = snapshot.result
-        if result.safe_to_resume and not self._exact_protection_ok(self._adapter, local):
+        snapshot = BinanceStartupReconciliation(self._adapter, self._tracked_symbols).reconcile(local)
+        if snapshot.result.safe_to_resume and not self._exact_protection_ok(snapshot):
             decision = StartupGateDecision(False, "RECONCILIATION_BLOCKED")
         else:
-            decision = StartupReconciliationGate.evaluate(result)
-        return LiveStartupResult(decision=decision, reconciliation=result)
+            decision = StartupReconciliationGate.evaluate(snapshot.result)
+        return LiveStartupResult(decision=decision, reconciliation=snapshot.result)

@@ -49,6 +49,7 @@ class BinanceSpotProtection:
 
     def place_sell_protection(self, request: ProtectionRequest) -> dict[str, Any]:
         request.validate()
+        # Keep the exact exchange operation here and nowhere in strategy code.
         return self._client.create_oco_order(
             symbol=request.symbol.upper(),
             side="SELL",
@@ -71,39 +72,30 @@ class BinanceSpotProtection:
         *,
         quantity: float | None = None,
         stop_price: float | None = None,
-        quantity_tolerance: float = 1e-8,
-        price_tolerance: float | None = None,
     ) -> bool:
-        """Confirm a live SELL stop protection matching the expected position.
+        """Return True only when an active SELL stop-loss protection exists.
 
-        When quantity/stop_price are supplied, the matching order must carry
-        the same quantity and stop price within tolerance.  A TP-only order or
-        unrelated SELL order is not sufficient protection.
+        A take-profit-only order is not sufficient protection for a live Spot
+        position because it provides no downside guard.  Reconciliation must
+        therefore require the stop leg specifically; the exchange response is
+        the source of truth for this check.
         """
         active = {"NEW", "PARTIALLY_FILLED", "PENDING_NEW"}
-        stop_types = {"STOP_LOSS_LIMIT", "STOP_LOSS"}
         for order in orders:
             if str(order.get("side", "")).upper() != "SELL":
                 continue
             if str(order.get("status", "")).upper() not in active:
                 continue
             order_type = str(order.get("type", "")).upper()
-            if stop_price is not None:
-                if order_type not in stop_types:
-                    continue
-            elif order_type not in stop_types | {"TAKE_PROFIT_LIMIT", "TAKE_PROFIT"}:
+            if order_type not in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
                 continue
-
             if quantity is not None:
-                candidate_qty = float(order.get("origQty", 0.0) or 0.0)
-                if abs(candidate_qty - quantity) > quantity_tolerance:
+                candidate = float(order.get("origQty", 0.0) or 0.0)
+                if candidate <= 0 or abs(candidate - quantity) > max(abs(quantity) * 1e-8, 1e-12):
                     continue
-
             if stop_price is not None:
-                candidate_stop = float(order.get("stopPrice", 0.0) or 0.0)
-                tolerance = max(abs(stop_price) * 1e-8, 1e-12) if price_tolerance is None else price_tolerance
-                if candidate_stop <= 0 or abs(candidate_stop - stop_price) > tolerance:
+                candidate = float(order.get("stopPrice", 0.0) or 0.0)
+                if candidate <= 0 or abs(candidate - stop_price) > max(abs(stop_price) * 1e-8, 1e-12):
                     continue
-
             return True
         return False

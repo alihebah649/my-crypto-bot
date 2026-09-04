@@ -457,3 +457,39 @@ class BinanceExecutionAdapter(ExecutionAdapter):
             raise ExchangeError(
                 str(exc)
             ) from exc
+
+    # ======================================================
+    # Read-only Account / Open Orders Snapshots
+    # ======================================================
+
+    def get_account_snapshot(self) -> dict[str, Any]:
+        """Return authenticated Spot account state without modifying it."""
+        client = self._require_client()
+
+        try:
+            return client.get_account()
+
+        except BinanceAPIException as exc:
+            raise ExchangeError(str(exc)) from exc
+
+        except BinanceRequestException as exc:
+            raise ExchangeConnectionError(str(exc)) from exc
+
+        except Exception as exc:
+            raise ExchangeError(str(exc)) from exc
+
+    def get_open_orders_snapshot(self, symbol: str) -> list[dict[str, Any]]:
+        """Return active Spot orders for one symbol without modifying it."""
+        client = self._require_client()
+
+        try:
+            return list(client.get_open_orders(symbol=symbol.upper()))
+
+        except BinanceAPIException as exc:
+            raise ExchangeError(str(exc)) from exc
+
+        except BinanceRequestException as exc:
+            raise ExchangeConnectionError(str(exc)) from exc
+
+        except Exception as exc:
+            raise ExchangeError(str(exc)) from exc

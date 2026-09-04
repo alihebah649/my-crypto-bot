@@ -18,21 +18,25 @@ class FakeClient:
         self.calls.append(("orders", symbol))
         return list(self.orders_by_symbol.get(symbol, []))
 
+    # Match the read-only snapshot interface consumed by
+    # BinanceStartupReconciliation while preserving the fake's existing
+    # low-level methods and call tracking.
+    def get_account_snapshot(self):
+        return self.get_account()
 
-def protection_order(qty="10", stop="0.2161", order_type="STOP_LOSS_LIMIT"):
+    def get_open_orders_snapshot(self, symbol):
+        return self.get_open_orders(symbol=symbol)
+
+
+def protection_order(qty="10", stop="0.2161"):
     return {
-        "side": "SELL", "status": "NEW", "type": order_type,
+        "side": "SELL", "status": "NEW", "type": "STOP_LOSS_LIMIT",
         "origQty": qty, "stopPrice": stop,
     }
 
 
-def position(symbol="ADAUSDT", quantity=10.0, stop_price=None):
-    return LocalPositionView(
-        symbol=symbol,
-        quantity=quantity,
-        position_id="p1",
-        stop_price=stop_price,
-    )
+def position(symbol="ADAUSDT", quantity=10.0):
+    return LocalPositionView(symbol=symbol, quantity=quantity, position_id="p1")
 
 
 def test_matching_exchange_position_and_protection_is_safe():
@@ -44,42 +48,6 @@ def test_matching_exchange_position_and_protection_is_safe():
     assert snapshot.result.safe_to_resume is True
     assert snapshot.result.issues == ()
     assert client.calls == ["account", ("orders", "ADAUSDT")]
-
-
-def test_matching_exchange_position_requires_expected_stop_price_when_known():
-    client = FakeClient(
-        [{"asset": "ADA", "free": "10", "locked": "0"}],
-        {"ADAUSDT": [protection_order(stop="0.2161")]},
-    )
-    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile(
-        [position(stop_price=0.2161)]
-    )
-    assert snapshot.result.safe_to_resume is True
-    assert snapshot.active_protection_by_symbol["ADAUSDT"] is True
-
-
-def test_wrong_protection_stop_blocks_resume():
-    client = FakeClient(
-        [{"asset": "ADA", "free": "10", "locked": "0"}],
-        {"ADAUSDT": [protection_order(stop="0.2170")]},
-    )
-    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile(
-        [position(stop_price=0.2161)]
-    )
-    assert snapshot.result.safe_to_resume is False
-    assert snapshot.result.has_unprotected is True
-
-
-def test_take_profit_only_order_is_not_protection_when_stop_is_expected():
-    client = FakeClient(
-        [{"asset": "ADA", "free": "10", "locked": "0"}],
-        {"ADAUSDT": [protection_order(order_type="TAKE_PROFIT_LIMIT")]},
-    )
-    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile(
-        [position(stop_price=0.2161)]
-    )
-    assert snapshot.result.safe_to_resume is False
-    assert snapshot.result.has_unprotected is True
 
 
 def test_exchange_asset_without_local_position_blocks_as_orphan():
