@@ -18,6 +18,15 @@ class FakeClient:
         self.calls.append(("orders", symbol))
         return list(self.orders_by_symbol.get(symbol, []))
 
+    # Match the read-only snapshot interface consumed by
+    # BinanceStartupReconciliation while preserving the fake's existing
+    # low-level methods and call tracking.
+    def get_account_snapshot(self):
+        return self.get_account()
+
+    def get_open_orders_snapshot(self, symbol):
+        return self.get_open_orders(symbol=symbol)
+
 
 def protection_order(qty="10", stop="0.2161"):
     return {
