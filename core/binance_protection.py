@@ -87,8 +87,10 @@ class BinanceSpotProtection:
             order_type = str(order.get("type", "")).upper()
             if order_type not in {"STOP_LOSS_LIMIT", "STOP_LOSS", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT"}:
                 continue
-            if quantity is not None and float(order.get("origQty", 0.0) or 0.0) + 1e-12 < quantity:
-                continue
+            if quantity is not None:
+                candidate = float(order.get("origQty", 0.0) or 0.0)
+                if candidate <= 0 or abs(candidate - quantity) > max(abs(quantity) * 1e-8, 1e-12):
+                    continue
             if stop_price is not None:
                 candidate = float(order.get("stopPrice", 0.0) or 0.0)
                 if candidate <= 0 or abs(candidate - stop_price) > max(abs(stop_price) * 1e-8, 1e-12):
