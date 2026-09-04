@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Protocol
 
 from core.binance_protection import BinanceSpotProtection
-from core.binance_reconciliation import ExchangeAsset, LocalPositionView, ReconciliationResult, reconcile_spot_positions
+from core.binance_reconciliation import (
+    ExchangeAsset,
+    LocalPositionView,
+    ReconciliationResult,
+    reconcile_spot_positions,
+)
 
 
 class BinanceReconciliationClient(Protocol):
@@ -22,19 +27,21 @@ class StartupReconciliationSnapshot:
 
 
 class BinanceStartupReconciliation:
-    """Collect exchange state and run the existing deterministic reconciliation."""
+    """Collect exchange state and run deterministic reconciliation."""
 
-    def __init__(self, client: BinanceReconciliationClient) -> None:
+    def __init__(self, client: BinanceReconciliationClient, tracked_symbols: Iterable[str]) -> None:
         self._client = client
+        self._tracked_symbols = tuple(symbol.upper() for symbol in tracked_symbols)
 
     @staticmethod
     def _account_assets(account: dict[str, Any], symbols: Iterable[str]) -> tuple[ExchangeAsset, ...]:
-        """Map only base assets represented by the bot's tracked USDT symbols."""
+        """Map only configured Spot base assets; ignore USDT and unrelated assets."""
         tracked = {symbol.upper() for symbol in symbols}
-        assets_by_base: dict[str, str] = {}
-        for symbol in tracked:
-            if symbol.endswith("USDT"):
-                assets_by_base[symbol[:-4]] = symbol
+        assets_by_base = {
+            symbol[:-4]: symbol
+            for symbol in tracked
+            if symbol.endswith("USDT")
+        }
         assets: list[ExchangeAsset] = []
         for row in account.get("balances", []) or []:
             asset = str(row.get("asset", "")).upper()
@@ -50,19 +57,22 @@ class BinanceStartupReconciliation:
 
     def reconcile(self, local_positions: Iterable[LocalPositionView]) -> StartupReconciliationSnapshot:
         local = tuple(local_positions)
-        symbols = {p.symbol.upper() for p in local}
+        tracked = set(self._tracked_symbols)
+        local_symbols = {p.symbol.upper() for p in local}
+        symbols = tracked | local_symbols
+
         account = self._client.get_account()
         assets = self._account_assets(account, symbols)
         orders_by_symbol = {
             symbol: list(self._client.get_open_orders(symbol=symbol))
-            for symbol in symbols
+            for symbol in local_symbols
         }
         protection = {
             symbol: BinanceSpotProtection.has_active_sell_protection(
                 orders_by_symbol.get(symbol, []),
                 quantity=next((p.quantity for p in local if p.symbol.upper() == symbol), None),
             )
-            for symbol in symbols
+            for symbol in local_symbols
         }
         result = reconcile_spot_positions(assets, local, protection)
         return StartupReconciliationSnapshot(
