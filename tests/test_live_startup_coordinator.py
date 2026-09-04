@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from core.binance_reconciliation import LocalPositionView
@@ -117,7 +119,7 @@ def test_live_startup_blocks_when_local_position_is_missing_on_exchange():
 @pytest.mark.parametrize("error", [ExchangeConnectionError("418 banned"), ExchangeError("429 rate limited")])
 def test_live_startup_does_not_resume_when_binance_account_read_fails(error):
     adapter = FakeAdapter([], {}, account_error=error)
-    with pytest.raises(type(error), match=str(error)):
+    with pytest.raises(type(error), match=re.escape(str(error))):
         LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([])
     assert adapter.calls == ["connect", "account"]
 
@@ -125,6 +127,6 @@ def test_live_startup_does_not_resume_when_binance_account_read_fails(error):
 @pytest.mark.parametrize("error", [ExchangeConnectionError("418 banned"), ExchangeError("429 rate limited")])
 def test_live_startup_does_not_resume_when_binance_order_read_fails(error):
     adapter = FakeAdapter([], {}, orders_error=error)
-    with pytest.raises(type(error), match=str(error)):
+    with pytest.raises(type(error), match=re.escape(str(error))):
         LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([position()])
     assert adapter.calls == ["connect", "account", ("orders", "ADAUSDT")]
