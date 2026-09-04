@@ -77,3 +77,12 @@ def test_reconciliation_does_not_accept_wrong_quantity_or_stop():
     assert BinanceSpotProtection.has_active_sell_protection(
         orders, quantity=10.0, stop_price=0.2161
     ) is False
+
+
+def test_reconciliation_does_not_accept_protection_for_larger_quantity():
+    orders = [
+        {"side": "SELL", "status": "NEW", "type": "STOP_LOSS_LIMIT", "origQty": "11", "stopPrice": "0.2161"},
+    ]
+    assert BinanceSpotProtection.has_active_sell_protection(
+        orders, quantity=10.0, stop_price=0.2161
+    ) is False
