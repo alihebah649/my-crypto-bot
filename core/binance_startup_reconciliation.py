@@ -14,20 +14,21 @@ from core.binance_reconciliation import (
 
 
 class BinanceReconciliationClient(Protocol):
-    def get_account(self) -> dict[str, Any]: ...
-    def get_open_orders(self, *, symbol: str) -> list[dict[str, Any]]: ...
+    def get_account_snapshot(self) -> dict[str, Any]: ...
+    def get_open_orders_snapshot(self, symbol: str) -> list[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class StartupReconciliationSnapshot:
     exchange_assets: tuple[ExchangeAsset, ...]
     local_positions: tuple[LocalPositionView, ...]
+    open_orders_by_symbol: dict[str, tuple[dict[str, Any], ...]]
     active_protection_by_symbol: dict[str, bool]
     result: ReconciliationResult
 
 
 class BinanceStartupReconciliation:
-    """Collect exchange state and run deterministic reconciliation."""
+    """Collect exchange state once and run deterministic reconciliation."""
 
     def __init__(self, client: BinanceReconciliationClient, tracked_symbols: Iterable[str]) -> None:
         self._client = client
@@ -61,15 +62,15 @@ class BinanceStartupReconciliation:
         local_symbols = {p.symbol.upper() for p in local}
         symbols = tracked | local_symbols
 
-        account = self._client.get_account()
+        account = self._client.get_account_snapshot()
         assets = self._account_assets(account, symbols)
         orders_by_symbol = {
-            symbol: list(self._client.get_open_orders(symbol=symbol))
+            symbol: tuple(self._client.get_open_orders_snapshot(symbol))
             for symbol in local_symbols
         }
         protection = {
             symbol: BinanceSpotProtection.has_active_sell_protection(
-                orders_by_symbol.get(symbol, []),
+                orders_by_symbol.get(symbol, ()),
                 quantity=next((p.quantity for p in local if p.symbol.upper() == symbol), None),
             )
             for symbol in local_symbols
@@ -78,6 +79,7 @@ class BinanceStartupReconciliation:
         return StartupReconciliationSnapshot(
             exchange_assets=assets,
             local_positions=local,
+            open_orders_by_symbol=orders_by_symbol,
             active_protection_by_symbol=protection,
             result=result,
         )
