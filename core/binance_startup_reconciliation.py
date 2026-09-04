@@ -1,23 +1,11 @@
-"""Read-only Binance Spot startup reconciliation runtime.
-
-This module is the application boundary between Binance account state and the
-pure reconciliation rules. It never places, cancels, or modifies orders.
-
-A caller may use the returned result as a startup gate: only a successful
-reconciliation should permit new entries to resume.
-"""
+"""Read-only Binance Spot startup reconciliation runtime."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Iterable
+from typing import Any, Iterable, Protocol
 
 from core.binance_protection import BinanceSpotProtection
-from core.binance_reconciliation import (
-    ExchangeAsset,
-    LocalPositionView,
-    ReconciliationResult,
-    reconcile_spot_positions,
-)
+from core.binance_reconciliation import ExchangeAsset, LocalPositionView, ReconciliationResult, reconcile_spot_positions
 
 
 class BinanceReconciliationClient(Protocol):
@@ -34,39 +22,41 @@ class StartupReconciliationSnapshot:
 
 
 class BinanceStartupReconciliation:
-    """Collect Binance state and run the existing deterministic reconciliation."""
+    """Collect exchange state and run the existing deterministic reconciliation."""
 
     def __init__(self, client: BinanceReconciliationClient) -> None:
         self._client = client
 
     @staticmethod
-    def _account_assets(account: dict[str, Any]) -> tuple[ExchangeAsset, ...]:
+    def _account_assets(account: dict[str, Any], symbols: Iterable[str]) -> tuple[ExchangeAsset, ...]:
+        """Map only base assets represented by the bot's tracked USDT symbols."""
+        tracked = {symbol.upper() for symbol in symbols}
+        assets_by_base: dict[str, str] = {}
+        for symbol in tracked:
+            if symbol.endswith("USDT"):
+                assets_by_base[symbol[:-4]] = symbol
         assets: list[ExchangeAsset] = []
         for row in account.get("balances", []) or []:
             asset = str(row.get("asset", "")).upper()
+            symbol = assets_by_base.get(asset)
+            if not symbol:
+                continue
             free = float(row.get("free", 0.0) or 0.0)
             locked = float(row.get("locked", 0.0) or 0.0)
             quantity = max(0.0, free + locked)
-            if asset and quantity > 0.0:
-                assets.append(ExchangeAsset(symbol=f"{asset}USDT", quantity=quantity))
+            if quantity > 0.0:
+                assets.append(ExchangeAsset(symbol=symbol, quantity=quantity))
         return tuple(assets)
 
-    @staticmethod
-    def _active_orders(client: BinanceReconciliationClient, symbols: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
-        return {
-            symbol.upper(): list(client.get_open_orders(symbol=symbol.upper()))
+    def reconcile(self, local_positions: Iterable[LocalPositionView]) -> StartupReconciliationSnapshot:
+        local = tuple(local_positions)
+        symbols = {p.symbol.upper() for p in local}
+        account = self._client.get_account()
+        assets = self._account_assets(account, symbols)
+        orders_by_symbol = {
+            symbol: list(self._client.get_open_orders(symbol=symbol))
             for symbol in symbols
         }
-
-    def reconcile(
-        self,
-        local_positions: Iterable[LocalPositionView],
-    ) -> StartupReconciliationSnapshot:
-        local = tuple(local_positions)
-        account = self._client.get_account()
-        assets = self._account_assets(account)
-        symbols = {p.symbol.upper() for p in local}
-        orders_by_symbol = self._active_orders(self._client, symbols)
         protection = {
             symbol: BinanceSpotProtection.has_active_sell_protection(
                 orders_by_symbol.get(symbol, []),
