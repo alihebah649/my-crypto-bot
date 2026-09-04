@@ -1,13 +1,8 @@
-"""Deterministic reconciliation primitives for Binance Spot positions.
-
-This module deliberately does not trade, modify Strategy, or modify Trade Manager.
-It compares exchange balances/open orders with local positions and returns an
-explicit decision for the application lifecycle to act on.
-"""
+"""Deterministic reconciliation primitives for Binance Spot positions."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Iterable
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,13 +45,13 @@ def reconcile_spot_positions(
     active_protection_by_symbol: dict[str, bool],
     *,
     dust_tolerance: float = 1e-12,
+    quantity_tolerance: float = 1e-8,
 ) -> ReconciliationResult:
     """Compare exchange-owned assets with local active positions.
 
-    Only non-dust assets are considered.  A locally known active position must
-    have exchange-side protection confirmed.  An exchange asset with no local
-    position is an ORPHAN_POSITION and blocks new entries until explicitly
-    reconciled by the application.
+    Non-dust exchange assets must have a local position. Local positions must
+    exist on the exchange, have matching quantity within tolerance, and have
+    confirmed exchange-side protection.
     """
     exchange: dict[str, float] = {}
     for asset in exchange_assets:
@@ -89,6 +84,14 @@ def reconcile_spot_positions(
                 f"local quantity={position.quantity} but exchange quantity is absent",
             ))
             continue
+
+        if abs(exchange_qty - float(position.quantity)) > quantity_tolerance:
+            issues.append(ReconciliationIssue(
+                "EXCHANGE_QUANTITY_MISMATCH",
+                symbol,
+                f"local quantity={position.quantity} but exchange quantity={exchange_qty}",
+            ))
+
         if not active_protection_by_symbol.get(symbol, False):
             issues.append(ReconciliationIssue(
                 "UNPROTECTED_POSITION",
