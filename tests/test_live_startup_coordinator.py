@@ -8,10 +8,12 @@ from core.live_startup_coordinator import LiveStartupCoordinator
 
 
 class FakeAdapter:
-    def __init__(self, balances, orders, *, connect_error=None):
+    def __init__(self, balances, orders, *, connect_error=None, account_error=None, orders_error=None):
         self.balances = balances
         self.orders = orders
         self.connect_error = connect_error
+        self.account_error = account_error
+        self.orders_error = orders_error
         self.connected = False
         self.calls = []
 
@@ -23,10 +25,14 @@ class FakeAdapter:
 
     def get_account_snapshot(self):
         self.calls.append("account")
+        if self.account_error:
+            raise self.account_error
         return {"balances": self.balances}
 
     def get_open_orders_snapshot(self, symbol):
         self.calls.append(("orders", symbol))
+        if self.orders_error:
+            raise self.orders_error
         return list(self.orders.get(symbol.upper(), []))
 
 
@@ -53,7 +59,6 @@ def test_live_startup_allows_resume_only_after_safe_reconciliation():
     result = LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([position()])
     assert result.decision.allowed is True
     assert result.decision.reason == "RECONCILIATION_SAFE"
-    # One authenticated account read + one open-order read; no duplicate REST call.
     assert adapter.calls == ["connect", "account", ("orders", "ADAUSDT")]
 
 
@@ -110,8 +115,16 @@ def test_live_startup_blocks_when_local_position_is_missing_on_exchange():
 
 
 @pytest.mark.parametrize("error", [ExchangeConnectionError("418 banned"), ExchangeError("429 rate limited")])
-def test_live_startup_does_not_resume_when_binance_startup_read_fails(error):
-    adapter = FakeAdapter([], {}, connect_error=error)
+def test_live_startup_does_not_resume_when_binance_account_read_fails(error):
+    adapter = FakeAdapter([], {}, account_error=error)
     with pytest.raises(type(error), match=str(error)):
         LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([])
-    assert adapter.calls == ["connect"]
+    assert adapter.calls == ["connect", "account"]
+
+
+@pytest.mark.parametrize("error", [ExchangeConnectionError("418 banned"), ExchangeError("429 rate limited")])
+def test_live_startup_does_not_resume_when_binance_order_read_fails(error):
+    adapter = FakeAdapter([], {}, orders_error=error)
+    with pytest.raises(type(error), match=str(error)):
+        LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([position()])
+    assert adapter.calls == ["connect", "account", ("orders", "ADAUSDT")]
