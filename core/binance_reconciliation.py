@@ -16,6 +16,7 @@ class LocalPositionView:
     symbol: str
     quantity: float
     position_id: str = ""
+    stop_price: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
