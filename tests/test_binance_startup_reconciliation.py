@@ -35,7 +35,7 @@ def test_matching_exchange_position_and_protection_is_safe():
         [{"asset": "ADA", "free": "10", "locked": "0"}],
         {"ADAUSDT": [protection_order()]},
     )
-    snapshot = BinanceStartupReconciliation(client).reconcile([position()])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position()])
     assert snapshot.result.safe_to_resume is True
     assert snapshot.result.issues == ()
     assert client.calls == ["account", ("orders", "ADAUSDT")]
@@ -46,15 +46,25 @@ def test_exchange_asset_without_local_position_blocks_as_orphan():
         [{"asset": "ADA", "free": "10", "locked": "0"}],
         {},
     )
-    snapshot = BinanceStartupReconciliation(client).reconcile([])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([])
     assert snapshot.result.safe_to_resume is False
     assert snapshot.result.has_orphans is True
     assert snapshot.result.issues[0].symbol == "ADAUSDT"
 
 
+def test_untracked_exchange_asset_is_ignored():
+    client = FakeClient(
+        [{"asset": "DOGE", "free": "10", "locked": "0"}, {"asset": "USDT", "free": "100", "locked": "0"}],
+        {},
+    )
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([])
+    assert snapshot.result.safe_to_resume is True
+    assert snapshot.exchange_assets == ()
+
+
 def test_local_position_missing_exchange_balance_blocks():
     client = FakeClient([], {"ADAUSDT": [protection_order()]})
-    snapshot = BinanceStartupReconciliation(client).reconcile([position()])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position()])
     assert snapshot.result.safe_to_resume is False
     assert snapshot.result.issues[0].code == "LOCAL_POSITION_MISSING_ON_EXCHANGE"
 
@@ -64,9 +74,28 @@ def test_local_position_without_protection_blocks():
         [{"asset": "ADA", "free": "10", "locked": "0"}],
         {"ADAUSDT": []},
     )
-    snapshot = BinanceStartupReconciliation(client).reconcile([position()])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position()])
     assert snapshot.result.safe_to_resume is False
     assert snapshot.result.has_unprotected is True
+
+
+def test_exchange_quantity_mismatch_blocks():
+    client = FakeClient(
+        [{"asset": "ADA", "free": "9", "locked": "0"}],
+        {"ADAUSDT": [protection_order(qty="10")]},
+    )
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position(quantity=10.0)])
+    assert snapshot.result.safe_to_resume is False
+    assert any(i.code == "EXCHANGE_QUANTITY_MISMATCH" for i in snapshot.result.issues)
+
+
+def test_quantity_within_tolerance_is_safe():
+    client = FakeClient(
+        [{"asset": "ADA", "free": "10.000000005", "locked": "0"}],
+        {"ADAUSDT": [protection_order()]},
+    )
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position(quantity=10.0)])
+    assert snapshot.result.safe_to_resume is True
 
 
 def test_dust_balance_does_not_create_orphan():
@@ -74,7 +103,7 @@ def test_dust_balance_does_not_create_orphan():
         [{"asset": "ADA", "free": "0.0000000000001", "locked": "0"}],
         {},
     )
-    snapshot = BinanceStartupReconciliation(client).reconcile([])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([])
     assert snapshot.result.safe_to_resume is True
     assert snapshot.result.issues == ()
 
@@ -84,6 +113,6 @@ def test_locked_balance_counts_as_owned_quantity():
         [{"asset": "ADA", "free": "4", "locked": "6"}],
         {"ADAUSDT": [protection_order()]},
     )
-    snapshot = BinanceStartupReconciliation(client).reconcile([position()])
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position()])
     assert snapshot.result.safe_to_resume is True
     assert snapshot.exchange_assets[0].quantity == 10.0
