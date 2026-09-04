@@ -7,6 +7,7 @@ on:
       - main
       - tm-integration-work
       - tm-state-continuity
+      - feature/reconciliation-gate-final
     paths:
       - "core/**"
       - "trade_manager/**"
