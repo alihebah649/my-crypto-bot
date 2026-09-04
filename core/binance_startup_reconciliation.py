@@ -72,6 +72,7 @@ class BinanceStartupReconciliation:
             symbol: BinanceSpotProtection.has_active_sell_protection(
                 orders_by_symbol.get(symbol, ()),
                 quantity=next((p.quantity for p in local if p.symbol.upper() == symbol), None),
+                stop_price=next((p.stop_price for p in local if p.symbol.upper() == symbol), None),
             )
             for symbol in local_symbols
         }
