@@ -73,10 +73,12 @@ class BinanceSpotProtection:
         quantity: float | None = None,
         stop_price: float | None = None,
     ) -> bool:
-        """Return True only when an active SELL stop/take-profit order exists.
+        """Return True only when an active SELL stop-loss protection exists.
 
-        This intentionally does not infer protection from local state.  The
-        exchange response is the source of truth for this check.
+        A take-profit-only order is not sufficient protection for a live Spot
+        position because it provides no downside guard.  Reconciliation must
+        therefore require the stop leg specifically; the exchange response is
+        the source of truth for this check.
         """
         active = {"NEW", "PARTIALLY_FILLED", "PENDING_NEW"}
         for order in orders:
@@ -85,7 +87,7 @@ class BinanceSpotProtection:
             if str(order.get("status", "")).upper() not in active:
                 continue
             order_type = str(order.get("type", "")).upper()
-            if order_type not in {"STOP_LOSS_LIMIT", "STOP_LOSS", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT"}:
+            if order_type not in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
                 continue
             if quantity is not None:
                 candidate = float(order.get("origQty", 0.0) or 0.0)
