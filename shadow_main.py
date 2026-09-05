@@ -1,34 +1,47 @@
 """Paper Trading entrypoint with dual Scalping + Swing strategy lanes.
 
-The original Shadow entrypoint is preserved in ``shadow_main_legacy.py``.
-This thin adapter replaces only the strategy scoring contract. Trade Manager,
-Paper Execution, persistence, Smart Hold, Recovery and the existing market
-cycle remain owned by the legacy runtime.
+This adapter keeps Strategy, Trade Manager, Paper Execution, persistence,
+Smart Hold and Recovery owned by their existing modules. The only additions
+here are the screened Spot universe, market-data guard/cache, diagnostics and
+runtime orchestration.
 """
 from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import threading
 import time
 from dataclasses import replace
+
 import requests
 from flask import jsonify
+
 import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
 from core.mtf_context_cache import MTFContextCache
 
+# Additional assets are deliberately limited to established Spot assets that
+# currently pass the external Shariah screen used for this project. This is a
+# universe expansion only; it does not alter score thresholds or entry rules.
+# Re-screen before live trading because crypto Shariah opinions and project
+# mechanics can change. TON is intentionally excluded because Binance replaced
+# the TON ticker with GRAM in July 2026.
+_ADDITIONAL_HALAL_SPOT_SYMBOLS = [
+    "XRPUSDT", "XLMUSDT", "HBARUSDT", "SUIUSDT", "BCHUSDT", "TRXUSDT",
+]
+for _symbol in _ADDITIONAL_HALAL_SPOT_SYMBOLS:
+    if _symbol not in _legacy.TRADING_SYMBOLS:
+        _legacy.TRADING_SYMBOLS.append(_symbol)
+
 _mtf_candles: dict[str, dict[str, list[dict]]] = {}
 _mtf_cache = MTFContextCache(ttl_by_timeframe={"1h": 3300.0, "4h": 14100.0})
 _original_fetch_strategy_data = _legacy.fetch_strategy_data
 
 # -----------------------------------------------------------------------------
-# Binance REST rate-limit / IP-ban guard + candle polling cache
+# Binance REST rate-limit / shared-IP guard + candle polling cache
 # -----------------------------------------------------------------------------
-# A Binance 418/429 must not cause the paper engine to hammer the same endpoint
-# every 30 seconds. The guard is deliberately limited to public market-data
-# access and has no effect on strategy thresholds, Trade Manager, or execution.
 _binance_block_until = 0.0
 _binance_backoff_seconds = 300.0
 _binance_guard = {
@@ -41,17 +54,7 @@ _binance_guard = {
 }
 _original_fetch_24h_tickers = _legacy.fetch_24h_tickers
 _original_fetch_klines = _legacy.fetch_klines
-
-# The strategy only consumes CLOSED candles. Polling a 5m/15m candle every
-# 30 seconds therefore creates unnecessary REST traffic without adding signal
-# information. Cache each timeframe for roughly one candle plus a small margin.
-# MTF has its own longer-lived cache below.
-_KLINE_CACHE_TTL = {
-    "5m": 310.0,
-    "15m": 910.0,
-    "1h": 3610.0,
-    "4h": 14410.0,
-}
+_KLINE_CACHE_TTL = {"5m": 310.0, "15m": 910.0, "1h": 3610.0, "4h": 14410.0}
 _kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _kline_cache_lock = threading.RLock()
 
@@ -74,12 +77,10 @@ def _set_binance_block(exc: Exception, path: str) -> None:
     retry_after = _retry_after_seconds(exc, _binance_backoff_seconds)
     _binance_block_until = time.time() + retry_after
     _binance_guard.update({
-        "state": "BLOCKED",
-        "status_code": status,
+        "state": "BLOCKED", "status_code": status,
         "blocked_until": _binance_block_until,
         "retry_after_seconds": retry_after,
-        "last_error": f"{type(exc).__name__}: {exc}",
-        "last_path": path,
+        "last_error": f"{type(exc).__name__}: {exc}", "last_path": path,
     })
     if status == 418:
         _binance_backoff_seconds = min(max(_binance_backoff_seconds * 2.0, retry_after), 3600.0)
@@ -118,15 +119,17 @@ def _guarded_fetch_24h_tickers():
 
 
 def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
-    if _binance_guard_active():
-        return []
     key = (str(symbol).upper(), str(interval), int(limit))
     now = time.time()
     ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
+    # Cache is checked before the shared-IP guard: a fresh closed-candle cache
+    # is safe to consume without making another Binance request.
     with _kline_cache_lock:
         cached = _kline_cache.get(key)
         if cached is not None and now - cached[0] < ttl:
             return cached[1]
+    if _binance_guard_active():
+        return []
     try:
         data = _original_fetch_klines(symbol, interval, limit)
         with _kline_cache_lock:
@@ -165,9 +168,8 @@ def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         for symbol in TRADING_SYMBOLS:
             for timeframe in ("1h", "4h"):
-                if timeframe in result[symbol]:
-                    continue
-                jobs[executor.submit(_legacy.fetch_klines, symbol, timeframe, 60)] = (symbol, timeframe)
+                if timeframe not in result[symbol]:
+                    jobs[executor.submit(_legacy.fetch_klines, symbol, timeframe, 60)] = (symbol, timeframe)
         for future in concurrent.futures.as_completed(jobs):
             symbol, timeframe = jobs[future]
             try:
@@ -200,9 +202,6 @@ runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 brain_shadow_runtime = BrainShadowRuntime()
 
-# -----------------------------------------------------------------------------
-# Diagnostic hardening
-# -----------------------------------------------------------------------------
 _original_dual_score_symbol = _score_symbol_with_mtf
 
 
@@ -214,10 +213,8 @@ def _score_symbol_with_diagnostics(symbol, ticker, candles_15m, candles_5m):
         return result
     except Exception as exc:
         _legacy.last_score_diagnostics[symbol] = {
-            "symbol": symbol,
-            "stage": "SCORE",
-            "error": f"{type(exc).__name__}: {exc}",
-            "finished_at": time.time(),
+            "symbol": symbol, "stage": "SCORE",
+            "error": f"{type(exc).__name__}: {exc}", "finished_at": time.time(),
         }
         raise
 
@@ -235,8 +232,7 @@ def _process_market_cycle_with_diagnostics():
         return _original_process_market_cycle()
     except Exception as exc:
         _legacy.last_score_diagnostics["__cycle__"] = {
-            "stage": "MARKET_CYCLE",
-            "error": f"{type(exc).__name__}: {exc}",
+            "stage": "MARKET_CYCLE", "error": f"{type(exc).__name__}: {exc}",
             "finished_at": time.time(),
             "elapsed_seconds": round(time.time() - started, 3),
             "partial_data_count": len(_legacy.latest_scores),
@@ -245,15 +241,13 @@ def _process_market_cycle_with_diagnostics():
 
 
 _legacy.process_market_cycle = _process_market_cycle_with_diagnostics
-
 _original_build_daily_report = _legacy.build_daily_report
 
 
 def _net_only_daily_report(date_key=None) -> str:
     report = _original_build_daily_report(date_key)
     lines = [line for line in report.splitlines() if not line.startswith("💵 Paper cash:")]
-    report = "\n".join(lines)
-    return report.replace("TOTAL", "NET P&L", 1)
+    return "\n".join(lines).replace("TOTAL", "NET P&L", 1)
 
 
 _legacy.build_daily_report = _net_only_daily_report
@@ -352,13 +346,12 @@ app.view_functions["home"] = _home
 def _diagnostics():
     rows = sorted(_legacy.latest_scores.values(), key=lambda item: item.get("score", 0), reverse=True)
     return jsonify({
-        "mode": "PAPER",
-        "symbol_count": len(TRADING_SYMBOLS),
-        "data_count": len(rows),
+        "mode": "PAPER", "symbol_count": len(TRADING_SYMBOLS), "data_count": len(rows),
         "buy_count": sum(1 for row in rows if row.get("signal") == "BUY"),
         "score_threshold": BUY_SCORE_THRESHOLD,
         "scalp_score_threshold": SCALP_SCORE_THRESHOLD,
         "swing_score_threshold": SWING_SCORE_THRESHOLD,
+        "symbols_added": _ADDITIONAL_HALAL_SPOT_SYMBOLS,
         "scores": rows,
         "score_errors": getattr(_legacy, "last_score_diagnostics", {}),
         "market_data_guard": _market_data_guard_snapshot(),
@@ -379,10 +372,16 @@ def _notify_closed_positions() -> int:
         exit_message = str(position.exit_metadata.get("exit_message", "")).strip()
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
-        paper_cash = position.exit_metadata.get("paper_cash_after")
-        if paper_cash is None:
-            paper_cash = runtime.execution_adapter.balance.cash
-        message = ("=== PAPER SELL ===\n" f"Symbol: {position.symbol}\n" f"Reason: {reason}\n" f"Quantity: {position.quantity:.12f}\n" f"Entry: {position.entry_price:.8f}\n" f"Exit: {exit_price:.8f}\n" f"Gross P&L: {position.gross_pnl:+.4f}$\n" f"P&L %: {pnl_pct:+.2f}%\n" f"Fees: {position.total_fees:.4f}$\n" f"Net P&L: {position.realized_pnl:+.4f}$\n" + (f"Exit details: {exit_message}\n" if exit_message else "") + f"Paper cash: ${float(paper_cash):.2f}\n" "PAPER ONLY")
+        paper_cash = position.exit_metadata.get("paper_cash_after", runtime.execution_adapter.balance.cash)
+        message = (
+            "=== PAPER SELL ===\n" f"Symbol: {position.symbol}\n" f"Reason: {reason}\n"
+            f"Quantity: {position.quantity:.12f}\n" f"Entry: {position.entry_price:.8f}\n"
+            f"Exit: {exit_price:.8f}\n" f"Gross P&L: {position.gross_pnl:+.4f}$\n"
+            f"P&L %: {pnl_pct:+.2f}%\n" f"Fees: {position.total_fees:.4f}$\n"
+            f"Net P&L: {position.realized_pnl:+.4f}$\n"
+            + (f"Exit details: {exit_message}\n" if exit_message else "")
+            + f"Paper cash: ${float(paper_cash):.2f}\nPAPER ONLY"
+        )
         if _legacy.send_telegram_message(message):
             position.exit_metadata["telegram_notification_sent"] = True
             position.exit_metadata["telegram_notification_sent_at"] = time.time()
@@ -392,7 +391,25 @@ def _notify_closed_positions() -> int:
 
 
 def _sanitize_entry_diagnostics() -> None:
-    for trace in runtime.last_entry_diagnostics.values():
+    open_positions = {
+        str(position.symbol).upper(): position
+        for position in runtime.repository.get_open_positions()
+        if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
+    }
+    for symbol, trace in runtime.last_entry_diagnostics.items():
+        if not isinstance(trace, dict):
+            continue
+        # The legacy cycle uses setdefault(), so an old rejection can remain
+        # beside a later successful fill. Prefer the authoritative execution
+        # evidence when it exists; this fixes the diagnostic without touching
+        # Trade Manager or the entry decision itself.
+        if symbol in open_positions and trace.get("position_id"):
+            execution = str(trace.get("execution", "")).upper()
+            outcome = str(trace.get("execution_outcome", "")).upper()
+            if execution == "FILLED" or outcome in {"FILLED", "EXECUTION_FILLED"}:
+                trace["result"] = "POSITION_COMMITTED"
+                trace["diagnostic_consistency"] = "CONSISTENT"
+                continue
         result = str(trace.get("result", ""))
         if result.startswith("REJECTED_"):
             trace["execution"] = "NOT_RUN"
@@ -416,7 +433,13 @@ def _run_brain_shadow_cycle() -> None:
 
 
 async def _dual_mode_engine():
-    _legacy.send_telegram_message("🟢 Paper Trading dual-mode strategy engine started on Render\n" f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n" f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n" f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n" "Trade Manager: Parts 1-8\n" "Brain: SHADOW ONLY — no execution authority\n" "No real exchange orders are submitted.")
+    _legacy.send_telegram_message(
+        "🟢 Paper Trading dual-mode strategy engine started on Render\n"
+        f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
+        f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
+        f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
+        "Trade Manager: Parts 1-8\nBrain: SHADOW ONLY — no execution authority\nNo real exchange orders are submitted."
+    )
     _notify_closed_positions()
     while True:
         started = time.monotonic()
