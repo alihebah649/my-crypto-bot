@@ -42,7 +42,6 @@ def test_score_exposes_independent_scalp_and_swing_lanes():
 
 
 def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
-    """Support + oversold + volume can make 65, but cannot authorize a buy."""
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 35.0)
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
@@ -61,7 +60,6 @@ def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
 
 
 def test_scalp_recovery_trigger_can_authorize_65_plus_without_pattern(monkeypatch):
-    """A modest 5m recovery can keep Scalp alive without requiring Swing."""
     rsi_values = iter([40.0, 35.0, 33.0])
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
@@ -134,8 +132,8 @@ def test_existing_swing_lane_can_still_reach_buy():
     assert result["pattern_confirmed"] is True
 
 
-def test_strategy_universe_remains_16_spot_pairs():
-    assert len(shadow_main.TRADING_SYMBOLS) == 16
+def test_strategy_universe_remains_22_spot_pairs():
+    assert len(shadow_main.TRADING_SYMBOLS) == 22
 
 # CI trigger checkpoint: safe adapter preserves original runtime composition.
 # The legacy runtime remains the execution authority.
