@@ -9,6 +9,7 @@ from core.paper_risk_overlay import (
     btc_recovery_eligible,
     btc_recovery_stop,
     loss_cooldown_remaining,
+    paper_stop_fill_price,
     profit_protection_trigger,
     strong_bullish_btc_exception,
 )
@@ -38,6 +39,11 @@ def test_profit_protection_requires_profit_then_retrace():
         highest_price=100.90,
         max_profit_percent=0.90,
     ) is False
+
+
+def test_paper_stop_fill_uses_configured_stop_after_polling_breach():
+    assert paper_stop_fill_price(99.0, 98.2) == 99.0
+    assert paper_stop_fill_price(99.0, 99.2) == 99.2
 
 
 def test_btc_recovery_requires_strong_setup_and_stays_bounded():
