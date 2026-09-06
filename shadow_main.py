@@ -52,6 +52,8 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
     trace["trade_modes_opened"] = [str(p.entry_metadata.get("trade_mode", "SWING")).upper() for p in opened]
     trace["positions_opened"] = [p.position_id for p in opened]
     trace["dual_lane_entry"] = len(opened) > 1
+    if opened:
+        trace["trade_mode"] = str(opened[0].entry_metadata.get("trade_mode", "SWING")).upper()
     return opened[0] if opened else None
 
 
