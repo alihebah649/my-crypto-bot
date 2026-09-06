@@ -61,3 +61,10 @@ def btc_recovery_eligible(score: dict[str, Any], *, btc_crashing: bool, pnl_perc
 
 def btc_recovery_stop(entry_price: float, *, max_drawdown_percent: float = BTC_RECOVERY_MAX_DRAWDOWN_PERCENT) -> float:
     return float(entry_price) * (1.0 - float(max_drawdown_percent) / 100.0)
+
+
+def paper_stop_fill_price(stop_price: float, current_price: float) -> float:
+    """Use the configured stop as the Paper fill when polling detects a breach."""
+    if stop_price <= 0 or current_price <= 0:
+        return float(current_price)
+    return float(stop_price) if current_price < stop_price else float(current_price)
