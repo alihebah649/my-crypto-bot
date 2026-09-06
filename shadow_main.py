@@ -5,7 +5,7 @@ import threading
 
 import shadow_main_base as _base
 
-# Re-export the active entrypoint surface so existing imports/tests keep working.
+# PAPER ONLY entrypoint: no real exchange orders are submitted here.
 _legacy = _base._legacy
 runtime = _base.runtime
 app = _base.app
