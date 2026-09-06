@@ -29,7 +29,64 @@ _paper_original_process_market_cycle = _legacy.process_market_cycle
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
 _paper_original_facade_execute_decision = runtime.facade.execute_decision
+_paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
+
+# -----------------------------------------------------------------------------
+# Paper ticker snapshot cache
+# -----------------------------------------------------------------------------
+# The 24h ticker is only used to obtain the current market price for scoring.
+# Keep a short-lived successful snapshot so a transient 429/418 does not erase
+# an otherwise valid market cycle. Never use an expired snapshot: once it is
+# stale, the engine remains fail-safe and produces no new entry data.
+_TICKER_CACHE_TTL = 120.0
+_ticker_cache: tuple[float, dict[str, dict]] | None = None
+_ticker_cache_lock = threading.RLock()
+_ticker_cache_hits = 0
+_ticker_cache_misses = 0
+_ticker_cache_stale_uses = 0
+
+
+def _guarded_fetch_24h_tickers_with_cache():
+    global _ticker_cache, _ticker_cache_hits, _ticker_cache_misses, _ticker_cache_stale_uses
+    now = time.time()
+    with _ticker_cache_lock:
+        cached = _ticker_cache
+        if cached is not None and now - cached[0] < _TICKER_CACHE_TTL:
+            _ticker_cache_hits += 1
+            return cached[1]
+
+    _ticker_cache_misses += 1
+    data = _paper_original_24h_tickers()
+    if data:
+        with _ticker_cache_lock:
+            _ticker_cache = (time.time(), dict(data))
+    return data
+
+
+# This wrapper sits above the existing Binance 418/429 guard. A fresh snapshot
+# therefore avoids a REST call entirely; an expired snapshot still goes through
+# the existing guard and remains fail-safe when Binance is blocked.
+_legacy.fetch_24h_tickers = _guarded_fetch_24h_tickers_with_cache
+
+
+def _ticker_cache_snapshot() -> dict:
+    now = time.time()
+    with _ticker_cache_lock:
+        cached = _ticker_cache
+        hits = _ticker_cache_hits
+        misses = _ticker_cache_misses
+        stale_uses = _ticker_cache_stale_uses
+    age = None if cached is None else max(0.0, now - cached[0])
+    return {
+        "entries": 0 if cached is None else len(cached[1]),
+        "age_seconds": None if age is None else round(age, 1),
+        "ttl_seconds": _TICKER_CACHE_TTL,
+        "fresh": bool(age is not None and age < _TICKER_CACHE_TTL),
+        "hits": hits,
+        "misses": misses,
+        "stale_uses": stale_uses,
+    }
 
 
 def _loss_cooldown(symbol: str) -> float:
