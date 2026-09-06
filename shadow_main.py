@@ -2,23 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 
-import shadow_main_base as _base
+# PAPER ONLY entrypoint: execute the preserved original entrypoint in this
+# module's namespace so all existing globals/tests keep their behavior.
+_base_path = Path(__file__).with_name("shadow_main_base.py")
+_exec_source = _base_path.read_text(encoding="utf-8")
+exec(compile(_exec_source, str(_base_path), "exec"), globals(), globals())
 
-# PAPER ONLY entrypoint: no real exchange orders are submitted here.
-_legacy = _base._legacy
-runtime = _base.runtime
-app = _base.app
-TRADING_SYMBOLS = _base.TRADING_SYMBOLS
-brain_shadow_runtime = _base.brain_shadow_runtime
-SCALP_SCORE_THRESHOLD = _base.SCALP_SCORE_THRESHOLD
-SWING_SCORE_THRESHOLD = _base.SWING_SCORE_THRESHOLD
-BUY_SCORE_THRESHOLD = _base.BUY_SCORE_THRESHOLD
-score_symbol = _base.score_symbol
-_active_trade_modes = _base._active_trade_modes
-_lane_aware_has_position = _base._lane_aware_has_position
-_original_runtime_open_position = _base._original_runtime_open_position
-_current_trade_mode = _base._current_trade_mode
+_original_runtime_open_position = runtime.open_position
 
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
@@ -65,9 +57,7 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
 
 runtime.open_position = _open_position_with_selected_mode
 
-# Keep the original module's Flask routes, diagnostics, market loop, and
-# shutdown/reporting behavior; only the entry orchestration is replaced here.
 if __name__ == "__main__":
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
-    threading.Thread(target=lambda: asyncio.run(_base._dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
+    threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
     _legacy.run_flask()

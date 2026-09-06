@@ -10,6 +10,7 @@ def _candle(o: float, h: float, l: float, c: float, volume: float = 100.0) -> di
 
 
 def test_both_lane_signals_can_qualify_independently(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_ema", lambda prices, period=100: 99.0)
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 40.0)
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
@@ -22,8 +23,6 @@ def test_both_lane_signals_can_qualify_independently(monkeypatch):
 
     assert result["scalp_signal"] == "BUY"
     assert result["swing_signal"] == "BUY"
-    # The strategy's legacy scalar mode remains SCALP for backward compatibility;
-    # orchestration consumes both independent lane signals.
     assert result["trade_mode"] == "SCALP"
 
 
