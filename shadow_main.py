@@ -22,10 +22,10 @@ from core.paper_risk_overlay import (
     btc_recovery_stop,
 )
 
-_original_runtime_open_position = runtime.open_position
-_original_runtime_evaluate_position = runtime.evaluate_position
-_original_btc_crash_guard = _legacy.btc_crash_guard
-_original_process_market_cycle = _legacy.process_market_cycle
+# Keep the original names populated by shadow_main_base.py intact for existing
+# tests and compatibility. Capture our own aliases for anything we wrap.
+_paper_original_process_market_cycle = _legacy.process_market_cycle
+_paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
 
 
@@ -99,7 +99,7 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
 
 
 def _record_btc_crash_guard(candles):
-    result = _original_btc_crash_guard(candles)
+    result = _paper_original_btc_crash_guard(candles)
     _last_btc_guard["crashing"] = bool(result[0])
     _last_btc_guard["drop_percent"] = float(result[1])
     return result
@@ -109,20 +109,14 @@ _legacy.btc_crash_guard = _record_btc_crash_guard
 
 
 def _evaluate_position_with_protection(symbol: str) -> None:
-    """Paper-only overlay before the unchanged Trade Manager evaluation.
-
-    - Profitable retracements can be protected before TP.
-    - BTC can enter Recovery through a bounded 1.20% emergency floor when its
-      individual setup remains strong and BTC itself is not crashing.
-    - All other positions retain the existing Trade Manager exit ordering.
-    """
+    """Apply the Paper-only protection overlay around the unchanged manager."""
     active = [
         p for p in runtime.repository.get_by_symbol(symbol)
         if p.status in {PositionStatus.OPEN, PositionStatus.HOLD}
     ]
     deferred = set()
-
     score = _legacy.market_state.get(str(symbol).upper(), {}) or _legacy.latest_scores.get(str(symbol).upper(), {}) or {}
+
     for position in active:
         current = float(position.current_price)
         pnl_percent = ((current - position.entry_price) / position.entry_price * 100.0) if position.entry_price > 0 else 0.0
@@ -133,17 +127,13 @@ def _evaluate_position_with_protection(symbol: str) -> None:
             highest_price=position.highest_price,
             max_profit_percent=position.max_profit_percent,
         ):
-            decision = runtime.position_risk.evaluate(position)
-            # If normal trailing already wants to exit, keep its authoritative
-            # decision; otherwise use the earlier protection exit.
-            if not decision.should_exit:
-                from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
-                decision = PositionExitDecision(
-                    True,
-                    PositionExitReason.TRAILING_STOP,
-                    current,
-                    "Paper Protection: profitable retracement before TP",
-                )
+            from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
+            decision = PositionExitDecision(
+                True,
+                PositionExitReason.TRAILING_STOP,
+                current,
+                "Paper Protection: profitable retracement before TP",
+            )
             runtime.facade.execute_decision(position.position_id, decision)
             continue
 
@@ -177,25 +167,31 @@ def _evaluate_position_with_protection(symbol: str) -> None:
                     position.position_id, pnl_percent, position.stop_loss,
                 )
 
-    # Evaluate every position not deferred by the BTC recovery overlay.
-    for position in runtime.repository.get_by_symbol(symbol):
-        if position.position_id in deferred:
-            continue
-        if position.status not in {PositionStatus.OPEN, PositionStatus.HOLD}:
-            continue
-        decision = runtime.position_risk.evaluate(position)
-        runtime.facade.execute_decision(position.position_id, decision)
-    runtime.loss_ledger.sync(runtime.repository.get_closed_positions())
+    # The original Trade Manager remains authoritative for every position not
+    # explicitly deferred by the bounded BTC Recovery overlay.
+    if deferred:
+        saved = {}
+        for position in runtime.repository.get_by_symbol(symbol):
+            if position.position_id in deferred:
+                saved[position.position_id] = float(position.stop_loss)
+        # Evaluate through the original method only when no recovery position
+        # needs protection from the hard-stop decision. Recovery positions are
+        # left in HOLD until the emergency floor or recovery conditions fail.
+        if len(deferred) < len(active):
+            _paper_original_runtime_evaluate_position(symbol)
+        return
+
+    _paper_original_runtime_evaluate_position(symbol)
 
 
+# shadow_main_base.py does not wrap runtime.evaluate_position, so this alias is
+# safe and keeps the Trade Manager implementation untouched.
+_paper_original_runtime_evaluate_position = runtime.evaluate_position
 runtime.evaluate_position = _evaluate_position_with_protection
 
 
 def _process_market_cycle_with_overlays():
-    result = _original_process_market_cycle()
-    # The legacy cycle intentionally blocks all entries during a BTC crash.
-    # Re-open the gate only for exceptionally strong individual setups, after
-    # the normal cycle has completed and only through the same Paper risk path.
+    result = _paper_original_process_market_cycle()
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted(
             (_legacy.latest_scores or {}).items(),
