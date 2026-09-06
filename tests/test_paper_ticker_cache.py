@@ -60,10 +60,10 @@ def test_ticker_cache_is_refreshed_after_expiry_when_binance_is_available():
         shadow_main, "_paper_original_24h_tickers", return_value=fresh
     ) as fetch:
         result = shadow_main._guarded_fetch_24h_tickers_with_cache()
+        snapshot = shadow_main._ticker_cache_snapshot()
 
     assert result == fresh
     fetch.assert_called_once()
-    snapshot = shadow_main._ticker_cache_snapshot()
     assert snapshot["entries"] == 1
     assert snapshot["fresh"] is True
     assert snapshot["age_seconds"] == 0.0
