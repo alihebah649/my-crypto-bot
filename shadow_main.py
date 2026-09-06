@@ -14,6 +14,7 @@ brain_shadow_runtime = _base.brain_shadow_runtime
 SCALP_SCORE_THRESHOLD = _base.SCALP_SCORE_THRESHOLD
 SWING_SCORE_THRESHOLD = _base.SWING_SCORE_THRESHOLD
 BUY_SCORE_THRESHOLD = _base.BUY_SCORE_THRESHOLD
+score_symbol = _base.score_symbol
 _active_trade_modes = _base._active_trade_modes
 _lane_aware_has_position = _base._lane_aware_has_position
 _original_runtime_open_position = _base._original_runtime_open_position
