@@ -118,14 +118,7 @@ _legacy.btc_crash_guard = _record_btc_crash_guard
 
 
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
-    """Paper-only: model a stop breach as a fill at the configured stop.
-
-    The existing controller/execution gateway intentionally submits a market
-    SELL and therefore the Paper adapter uses the latest polled price. That is
-    useful for execution plumbing, but it makes Paper stop-loss statistics
-    include polling delay as artificial slippage. For a STOP_LOSS decision,
-    temporarily use the configured stop as the Paper execution price.
-    """
+    """Paper-only: model a stop breach as a fill at the configured stop."""
     if decision.reason is not PositionExitReason.STOP_LOSS:
         return _paper_original_facade_execute_decision(position_id, decision)
 
@@ -203,9 +196,6 @@ def _apply_paper_exit_protection() -> None:
                 runtime.repository.update(result)
             continue
 
-        # BTC Recovery: do not turn an ordinary bounded pullback into a hard
-        # loss when the BTC setup is still strong. The emergency floor remains
-        # finite and is enforced by the normal STOP_LOSS path afterwards.
         if str(position.symbol).upper() != "BTCUSDT":
             continue
 
@@ -294,7 +284,9 @@ def _process_market_cycle_with_overlays():
             trace["btc_crash_guard_drop_percent"] = _last_btc_guard["drop_percent"]
             trace["btc_crash_guard_exception_reason"] = "STRONG_SWING_SETUP"
 
-            runtime.open_position(symbol, price, stop_loss)
+            # Crash exception is deliberately SWING-only, even if the same
+            # symbol also happens to satisfy the independent SCALP lane.
+            _open_one_position(symbol, price, stop_loss, "SWING")
 
     return result
 
