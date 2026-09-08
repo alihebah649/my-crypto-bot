@@ -24,7 +24,7 @@ from core.paper_risk_overlay import (
 )
 
 # Keep the original names populated by shadow_main_base.py intact for existing
-tests and compatibility. Capture our own aliases for anything we wrap.
+# tests and compatibility. Capture our own aliases for anything we wrap.
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
@@ -98,10 +98,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             "trade_mode": mode,
             "execution": "NOT_RUN",
         })
-        _legacy.logger.info(
-            "ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s",
-            symbol, remaining, mode,
-        )
+        _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     _current_trade_mode["value"] = mode
     position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
@@ -179,19 +176,12 @@ runtime.facade.execute_decision = _paper_stop_fill_wrapper
 
 def _apply_paper_exit_protection() -> None:
     """Apply Paper-only protection before the normal independent watchdog."""
-    active = [p for p in runtime.repository.get_open_positions() if p.status in {
-        PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED,
-    }]
+    active = [p for p in runtime.repository.get_open_positions() if p.status in {PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED}]
     for position in active:
         current = float(position.current_price)
         if current <= 0 or position.entry_price <= 0:
             continue
-        if profit_protection_trigger(
-            entry_price=position.entry_price,
-            current_price=current,
-            highest_price=position.highest_price,
-            max_profit_percent=position.max_profit_percent,
-        ):
+        if profit_protection_trigger(entry_price=position.entry_price, current_price=current, highest_price=position.highest_price, max_profit_percent=position.max_profit_percent):
             decision = PositionExitDecision(True, PositionExitReason.TRAILING_STOP, current, "Paper Protection: profitable retracement before TP")
             result = runtime.facade.execute_decision(position.position_id, decision)
             if result is not None and result.status is PositionStatus.CLOSED:
@@ -202,12 +192,7 @@ def _apply_paper_exit_protection() -> None:
             continue
         score = _legacy.latest_scores.get("BTCUSDT", {}) or _legacy.market_state.get("BTCUSDT", {}) or {}
         pnl_percent = (current - position.entry_price) / position.entry_price * 100.0
-        eligible = btc_recovery_eligible(
-            score,
-            btc_crashing=bool(_last_btc_guard["crashing"]),
-            pnl_percent=pnl_percent,
-            max_drawdown_percent=BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
-        )
+        eligible = btc_recovery_eligible(score, btc_crashing=bool(_last_btc_guard["crashing"]), pnl_percent=pnl_percent, max_drawdown_percent=BTC_RECOVERY_MAX_DRAWDOWN_PERCENT)
         if not eligible or current > position.stop_loss:
             continue
         emergency_stop = btc_recovery_stop(position.entry_price)
@@ -220,16 +205,8 @@ def _apply_paper_exit_protection() -> None:
         position.metadata["btc_recovery_emergency_stop"] = emergency_stop
         runtime.repository.update(position)
         trace = runtime.last_entry_diagnostics.setdefault("BTCUSDT", {})
-        trace["btc_recovery"] = {
-            "active": True,
-            "pnl_percent": round(pnl_percent, 3),
-            "emergency_stop": emergency_stop,
-            "btc_crash_guard": False,
-        }
-        _legacy.logger.info(
-            "BTC RECOVERY active: position=%s pnl=%.3f%% emergency_stop=%.8f",
-            position.position_id, pnl_percent, emergency_stop,
-        )
+        trace["btc_recovery"] = {"active": True, "pnl_percent": round(pnl_percent, 3), "emergency_stop": emergency_stop, "btc_crash_guard": False}
+        _legacy.logger.info("BTC RECOVERY active: position=%s pnl=%.3f%% emergency_stop=%.8f", position.position_id, pnl_percent, emergency_stop)
 
 
 def _run_exit_watchdog_with_overlays():
@@ -243,11 +220,7 @@ runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 def _process_market_cycle_with_overlays():
     result = _paper_original_process_market_cycle()
     if _last_btc_guard["crashing"]:
-        for symbol, score in sorted(
-            (_legacy.latest_scores or {}).items(),
-            key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0),
-            reverse=True,
-        ):
+        for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
                 continue
             if runtime.controller.has_position(symbol):
