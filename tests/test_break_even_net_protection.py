@@ -31,7 +31,7 @@ class _PaperCloseGateway:
         raise AssertionError("cancel() is not part of this regression")
 
 
-def _position(current_price: float) -> Position:
+def _position(current_price: float, stop_loss: float = 100.2002002002) -> Position:
     return Position(
         position_id="BE-REGRESSION",
         symbol="BTCUSDT",
@@ -40,7 +40,7 @@ def _position(current_price: float) -> Position:
         quantity=1.0,
         entry_price=100.0,
         current_price=current_price,
-        stop_loss=100.2002002002,
+        stop_loss=stop_loss,
         take_profit=None,
         metadata={"break_even_activated": True},
     )
@@ -81,7 +81,8 @@ def test_break_even_must_not_close_below_fee_aware_net_break_even():
 def test_break_even_can_close_at_fee_aware_net_break_even():
     """A BE exit may close once the actual execution price covers both fees."""
     execution_price = 100.2003
-    position = _position(execution_price)
+    # The configured stop is exactly the fee-aware floor for this test.
+    position = _position(execution_price, stop_loss=execution_price)
     repository = PositionRepository()
     gateway = _PaperCloseGateway(executed_price=execution_price)
     controller = PositionController(
