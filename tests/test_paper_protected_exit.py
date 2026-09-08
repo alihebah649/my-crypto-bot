@@ -24,7 +24,8 @@ def build_runtime() -> ShadowTradeManagerRuntime:
 
 def test_stop_loss_exit_uses_configured_stop_price():
     runtime = build_runtime()
-    position = runtime.open_position("BTCUSDT", 1.0, 98.0)
+    # Keep the regression inside the normal 1.2% Paper stop envelope.
+    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
     assert position is not None
 
     runtime.update_market("BTCUSDT", price=95.0, **MARKET)
@@ -35,15 +36,15 @@ def test_stop_loss_exit_uses_configured_stop_price():
 
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
-    assert closed.exit_metadata["exit_price"] == 98.0
+    assert closed.exit_metadata["exit_price"] == 99.0
     assert closed.exit_metadata["paper_stop_fill"] is True
-    assert closed.exit_metadata["paper_stop_price"] == 98.0
+    assert closed.exit_metadata["paper_stop_price"] == 99.0
     assert closed.exit_metadata["paper_observed_price_at_trigger"] == 95.0
 
 
 def test_break_even_exit_uses_fee_aware_protected_price():
     runtime = build_runtime()
-    position = runtime.open_position("BTCUSDT", 1.0, 98.0)
+    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
     assert position is not None
 
     # The real BE policy moves the stop to the fee-aware break-even level.
@@ -67,7 +68,7 @@ def test_break_even_exit_uses_fee_aware_protected_price():
 
 def test_non_protected_trailing_exit_keeps_observed_price():
     runtime = build_runtime()
-    position = runtime.open_position("BTCUSDT", 1.0, 98.0)
+    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
     assert position is not None
 
     runtime.update_market("BTCUSDT", price=103.0, **MARKET)
