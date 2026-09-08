@@ -168,12 +168,7 @@ _legacy.btc_crash_guard = _record_btc_crash_guard
 
 
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
-    """Paper-only: model a protected stop breach as a fill at position.stop_loss.
-
-    Both STOP_LOSS and BREAK_EVEN are protected-price exits.  In live trading a
-    stop can fill with slippage, but Paper Trading must not silently replace the
-    configured protection level with the later polling price.
-    """
+    """Annotate protected Paper exits after deterministic protected-price fill."""
     protected_reasons = {
         PositionExitReason.STOP_LOSS,
         PositionExitReason.BREAK_EVEN,
@@ -182,38 +177,19 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
         return _paper_original_facade_execute_decision(position_id, decision)
 
     position = runtime.repository.get(position_id)
-    adapter = getattr(runtime, "execution_adapter", None)
-    if position is None or adapter is None or not hasattr(adapter, "get_market_price"):
+    if position is None:
         return _paper_original_facade_execute_decision(position_id, decision)
 
-    try:
-        original_price = adapter.get_market_price(position.symbol)
-    except Exception:
-        return _paper_original_facade_execute_decision(position_id, decision)
-
-    stop_price = float(position.stop_loss)
-    current_price = float(position.current_price)
-    if stop_price <= 0 or current_price >= stop_price:
-        return _paper_original_facade_execute_decision(position_id, decision)
-
-    try:
-        adapter.set_market_price(position.symbol, stop_price)
-        result = _paper_original_facade_execute_decision(position_id, decision)
-        if result is not None and result.status is PositionStatus.CLOSED:
-            result.exit_metadata["paper_stop_fill"] = True
-            result.exit_metadata["paper_stop_price"] = stop_price
-            result.exit_metadata["paper_observed_price_at_trigger"] = current_price
-            result.exit_metadata["paper_stop_reason"] = decision.reason.name
-            runtime.repository.update(result)
-        return result
-    finally:
-        try:
-            adapter.set_market_price(position.symbol, original_price)
-        except Exception:
-            _legacy.logger.exception(
-                "Unable to restore Paper market price after stop-fill simulation for %s",
-                position.symbol,
-            )
+    observed_price = float(position.current_price)
+    protected_price = float(position.stop_loss)
+    result = _paper_original_facade_execute_decision(position_id, decision)
+    if result is not None and result.status is PositionStatus.CLOSED:
+        result.exit_metadata["paper_stop_fill"] = True
+        result.exit_metadata["paper_stop_price"] = protected_price
+        result.exit_metadata["paper_observed_price_at_trigger"] = observed_price
+        result.exit_metadata["paper_stop_reason"] = decision.reason.name
+        runtime.repository.update(result)
+    return result
 
 
 runtime.facade.execute_decision = _paper_stop_fill_wrapper
