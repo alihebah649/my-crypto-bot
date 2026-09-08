@@ -114,15 +114,24 @@ class CoreExecutionGateway(ExecutionGateway):
         symbol: str,
         quantity: float,
         client_order_id: str | None = None,
+        execution_price: float | None = None,
     ) -> ExecutionOutcomeRecord:
+        # ``execution_price`` is used only for deterministic Paper fills. Live
+        # execution keeps the MARKET order price unset so the exchange remains
+        # authoritative for the actual fill price.
+        price = execution_price if self.source is ExecutionSource.PAPER else None
         return self.submit(
             ExecutionRequest(
                 symbol=symbol,
                 side=ExecutionSide.SELL,
                 quantity=quantity,
                 order_type="MARKET",
+                price=price,
                 client_order_id=client_order_id,
-                metadata={"trade_manager_action": "SPOT_CLOSE"},
+                metadata={
+                    "trade_manager_action": "SPOT_CLOSE",
+                    "paper_protected_execution": price is not None,
+                },
             )
         )
 
@@ -145,10 +154,6 @@ class CoreExecutionGateway(ExecutionGateway):
         metadata = {"core_status": status_value}
         raw_response = getattr(result, "raw_response", None)
         if isinstance(raw_response, dict):
-            # Paper execution records the exact post-execution cash balance.
-            # Propagate it through the Trade Manager boundary so the eventual
-            # SELL notification can show the balance at that specific exit,
-            # rather than the balance after later trades in the same cycle.
             if "paper_cash_after" in raw_response:
                 metadata["paper_cash_after"] = float(raw_response["paper_cash_after"])
             if "source" in raw_response:
