@@ -78,6 +78,32 @@ def _ticker_cache_snapshot() -> dict:
     }
 
 
+# Binance klines are requested for two entry timeframes across the whole Spot
+# universe, plus cached higher-timeframe context on cache expiry. The existing
+# implementation uses worker pools for throughput, but that can create a sharp
+# request burst against Binance's shared REST IP limits. Serialize only the
+# actual kline HTTP calls and enforce a small minimum gap between them. This
+# preserves the existing strategy/data contracts while removing the burst.
+_BINANCE_KLINE_MIN_INTERVAL = 0.25
+_binance_kline_request_lock = threading.Lock()
+_binance_kline_last_request_at = 0.0
+_original_rate_limited_fetch_klines = _legacy.fetch_klines
+
+
+def _rate_limited_fetch_klines(symbol: str, interval: str, limit: int):
+    global _binance_kline_last_request_at
+    with _binance_kline_request_lock:
+        now = time.monotonic()
+        wait = _BINANCE_KLINE_MIN_INTERVAL - (now - _binance_kline_last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        _binance_kline_last_request_at = time.monotonic()
+        return _original_rate_limited_fetch_klines(symbol, interval, limit)
+
+
+_legacy.fetch_klines = _rate_limited_fetch_klines
+
+
 def _loss_cooldown(symbol: str) -> float:
     return loss_cooldown_remaining(
         runtime.repository.get_closed_positions(),
