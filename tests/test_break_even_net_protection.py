@@ -14,7 +14,8 @@ class _PaperCloseGateway:
     def __init__(self, executed_price: float) -> None:
         self.executed_price = executed_price
 
-    def close_spot(self, *, symbol: str, quantity: float, client_order_id=None):
+    def close_spot(self, *, symbol: str, quantity: float, client_order_id=None, execution_price=None):
+        assert execution_price is not None
         return SimpleNamespace(
             success=True,
             outcome=ExecutionOutcome.SUCCESS,
@@ -22,6 +23,7 @@ class _PaperCloseGateway:
             average_price=self.executed_price,
             exchange_order_id="BE-REGRESSION-SELL",
             commission=quantity * self.executed_price * 0.001,
+            metadata={},
         )
 
     def submit(self, request):
@@ -56,7 +58,6 @@ def _break_even_decision(position: Position) -> PositionExitDecision:
 
 
 def test_break_even_must_not_close_below_fee_aware_net_break_even():
-    """A BE exit must not close the position at a price below fee-aware BE."""
     position = _position(100.10)
     repository = PositionRepository()
     gateway = _PaperCloseGateway(executed_price=100.10)
@@ -79,9 +80,7 @@ def test_break_even_must_not_close_below_fee_aware_net_break_even():
 
 
 def test_break_even_can_close_at_fee_aware_net_break_even():
-    """A BE exit may close once the actual execution price covers both fees."""
     execution_price = 100.2003
-    # The configured stop is exactly the fee-aware floor for this test.
     position = _position(execution_price, stop_loss=execution_price)
     repository = PositionRepository()
     gateway = _PaperCloseGateway(executed_price=execution_price)
