@@ -24,14 +24,11 @@ def build_runtime() -> ShadowTradeManagerRuntime:
 
 def test_stop_loss_exit_uses_configured_stop_price():
     runtime = build_runtime()
-    # Keep the regression inside the normal 1.2% Paper stop envelope.
-    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
+    position = runtime.open_position("BTCUSDT", 100.0, 99.0)
     assert position is not None
 
     runtime.update_market("BTCUSDT", price=95.0, **MARKET)
-    decision = PositionExitDecision(
-        True, PositionExitReason.STOP_LOSS, 95.0, "regression stop breach"
-    )
+    decision = PositionExitDecision(True, PositionExitReason.STOP_LOSS, 95.0, "regression stop breach")
     closed = runtime.facade.execute_decision(position.position_id, decision)
 
     assert closed is not None
@@ -44,18 +41,15 @@ def test_stop_loss_exit_uses_configured_stop_price():
 
 def test_break_even_exit_uses_fee_aware_protected_price():
     runtime = build_runtime()
-    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
+    position = runtime.open_position("BTCUSDT", 100.0, 99.0)
     assert position is not None
 
-    # The real BE policy moves the stop to the fee-aware break-even level.
     break_even_price = runtime.calculator.break_even_price(position)
     position.stop_loss = break_even_price
     runtime.repository.update(position)
 
     runtime.update_market("BTCUSDT", price=97.0, **MARKET)
-    decision = PositionExitDecision(
-        True, PositionExitReason.BREAK_EVEN, 97.0, "regression break-even breach"
-    )
+    decision = PositionExitDecision(True, PositionExitReason.BREAK_EVEN, 97.0, "regression break-even breach")
     closed = runtime.facade.execute_decision(position.position_id, decision)
 
     assert closed is not None
@@ -68,13 +62,11 @@ def test_break_even_exit_uses_fee_aware_protected_price():
 
 def test_non_protected_trailing_exit_keeps_observed_price():
     runtime = build_runtime()
-    position = runtime.open_position("BTCUSDT", 1.0, 99.0)
+    position = runtime.open_position("BTCUSDT", 100.0, 99.0)
     assert position is not None
 
     runtime.update_market("BTCUSDT", price=103.0, **MARKET)
-    decision = PositionExitDecision(
-        True, PositionExitReason.TRAILING_STOP, 103.0, "regression trailing exit"
-    )
+    decision = PositionExitDecision(True, PositionExitReason.TRAILING_STOP, 103.0, "regression trailing exit")
     closed = runtime.facade.execute_decision(position.position_id, decision)
 
     assert closed is not None
