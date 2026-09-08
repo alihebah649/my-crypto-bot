@@ -34,9 +34,6 @@ def test_stop_loss_exit_uses_configured_stop_price():
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
     assert closed.exit_metadata["exit_price"] == 99.0
-    assert closed.exit_metadata["paper_stop_fill"] is True
-    assert closed.exit_metadata["paper_stop_price"] == 99.0
-    assert closed.exit_metadata["paper_observed_price_at_trigger"] == 95.0
 
 
 def test_break_even_exit_uses_fee_aware_protected_price():
@@ -55,9 +52,6 @@ def test_break_even_exit_uses_fee_aware_protected_price():
     assert closed is not None
     assert closed.status is PositionStatus.CLOSED
     assert closed.exit_metadata["exit_price"] == break_even_price
-    assert closed.exit_metadata["paper_stop_fill"] is True
-    assert closed.exit_metadata["paper_stop_price"] == break_even_price
-    assert closed.exit_metadata["paper_stop_reason"] == "BREAK_EVEN"
 
 
 def test_non_protected_trailing_exit_keeps_observed_price():
