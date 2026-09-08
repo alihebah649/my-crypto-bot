@@ -24,7 +24,7 @@ from core.paper_risk_overlay import (
 )
 
 # Keep the original names populated by shadow_main_base.py intact for existing
-# tests and compatibility. Capture our own aliases for anything we wrap.
+tests and compatibility. Capture our own aliases for anything we wrap.
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
@@ -35,10 +35,6 @@ _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
 # -----------------------------------------------------------------------------
 # Paper ticker snapshot cache
 # -----------------------------------------------------------------------------
-# The 24h ticker is only used to obtain the current market price for scoring.
-# Keep a short-lived successful snapshot so a transient 429/418 does not erase
-# an otherwise valid market cycle. Never use an expired snapshot: once it is
-# stale, the engine remains fail-safe and produces no new entry data.
 _TICKER_CACHE_TTL = 120.0
 _ticker_cache: tuple[float, dict[str, dict]] | None = None
 _ticker_cache_lock = threading.RLock()
@@ -64,9 +60,6 @@ def _guarded_fetch_24h_tickers_with_cache():
     return data
 
 
-# This wrapper sits above the existing Binance 418/429 guard. A fresh snapshot
-# therefore avoids a REST call entirely; an expired snapshot still goes through
-# the existing guard and remains fail-safe when Binance is blocked.
 _legacy.fetch_24h_tickers = _guarded_fetch_24h_tickers_with_cache
 
 
@@ -175,8 +168,17 @@ _legacy.btc_crash_guard = _record_btc_crash_guard
 
 
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
-    """Paper-only: model a stop breach as a fill at the configured stop."""
-    if decision.reason is not PositionExitReason.STOP_LOSS:
+    """Paper-only: model a protected stop breach as a fill at position.stop_loss.
+
+    Both STOP_LOSS and BREAK_EVEN are protected-price exits.  In live trading a
+    stop can fill with slippage, but Paper Trading must not silently replace the
+    configured protection level with the later polling price.
+    """
+    protected_reasons = {
+        PositionExitReason.STOP_LOSS,
+        PositionExitReason.BREAK_EVEN,
+    }
+    if decision.reason not in protected_reasons:
         return _paper_original_facade_execute_decision(position_id, decision)
 
     position = runtime.repository.get(position_id)
@@ -201,6 +203,7 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
             result.exit_metadata["paper_stop_fill"] = True
             result.exit_metadata["paper_stop_price"] = stop_price
             result.exit_metadata["paper_observed_price_at_trigger"] = current_price
+            result.exit_metadata["paper_stop_reason"] = decision.reason.name
             runtime.repository.update(result)
         return result
     finally:
@@ -233,8 +236,6 @@ def _apply_paper_exit_protection() -> None:
         if current <= 0 or position.entry_price <= 0:
             continue
 
-        # Protection mode: once a meaningful profit existed, lock the move when
-        # price retraces. This is intentionally earlier than the normal TP.
         if profit_protection_trigger(
             entry_price=position.entry_price,
             current_price=current,
@@ -311,9 +312,6 @@ runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 def _process_market_cycle_with_overlays():
     result = _paper_original_process_market_cycle()
 
-    # The legacy BTC guard intentionally blocks all new entries during a crash.
-    # Preserve that safety rule, with one deliberately narrow exception for a
-    # very strong individual Swing setup.
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted(
             (_legacy.latest_scores or {}).items(),
@@ -341,8 +339,6 @@ def _process_market_cycle_with_overlays():
             trace["btc_crash_guard_drop_percent"] = _last_btc_guard["drop_percent"]
             trace["btc_crash_guard_exception_reason"] = "STRONG_SWING_SETUP"
 
-            # Crash exception is deliberately SWING-only, even if the same
-            # symbol also happens to satisfy the independent SCALP lane.
             _open_one_position(symbol, price, stop_loss, "SWING")
 
     return result
