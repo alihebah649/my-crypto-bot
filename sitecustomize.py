@@ -1,5 +1,6 @@
 """Runtime defaults and process-wide Binance REST protection."""
 
+import json
 import os
 import threading
 import time
@@ -35,13 +36,19 @@ if requests is not None:
         except (TypeError, ValueError):
             return _BINANCE_DEFAULT_RETRY
 
-    def _synthetic_block_error(remaining: float) -> requests.HTTPError:
+    def _synthetic_block_response(url: str, remaining: float) -> requests.Response:
         response = requests.Response()
-        response.status_code = 418
+        response.status_code = 200
         response.headers["Retry-After"] = str(max(1, int(remaining)))
         response.headers["X-Shadow-Binance-Circuit"] = "open"
-        response.url = "https://data-api.binance.vision/api/v3/market-data-circuit"
-        return requests.HTTPError("Binance market-data circuit is open", response=response)
+        response.url = str(url)
+        # Both protected market-data consumers already interpret an empty JSON
+        # list as no available market data. Returning a successful empty payload
+        # keeps the circuit state local to this layer and prevents upper guards
+        # from mistaking our own synthetic block for a new Binance 418/429.
+        response._content = b"[]"
+        response.encoding = "utf-8"
+        return response
 
     _original_session_request = requests.sessions.Session.request
 
@@ -51,7 +58,7 @@ if requests is not None:
             with _BINANCE_BLOCK_LOCK:
                 remaining = _BINANCE_BLOCK_UNTIL - time.time()
             if remaining > 0:
-                raise _synthetic_block_error(remaining)
+                return _synthetic_block_response(str(url), remaining)
 
         response = _original_session_request(self, method, url, **kwargs)
 
