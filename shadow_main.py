@@ -270,6 +270,68 @@ _legacy.process_market_cycle = _process_market_cycle_with_overlays
 runtime.open_position = _open_position_with_selected_mode
 
 
+# -----------------------------------------------------------------------------
+# Active-entrypoint market health observability.
+# The actual production entrypoint below starts _dual_mode_engine() directly,
+# so health notifications must live here rather than in the legacy starter.
+# Notifications are transition-based to avoid Telegram spam.
+# -----------------------------------------------------------------------------
+_MARKET_HEALTH_STATE = "UNKNOWN"
+_MARKET_HEALTH_LAST_ALERT_AT = 0.0
+_MARKET_HEALTH_HEARTBEAT_SECONDS = 3600.0
+_MARKET_HEALTH_LOCK = threading.Lock()
+
+
+def _market_health_notify(state: str, detail: str, *, force: bool = False) -> None:
+    global _MARKET_HEALTH_STATE, _MARKET_HEALTH_LAST_ALERT_AT
+    now = time.time()
+    with _MARKET_HEALTH_LOCK:
+        changed = state != _MARKET_HEALTH_STATE
+        heartbeat_due = (now - _MARKET_HEALTH_LAST_ALERT_AT) >= _MARKET_HEALTH_HEARTBEAT_SECONDS
+        if not force and not changed and not heartbeat_due:
+            return
+        _MARKET_HEALTH_STATE = state
+        _MARKET_HEALTH_LAST_ALERT_AT = now
+    message = f"📡 PAPER MARKET HEALTH\nState: {state}\n{detail}\nPAPER ONLY"
+    try:
+        _legacy.send_telegram_message(message)
+    except Exception:
+        _legacy.logger.exception("Market health Telegram notification failed")
+
+
+def _observe_market_health() -> None:
+    snapshot = _market_data_guard_snapshot()
+    data_count = len(_legacy.latest_scores or {})
+    symbol_count = len(TRADING_SYMBOLS)
+    status_code = snapshot.get("status_code")
+    blocked = bool(snapshot.get("blocked"))
+    last_path = snapshot.get("last_path") or ""
+    retry_in = float(snapshot.get("blocked_for_seconds", 0.0) or 0.0)
+
+    if status_code in {418, 429}:
+        _market_health_notify(
+            f"BINANCE RATE LIMIT {status_code}",
+            f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}",
+        )
+        return
+    if blocked:
+        _market_health_notify(
+            "BINANCE CIRCUIT OPEN",
+            f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s",
+        )
+        return
+    if data_count <= 0:
+        _market_health_notify(
+            "MARKET DATA DOWN",
+            f"No scored symbols available: 0/{symbol_count}\nLast guard status: {status_code or 'none'}",
+        )
+        return
+    _market_health_notify(
+        "MARKET DATA UP",
+        f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {_market_data_guard_snapshot().get('kline_cache_entries', 0)} entries",
+    )
+
+
 if __name__ == "__main__":
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
     threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
