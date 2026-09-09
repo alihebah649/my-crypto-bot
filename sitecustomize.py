@@ -1,9 +1,69 @@
-"""Runtime defaults loaded by Python before the application entrypoint."""
+"""Runtime defaults and process-wide Binance REST protection.
+
+Python imports this module before the application entrypoint. The Binance
+protection is intentionally limited to Binance hosts so Telegram and other
+HTTP traffic are unaffected.
+"""
 
 import os
+import threading
+import time
+from urllib.parse import urlparse
 
-# The bot consumes only public Spot market data. Binance documents
-# data-api.binance.vision as the dedicated base endpoint for public market-data
-# APIs, including klines and ticker endpoints. Keep an explicit Render
-# BINANCE_REST_URL override available for controlled testing.
+import requests
+
+# Binance documents data-api.binance.vision as the dedicated endpoint for
+# public Spot market data. Keep an explicit Render override available.
 os.environ.setdefault("BINANCE_REST_URL", "https://data-api.binance.vision")
+
+_BINANCE_BLOCK_LOCK = threading.RLock()
+_BINANCE_BLOCK_UNTIL = 0.0
+_BINANCE_DEFAULT_RETRY = 300.0
+
+
+def _is_binance_market_host(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "data-api.binance.vision" or host.endswith(".binance.com") or host == "binance.com"
+
+
+def _retry_after(response) -> float:
+    value = response.headers.get("Retry-After") if response is not None else None
+    try:
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return _BINANCE_DEFAULT_RETRY
+
+
+def _synthetic_block_error(remaining: float) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = 418
+    response.headers["Retry-After"] = str(max(1, int(remaining)))
+    response.url = "https://data-api.binance.vision/api/v3/market-data-circuit"
+    return requests.HTTPError("Binance market-data circuit is open", response=response)
+
+
+_original_session_request = requests.sessions.Session.request
+
+
+def _protected_session_request(self, method, url, **kwargs):
+    global _BINANCE_BLOCK_UNTIL
+    if _is_binance_market_host(str(url)):
+        with _BINANCE_BLOCK_LOCK:
+            remaining = _BINANCE_BLOCK_UNTIL - time.time()
+        if remaining > 0:
+            raise _synthetic_block_error(remaining)
+
+    response = _original_session_request(self, method, url, **kwargs)
+
+    if _is_binance_market_host(str(url)) and response.status_code in {418, 429}:
+        retry_after = _retry_after(response)
+        with _BINANCE_BLOCK_LOCK:
+            _BINANCE_BLOCK_UNTIL = max(_BINANCE_BLOCK_UNTIL, time.time() + retry_after)
+
+    return response
+
+
+requests.sessions.Session.request = _protected_session_request
