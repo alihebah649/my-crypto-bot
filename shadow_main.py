@@ -23,8 +23,6 @@ from core.paper_risk_overlay import (
     btc_recovery_stop,
 )
 
-# Keep the original names populated by shadow_main_base.py intact for existing
-# tests and compatibility. Capture our own aliases for anything we wrap.
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
@@ -67,23 +65,9 @@ def _ticker_cache_snapshot() -> dict:
         misses = _ticker_cache_misses
         stale_uses = _ticker_cache_stale_uses
     age = None if cached is None else max(0.0, now - cached[0])
-    return {
-        "entries": 0 if cached is None else len(cached[1]),
-        "age_seconds": None if age is None else round(age, 1),
-        "ttl_seconds": _TICKER_CACHE_TTL,
-        "fresh": bool(age is not None and age < _TICKER_CACHE_TTL),
-        "hits": hits,
-        "misses": misses,
-        "stale_uses": stale_uses,
-    }
+    return {"entries": 0 if cached is None else len(cached[1]), "age_seconds": None if age is None else round(age, 1), "ttl_seconds": _TICKER_CACHE_TTL, "fresh": bool(age is not None and age < _TICKER_CACHE_TTL), "hits": hits, "misses": misses, "stale_uses": stale_uses}
 
 
-# Binance klines are requested for two entry timeframes across the whole Spot
-# universe, plus cached higher-timeframe context on cache expiry. The existing
-# implementation uses worker pools for throughput, but that can create a sharp
-# request burst against Binance's shared REST IP limits. Serialize only the
-# actual kline HTTP calls and enforce a small minimum gap between them. This
-# preserves the existing strategy/data contracts while removing the burst.
 _BINANCE_KLINE_MIN_INTERVAL = 0.25
 _binance_kline_request_lock = threading.Lock()
 _binance_kline_last_request_at = 0.0
@@ -105,25 +89,14 @@ _legacy.fetch_klines = _rate_limited_fetch_klines
 
 
 def _loss_cooldown(symbol: str) -> float:
-    return loss_cooldown_remaining(
-        runtime.repository.get_closed_positions(),
-        symbol,
-        now=time.time(),
-        cooldown_seconds=REENTRY_COOLDOWN_SECONDS,
-    )
+    return loss_cooldown_remaining(runtime.repository.get_closed_positions(), symbol, now=time.time(), cooldown_seconds=REENTRY_COOLDOWN_SECONDS)
 
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     remaining = _loss_cooldown(symbol)
     if remaining > 0:
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
-        trace.update({
-            "result": "REJECTED_LOSS_COOLDOWN",
-            "loss_cooldown_seconds": round(remaining, 1),
-            "loss_cooldown_hours": round(remaining / 3600.0, 2),
-            "trade_mode": mode,
-            "execution": "NOT_RUN",
-        })
+        trace.update({"result": "REJECTED_LOSS_COOLDOWN", "loss_cooldown_seconds": round(remaining, 1), "loss_cooldown_hours": round(remaining / 3600.0, 2), "trade_mode": mode, "execution": "NOT_RUN"})
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     _current_trade_mode["value"] = mode
@@ -178,7 +151,6 @@ _legacy.btc_crash_guard = _record_btc_crash_guard
 
 
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
-    """Annotate protected Paper exits after deterministic protected-price fill."""
     protected_reasons = {PositionExitReason.STOP_LOSS, PositionExitReason.BREAK_EVEN}
     if decision.reason not in protected_reasons:
         return _paper_original_facade_execute_decision(position_id, decision)
@@ -201,7 +173,6 @@ runtime.facade.execute_decision = _paper_stop_fill_wrapper
 
 
 def _apply_paper_exit_protection() -> None:
-    """Apply Paper-only protection before the normal independent watchdog."""
     active = [p for p in runtime.repository.get_open_positions() if p.status in {PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED}]
     for position in active:
         current = float(position.current_price)
@@ -270,12 +241,6 @@ _legacy.process_market_cycle = _process_market_cycle_with_overlays
 runtime.open_position = _open_position_with_selected_mode
 
 
-# -----------------------------------------------------------------------------
-# Active-entrypoint market health observability.
-# The actual production entrypoint below starts _dual_mode_engine() directly,
-# so health notifications must live here rather than in the legacy starter.
-# Notifications are transition-based to avoid Telegram spam.
-# -----------------------------------------------------------------------------
 _MARKET_HEALTH_STATE = "UNKNOWN"
 _MARKET_HEALTH_LAST_ALERT_AT = 0.0
 _MARKET_HEALTH_HEARTBEAT_SECONDS = 3600.0
@@ -307,32 +272,33 @@ def _observe_market_health() -> None:
     blocked = bool(snapshot.get("blocked"))
     last_path = snapshot.get("last_path") or ""
     retry_in = float(snapshot.get("blocked_for_seconds", 0.0) or 0.0)
-
     if status_code in {418, 429}:
-        _market_health_notify(
-            f"BINANCE RATE LIMIT {status_code}",
-            f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}",
-        )
+        _market_health_notify(f"BINANCE RATE LIMIT {status_code}", f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}")
         return
     if blocked:
-        _market_health_notify(
-            "BINANCE CIRCUIT OPEN",
-            f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s",
-        )
+        _market_health_notify("BINANCE CIRCUIT OPEN", f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s")
         return
     if data_count <= 0:
-        _market_health_notify(
-            "MARKET DATA DOWN",
-            f"No scored symbols available: 0/{symbol_count}\nLast guard status: {status_code or 'none'}",
-        )
+        _market_health_notify("MARKET DATA DOWN", f"No scored symbols available: 0/{symbol_count}\nLast guard status: {status_code or 'none'}")
         return
-    _market_health_notify(
-        "MARKET DATA UP",
-        f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries",
-    )
+    _market_health_notify("MARKET DATA UP", f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries")
+
+
+def _market_health_loop() -> None:
+    # Give the engine time to complete its first cycle before declaring a data
+    # outage. Then sample once per minute; notifications remain transition/
+    # heartbeat based, so this does not create Telegram spam.
+    time.sleep(30.0)
+    while True:
+        try:
+            _observe_market_health()
+        except Exception:
+            _legacy.logger.exception("Market health observer failed")
+        time.sleep(60.0)
 
 
 if __name__ == "__main__":
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
+    threading.Thread(target=_market_health_loop, daemon=True, name="paper-market-health").start()
     threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
     _legacy.run_flask()
