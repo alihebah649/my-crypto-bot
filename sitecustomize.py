@@ -39,6 +39,7 @@ if requests is not None:
         response = requests.Response()
         response.status_code = 418
         response.headers["Retry-After"] = str(max(1, int(remaining)))
+        response.headers["X-Shadow-Binance-Circuit"] = "open"
         response.url = "https://data-api.binance.vision/api/v3/market-data-circuit"
         return requests.HTTPError("Binance market-data circuit is open", response=response)
 
