@@ -328,7 +328,7 @@ def _observe_market_health() -> None:
         return
     _market_health_notify(
         "MARKET DATA UP",
-        f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {_market_data_guard_snapshot().get('kline_cache_entries', 0)} entries",
+        f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries",
     )
 
 
