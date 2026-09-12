@@ -68,4 +68,4 @@ def test_closed_position_keeps_exit_trace_and_realized_pnl(tmp_path):
     reloaded = PositionRepository(str(tmp_path / "positions.json")).get(closed.position_id)
     assert reloaded is not None
     assert reloaded.metadata["exit_decision_trace"]["execution_outcome"] == "CLOSED"
-    assert reloaded.metadata["realized_pnl"] if "realized_pnl" in reloaded.metadata else True
+    assert reloaded.realized_pnl == closed.realized_pnl
