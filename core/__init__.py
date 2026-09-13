@@ -45,7 +45,7 @@ def _install_market_data_layer() -> bool:
             PersistentMarketDataCache(state_dir / "market_data_cache.json"),
             ticker_symbols=symbols,
             ticker_batch_size=11,
-            ticker_group_interval_seconds=30.0,
+            ticker_group_interval_seconds=65.0,
         )
 
         original_ticker = ticker
@@ -137,7 +137,7 @@ def _install_market_data_layer() -> bool:
 
         threading.Thread(target=refresh_loop, daemon=True, name="persistent-market-data").start()
         try:
-            legacy.logger.info("Persistent market-data layer installed: 11+11 ticker groups, 30s cadence")
+            legacy.logger.info("Persistent market-data layer installed: 11+11 ticker groups, 65s inter-group gap")
         except Exception:
             pass
         return True
