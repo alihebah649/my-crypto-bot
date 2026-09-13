@@ -68,10 +68,16 @@ class BrainShadowRuntime:
         mode = str(strategy.get("trade_mode", "NONE")).upper()
         strategy_action = str(strategy.get("signal", "HOLD")).upper()
         score = float(strategy.get("score", 0.0) or 0.0)
+        scalp_score = strategy.get("scalp_score")
+        swing_score = strategy.get("swing_score")
         brain_decision: BrainDecision = self.brain.decide_entry(
             score=score,
             signal=strategy_action,
             scalp_confirmed_reversal=bool(strategy.get("scalp_confirmed_reversal", False)),
+            scalp_recovery_confirmation=bool(strategy.get("scalp_recovery_confirmation", False)),
+            scalp_score=float(scalp_score) if scalp_score is not None else None,
+            swing_score=float(swing_score) if swing_score is not None else None,
+            trade_mode=mode,
             risk_locked=risk_locked,
             existing_position=existing_position,
             market_regime=market_regime,

@@ -33,6 +33,7 @@ class PositionHistoryRecord:
     holding_hours: float
     roi_percent: float
     entry_metadata: dict = field(default_factory=dict)
+    entry_context: dict = field(default_factory=dict)
     exit_metadata: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
     archived_at: float = field(default_factory=time.time)
@@ -53,6 +54,7 @@ class PositionHistoryRepository:
                 if not isinstance(payload, list):
                     return
                 for item in payload:
+                    item.setdefault("entry_context", dict(item.get("entry_metadata", {}).get("entry_context", {})))
                     record = PositionHistoryRecord(**item)
                     self._records[record.position_id] = record
             except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -99,7 +101,9 @@ class PositionHistoryService:
             total_fees=position.total_fees, entry_fee=position.entry_fee,
             exit_fee=position.exit_fee, holding_hours=(closed_at-position.opened_at)/3600.0,
             roi_percent=(position.realized_pnl/cost*100.0 if cost else 0.0),
-            entry_metadata=dict(position.entry_metadata), exit_metadata=dict(position.exit_metadata),
+            entry_metadata=dict(position.entry_metadata),
+            entry_context=dict(position.entry_context),
+            exit_metadata=dict(position.exit_metadata),
             metadata=dict(position.metadata))
         self.repository.add_record(record)
         return record
@@ -117,6 +121,6 @@ class PositionHistoryService:
                 close_reason=PositionCloseReason[r.close_reason],
                 gross_pnl=r.gross_pnl, realized_pnl=r.realized_pnl, total_fees=r.total_fees,
                 entry_fee=r.entry_fee, exit_fee=r.exit_fee,
-                entry_metadata=dict(r.entry_metadata), exit_metadata=dict(r.exit_metadata),
-                metadata=dict(r.metadata)))
+                entry_metadata=dict(r.entry_metadata), entry_context=dict(r.entry_context),
+                exit_metadata=dict(r.exit_metadata), metadata=dict(r.metadata)))
         return result
