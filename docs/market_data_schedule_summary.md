@@ -1,0 +1,1 @@
+Two ticker groups of 11 symbols alternate every 30 seconds. Short and long candle datasets have independent freshness schedules. Persistent cache survives restart. Stale data is diagnostics-only and not entry-safe.
