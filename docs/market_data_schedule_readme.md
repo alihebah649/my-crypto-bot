@@ -1,0 +1,1 @@
+Ticker groups alternate every 30 seconds; 5m/15m/1h/4h refresh independently based on timeframe freshness and closed-candle timing. Stale data remains diagnostic-only and cannot authorize a new Paper entry.
