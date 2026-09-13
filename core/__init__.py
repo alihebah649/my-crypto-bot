@@ -51,16 +51,21 @@ def _install_market_data_layer() -> None:
     def managed_tickers() -> dict[str, Any]:
         try:
             manager.refresh_ticker_group(fetch_ticker_batch)
-        except Exception:
-            # Let the existing shadow_main guard own rate-limit reporting.
-            pass
+        except Exception as exc:
+            main = _shadow_main_module()
+            set_block = getattr(main, "_set_binance_block", None) if main is not None else None
+            if set_block is not None:
+                try:
+                    set_block(exc, "/api/v3/ticker/24hr")
+                except Exception:
+                    pass
         snapshot = manager.merged_ticker_snapshot()
         main = _shadow_main_module()
         if main is not None:
-            with getattr(main, "_ticker_cache_lock", threading.RLock()):
+            lock = getattr(main, "_ticker_cache_lock", threading.RLock())
+            with lock:
                 if hasattr(main, "_ticker_cache"):
                     main._ticker_cache = (time.time(), dict(snapshot))
-            # Preserve per-entry freshness as the actual entry gate below.
         return snapshot
 
     def managed_kline(symbol: str, interval: str, limit: int):
@@ -70,13 +75,19 @@ def _install_market_data_layer() -> None:
             return cached.payload
         main = _shadow_main_module()
         if main is not None and getattr(main, "_binance_guard_active", lambda: False)():
-            return cached.payload if cached is not None else []
+            return []
         try:
             data = original_kline(symbol, interval, limit)
             if data:
                 manager.cache.put(key, data)
             return data
-        except Exception:
+        except Exception as exc:
+            set_block = getattr(main, "_set_binance_block", None) if main is not None else None
+            if set_block is not None:
+                try:
+                    set_block(exc, f"/api/v3/klines:{symbol}:{interval}")
+                except Exception:
+                    pass
             return cached.payload if cached is not None else []
 
     original_open = getattr(legacy.runtime, "open_position", None)
@@ -104,8 +115,6 @@ def _install_market_data_layer() -> None:
     legacy._market_data_manager_installed = True
 
     def ticker_refresh_loop() -> None:
-        # Keep Binance calls independent from the legacy wrapper TTL. This
-        # guarantees alternating A/B snapshots remain close in time.
         while True:
             try:
                 managed_tickers()
