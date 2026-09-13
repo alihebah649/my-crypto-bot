@@ -164,7 +164,7 @@ class ShadowTradeManagerRuntime:
         self.controller = PositionController(self.position_risk, self.repository, self.execution_gateway)
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
-                                               risk_gateway=self.risk_gateway)
+                                               risk_gateway=self.risk_gateway, persistence_dir=persistence_dir)
         self.exit_watchdog = ExitWatchdog(repository=self.repository, risk_manager=self.position_risk, facade=self.facade)
 
         original_close_position = self.facade.close_position
