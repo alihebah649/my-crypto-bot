@@ -7,13 +7,14 @@ risk gateway and the Part-7 execution gateway.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from .calculator import PositionCalculator
 from .controller import PositionController
-from .history import PositionHistoryService
+from .history import PositionHistoryRepository, PositionHistoryService
 from .integration_contracts import ExecutionGateway, ExecutionRequest, ExecutionSide, RiskGateway, RiskSizingRequest
 from .metrics import PositionMetrics, PositionMetricsService
 from .models import Position, PositionCloseReason, PositionSide, PositionStatus
@@ -35,6 +36,8 @@ class PositionManagementFacade:
         execution_gateway: Optional[ExecutionGateway] = None,
         risk_gateway: Optional[RiskGateway] = None,
         risk_approval: Optional[Callable[..., bool]] = None,
+        persistence_dir: Optional[str] = None,
+        history_service: Optional[PositionHistoryService] = None,
     ) -> None:
         self.repository = repository
         self.controller = controller
@@ -48,7 +51,17 @@ class PositionManagementFacade:
         if execution_gateway is not None and getattr(controller, "execution_gateway", None) is None:
             controller.execution_gateway = execution_gateway
 
-        self.history_service = PositionHistoryService(calculator)
+        if history_service is not None:
+            self.history_service = history_service
+        else:
+            history_path = (
+                os.path.join(persistence_dir, "position_history.json")
+                if persistence_dir else None
+            )
+            self.history_service = PositionHistoryService(
+                repository=PositionHistoryRepository(path=history_path)
+            )
+
         self.metrics = PositionMetricsService(self.history_service)
         self.synchronizer = (
             PositionSynchronizer(repository, controller, calculator, exchange_adapter)
@@ -172,8 +185,10 @@ class PositionManagementFacade:
                                         f"Manual close: {reason.name}")
         position = self.controller.execute_exit_decision(position_id, decision, self.calculator)
         if position and position.status == PositionStatus.CLOSED:
-            position.close_reason = reason; self.repository.update(position)
-            self.history_service.record_closed_position(position); self.metrics.refresh()
+            position.close_reason = reason
+            self.repository.update(position)
+            self.history_service.record_closed_position(position)
+            self.metrics.refresh()
         return position
 
     def evaluate_all(self) -> List[Tuple[Position, PositionExitDecision]]:
@@ -182,22 +197,36 @@ class PositionManagementFacade:
     def execute_decision(self, position_id: str, decision: PositionExitDecision) -> Optional[Position]:
         position = self.controller.execute_exit_decision(position_id, decision, self.calculator)
         if position and position.status == PositionStatus.CLOSED:
-            self.history_service.record_closed_position(position); self.metrics.refresh()
+            self.history_service.record_closed_position(position)
+            self.metrics.refresh()
         return position
 
     def archive_closed_position(self, position_id: str) -> Optional[Position]:
         position = self.repository.get(position_id)
         if not position or position.status != PositionStatus.CLOSED:
             return None
-        self.history_service.record_closed_position(position); self.metrics.refresh()
+        self.history_service.record_closed_position(position)
+        self.metrics.refresh()
         return position
 
-    def get_open_positions(self) -> List[Position]: return self.repository.get_open_positions()
-    def get_hold_positions(self) -> List[Position]: return self.repository.get_hold_positions()
-    def get_review_required(self) -> List[Position]: return self.repository.get_review_required()
-    def refresh_metrics(self) -> None: self.metrics.refresh()
+    def get_open_positions(self) -> List[Position]:
+        return self.repository.get_open_positions()
+
+    def get_hold_positions(self) -> List[Position]:
+        return self.repository.get_hold_positions()
+
+    def get_review_required(self) -> List[Position]:
+        return self.repository.get_review_required()
+
+    def refresh_metrics(self) -> None:
+        self.metrics.refresh()
+
     def get_metrics(self) -> PositionMetrics:
-        self.metrics.refresh(); return self.metrics.get_metrics()
+        self.metrics.refresh()
+        return self.metrics.get_metrics()
+
     def synchronize(self) -> Optional[SynchronizationResult]:
         return self.synchronizer.synchronize() if self.synchronizer else None
-    def get_hold_statistics(self) -> Dict: return self.risk_manager.get_hold_statistics()
+
+    def get_hold_statistics(self) -> Dict:
+        return self.risk_manager.get_hold_statistics()
