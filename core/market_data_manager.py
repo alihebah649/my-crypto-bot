@@ -96,7 +96,7 @@ class MarketDataManager:
         *,
         ticker_symbols: Iterable[str],
         ticker_batch_size: int = 11,
-        ticker_group_interval_seconds: float = 30.0,
+        ticker_group_interval_seconds: float = 65.0,
         policies: Mapping[str, CachePolicy] | None = None,
     ):
         symbols = [str(symbol).upper() for symbol in ticker_symbols]
