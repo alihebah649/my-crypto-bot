@@ -28,6 +28,9 @@ class _Brain:
 
 
 class _Facade:
+    def __init__(self, position):
+        self.position = position
+
     def execute_decision(self, position_id, decision):
         self.position.status = PositionStatus.CLOSED
         self.position.closed_at = time.time()
@@ -67,7 +70,7 @@ def test_exit_watchdog_records_complete_exit_trace_for_scalp_stop():
     watchdog = ExitWatchdog(
         repository=_Repo(position),
         risk_manager=manager,
-        facade=_Facade(),
+        facade=_Facade(position),
         brain=_Brain(),
     )
 
@@ -125,7 +128,7 @@ def test_exit_watchdog_records_recovery_timing_and_hold_reason():
     watchdog = ExitWatchdog(
         repository=_Repo(position),
         risk_manager=manager,
-        facade=_Facade(),
+        facade=_Facade(position),
         brain=_Brain(),
     )
 
