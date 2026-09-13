@@ -43,6 +43,34 @@ class ExitWatchdog:
         self.metrics = BrainMetrics()
         self.last_diagnostics: List[Dict[str, Any]] = []
 
+    @staticmethod
+    def _trade_mode(position: Position) -> str:
+        return str(
+            position.entry_metadata.get(
+                "trade_mode",
+                position.metadata.get("trade_mode", "SWING"),
+            )
+        ).upper()
+
+    @staticmethod
+    def _market_regime(position: Position) -> Any:
+        context = position.hold_context or {}
+        market = context.get("market")
+        if isinstance(market, dict) and market.get("overall") is not None:
+            return market.get("overall")
+        return context.get("overall_regime", context.get("regime"))
+
+    @staticmethod
+    def _recovery_start(position: Position) -> float | None:
+        return position.entered_hold_at
+
+    @staticmethod
+    def _trailing_level(position: Position) -> Any:
+        for key in ("trailing_stop", "trailing_stop_price", "trailing_level"):
+            if key in position.metadata:
+                return position.metadata[key]
+        return None
+
     def run(self) -> ExitWatchdogResult:
         evaluated = exit_signals = closed = failed = 0
         diagnostics: List[Dict[str, Any]] = []
@@ -51,32 +79,57 @@ class ExitWatchdog:
 
         for position in positions:
             evaluated += 1
-            age_minutes = max(0.0, (time.time() - position.opened_at) / 60.0)
+            evaluation_at = time.time()
+            age_minutes = max(0.0, (evaluation_at - position.opened_at) / 60.0)
             pnl_percent = 0.0
             if position.entry_price > 0:
                 pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100.0
 
+            recovery_start = self._recovery_start(position)
+            recovery_duration_minutes = (
+                max(0.0, (evaluation_at - recovery_start) / 60.0)
+                if recovery_start is not None else 0.0
+            )
+            initial_stop = position.metadata.get("initial_stop_loss", position.stop_loss)
             trace: Dict[str, Any] = {
                 "position_id": position.position_id,
                 "symbol": position.symbol,
                 "status_before": position.status.name,
-                "trade_mode": str(
-                    position.entry_metadata.get(
-                        "trade_mode",
-                        position.metadata.get("trade_mode", "SWING"),
-                    )
-                ).upper(),
+                "trade_mode": self._trade_mode(position),
+                "entry_price": position.entry_price,
                 "current_price": position.current_price,
                 "stop_loss": position.stop_loss,
+                "initial_stop_loss": initial_stop,
+                "take_profit": position.take_profit,
                 "opened_at": position.opened_at,
+                "evaluation_at": evaluation_at,
                 "age_minutes": age_minutes,
                 "pnl_percent": pnl_percent,
+                "pnl_net": None,
+                "trailing_active": bool(
+                    position.metadata.get("trailing_active", False)
+                    or self._trailing_level(position) is not None
+                ),
+                "trailing_level": self._trailing_level(position),
+                "break_even_active": bool(position.metadata.get("break_even_activated", False)),
+                "recovery_mode": bool(position.entered_hold_at is not None),
+                "recovery_start_time": recovery_start,
+                "recovery_duration_minutes": recovery_duration_minutes,
+                "recovery_score": 0.0,
+                "market_regime": self._market_regime(position),
                 "decision": "NOT_RUN",
                 "reason": None,
                 "should_exit": False,
                 "review_required": False,
+                "hold_reason": None,
                 "execution": "NOT_RUN",
                 "execution_message": None,
+                "close_pnl": None,
+                "close_net_pnl": None,
+                "close_total_fees": None,
+                "close_entry_fee": None,
+                "close_exit_fee": None,
+                "close_exchange_order_id": None,
                 "brain_action": None,
                 "brain_confidence": None,
                 "brain_reason": None,
@@ -84,6 +137,13 @@ class ExitWatchdog:
                 "brain_authority": "ADVISORY",
             }
             try:
+                # Use the authoritative calculator for fee-aware unrealized net P&L.
+                try:
+                    calculation = self.risk_manager.calculator.calculate(position)
+                    trace["pnl_net"] = calculation.net_pnl
+                except Exception:
+                    pass
+
                 decision: PositionExitDecision = self.risk_manager.evaluate(position)
                 trace.update({
                     "decision": "EXIT" if decision.should_exit else ("REVIEW" if decision.review_required else "HOLD"),
@@ -95,7 +155,21 @@ class ExitWatchdog:
                     "hold_reason": decision.hold_reason,
                     "recovery_score": decision.recovery_score,
                     "status_after_evaluation": position.status.name,
+                    "market_context_after_evaluation": dict(position.hold_context or {}),
                 })
+                if trace["recovery_start_time"] is None and position.entered_hold_at is not None:
+                    trace["recovery_start_time"] = position.entered_hold_at
+                    trace["recovery_mode"] = True
+                    trace["recovery_duration_minutes"] = max(
+                        0.0, (evaluation_at - position.entered_hold_at) / 60.0
+                    )
+                trace["market_regime"] = self._market_regime(position)
+                trace["trailing_active"] = bool(
+                    position.metadata.get("trailing_active", False)
+                    or self._trailing_level(position) is not None
+                )
+                trace["trailing_level"] = self._trailing_level(position)
+                trace["break_even_active"] = bool(position.metadata.get("break_even_activated", False))
 
                 context = BrainContextBuilder.build(
                     position,
@@ -148,10 +222,20 @@ class ExitWatchdog:
                     closed += 1
                     trace["execution"] = "CLOSED"
                     trace["status_after_execution"] = result.status.name
+                    trace["close_pnl"] = result.gross_pnl
+                    trace["close_net_pnl"] = result.realized_pnl
+                    trace["close_total_fees"] = result.total_fees
+                    trace["close_entry_fee"] = result.entry_fee
+                    trace["close_exit_fee"] = result.exit_fee
+                    trace["close_exchange_order_id"] = result.exchange_order_id
+                    trace["closed_at"] = result.closed_at
+                    trace["close_reason"] = result.close_reason.name
+                    trace["execution_message"] = decision.message
                 elif decision.should_exit:
                     failed += 1
                     trace["execution"] = "FAILED"
                     trace["status_after_execution"] = getattr(result.status, "name", None) if result else None
+                    trace["execution_message"] = getattr(result, "message", None) or decision.message
                 else:
                     trace["execution"] = "REVIEW_APPLIED"
                     trace["status_after_execution"] = getattr(result.status, "name", None) if result else None

@@ -76,11 +76,21 @@ class _PortfolioProvider:
         cash = float(getattr(balance, "cash", 0.0)); assets = dict(getattr(balance, "assets", {}))
         asset_value = sum(quantity * self.market.price.get(symbol, 0.0) for symbol, quantity in assets.items())
         equity = cash + asset_value
-        cost_basis = sum(p.entry_price * p.quantity for p in self.repository.get_open_positions())
+        open_positions = self.repository.get_open_positions()
+        cost_basis = sum(p.entry_price * p.quantity for p in open_positions)
+        scalp_open_positions = sum(
+            1 for p in open_positions
+            if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP"
+        )
+        swing_open_positions = sum(
+            1 for p in open_positions
+            if str(p.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING"
+        )
         return PortfolioSnapshot(account_balance=equity, account_equity=equity, used_margin=asset_value,
                                  free_margin=cash, floating_pnl=asset_value - cost_basis, daily_pnl=0.0,
-                                 weekly_pnl=0.0, monthly_pnl=0.0,
-                                 open_positions=len(self.repository.get_open_positions()))
+                                 weekly_pnl=0.0, monthly_pnl=0.0, open_positions=len(open_positions),
+                                 scalp_open_positions=scalp_open_positions,
+                                 swing_open_positions=swing_open_positions)
 
 
 class _MarketProvider:
@@ -154,7 +164,7 @@ class ShadowTradeManagerRuntime:
         self.controller = PositionController(self.position_risk, self.repository, self.execution_gateway)
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
-                                               risk_gateway=self.risk_gateway)
+                                               risk_gateway=self.risk_gateway, persistence_dir=persistence_dir)
         self.exit_watchdog = ExitWatchdog(repository=self.repository, risk_manager=self.position_risk, facade=self.facade)
 
         original_close_position = self.facade.close_position

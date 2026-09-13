@@ -60,11 +60,6 @@ class PositionController:
             if self.execution_gateway is None:
                 return None
 
-            # Protected exits are triggered by the observed market price but
-            # must execute at the protected position level in Paper Trading.
-            # This also keeps Break-Even protection compatible with the
-            # fee-aware floor: the stop itself is the authoritative requested
-            # execution level, not the later polling price.
             protected_exit = decision.reason in {
                 PositionExitReason.STOP_LOSS,
                 PositionExitReason.BREAK_EVEN,
@@ -111,6 +106,16 @@ class PositionController:
             position.exit_fee=outcome.commission if outcome.commission>0 else result.exit_fee
             position.total_fees=position.entry_fee+position.exit_fee
             position.realized_pnl=position.gross_pnl-position.total_fees
+            existing_trace = dict(position.metadata.get("exit_decision_trace", {}))
+            existing_trace.update({
+                "execution_outcome": "CLOSED",
+                "close_reason": position.close_reason.name,
+                "exit_price": exit_price,
+                "realized_pnl": position.realized_pnl,
+                "fees": position.total_fees,
+                "closed_at": position.closed_at,
+            })
+            position.metadata["exit_decision_trace"] = existing_trace
             position.exit_metadata={"exit_price":exit_price,"exit_reason":decision.reason.name,"exit_message":decision.message,
                                     "exit_time":time.time(),"exchange_order_id":outcome.exchange_order_id,
                                     "executed_quantity":outcome.executed_quantity,"commission":outcome.commission,
