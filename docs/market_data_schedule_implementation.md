@@ -1,0 +1,1 @@
+Ticker groups: 11 + 11, alternating every 30 seconds. Candle datasets refresh independently according to freshness and closed-candle timing. Cache is persistent and stale data is diagnostic-only, not entry-safe.
