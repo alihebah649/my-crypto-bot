@@ -118,10 +118,26 @@ def _binance_get(path: str, params: Optional[dict] = None, timeout: float = 12.0
     return response.json()
 
 
+_TICKER_SYMBOL_BATCH_SIZE = 20
+
+
 def fetch_24h_tickers() -> dict[str, dict]:
-    symbols_json = json.dumps(TRADING_SYMBOLS, separators=(",", ":"))
-    data = _binance_get("/api/v3/ticker/24hr", {"symbols": symbols_json})
-    return {item["symbol"]: item for item in data if item.get("symbol") in TRADING_SYMBOLS}
+    """Fetch all configured 24h tickers without crossing the multi-symbol weight tier.
+
+    Binance applies a much larger request weight once more than 20 symbols are
+    included in this endpoint's ``symbols`` parameter. Keep the strategy's
+    complete universe intact, but issue bounded batches of <=20 symbols.
+    """
+    tickers: dict[str, dict] = {}
+    for start in range(0, len(TRADING_SYMBOLS), _TICKER_SYMBOL_BATCH_SIZE):
+        batch = TRADING_SYMBOLS[start : start + _TICKER_SYMBOL_BATCH_SIZE]
+        symbols_json = json.dumps(batch, separators=(",", ":"))
+        data = _binance_get("/api/v3/ticker/24hr", {"symbols": symbols_json})
+        for item in data:
+            symbol = item.get("symbol")
+            if symbol in batch:
+                tickers[symbol] = item
+    return tickers
 
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
