@@ -30,7 +30,11 @@ _paper_original_facade_execute_decision = runtime.facade.execute_decision
 _paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
 
-_TICKER_CACHE_TTL = 120.0
+# A 24h ticker response is only used for current price, bid/ask and reporting
+# volume. Keep a valid snapshot available through short Binance rate-limit
+# windows; never fabricate a fresh market price when no prior snapshot exists.
+_TICKER_CACHE_TTL = 300.0
+_TICKER_STALE_MAX_AGE = 900.0
 _ticker_cache: tuple[float, dict[str, dict]] | None = None
 _ticker_cache_lock = threading.RLock()
 _ticker_cache_hits = 0
@@ -51,6 +55,15 @@ def _guarded_fetch_24h_tickers_with_cache():
     if data:
         with _ticker_cache_lock:
             _ticker_cache = (time.time(), dict(data))
+        return data
+    # Binance can temporarily answer with 429/418; the underlying guard then
+    # returns {}. Reuse only a bounded recent snapshot so the strategy is not
+    # fed invented data and the normal retry path remains intact.
+    with _ticker_cache_lock:
+        cached = _ticker_cache
+        if cached is not None and now - cached[0] < _TICKER_STALE_MAX_AGE:
+            _ticker_cache_stale_uses += 1
+            return cached[1]
     return data
 
 
@@ -65,7 +78,16 @@ def _ticker_cache_snapshot() -> dict:
         misses = _ticker_cache_misses
         stale_uses = _ticker_cache_stale_uses
     age = None if cached is None else max(0.0, now - cached[0])
-    return {"entries": 0 if cached is None else len(cached[1]), "age_seconds": None if age is None else round(age, 1), "ttl_seconds": _TICKER_CACHE_TTL, "fresh": bool(age is not None and age < _TICKER_CACHE_TTL), "hits": hits, "misses": misses, "stale_uses": stale_uses}
+    return {
+        "entries": 0 if cached is None else len(cached[1]),
+        "age_seconds": None if age is None else round(age, 1),
+        "ttl_seconds": _TICKER_CACHE_TTL,
+        "stale_max_age_seconds": _TICKER_STALE_MAX_AGE,
+        "fresh": bool(age is not None and age < _TICKER_CACHE_TTL),
+        "hits": hits,
+        "misses": misses,
+        "stale_uses": stale_uses,
+    }
 
 
 _BINANCE_KLINE_MIN_INTERVAL = 0.25
