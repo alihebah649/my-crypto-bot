@@ -40,30 +40,36 @@ _ticker_cache_lock = threading.RLock()
 _ticker_cache_hits = 0
 _ticker_cache_misses = 0
 _ticker_cache_stale_uses = 0
+_ticker_cache_stale_active = False
 
 
 def _guarded_fetch_24h_tickers_with_cache():
-    global _ticker_cache, _ticker_cache_hits, _ticker_cache_misses, _ticker_cache_stale_uses
+    global _ticker_cache, _ticker_cache_hits, _ticker_cache_misses, _ticker_cache_stale_uses, _ticker_cache_stale_active
     now = time.time()
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_CACHE_TTL:
             _ticker_cache_hits += 1
+            _ticker_cache_stale_active = False
             return cached[1]
     _ticker_cache_misses += 1
     data = _paper_original_24h_tickers()
     if data:
         with _ticker_cache_lock:
             _ticker_cache = (time.time(), dict(data))
+            _ticker_cache_stale_active = False
         return data
     # Binance can temporarily answer with 429/418; the underlying guard then
     # returns {}. Reuse only a bounded recent snapshot so the strategy is not
-    # fed invented data and the normal retry path remains intact.
+    # fed invented data and the normal retry path remains intact. The snapshot
+    # remains diagnostic-only while stale: new paper entries are blocked.
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_STALE_MAX_AGE:
             _ticker_cache_stale_uses += 1
+            _ticker_cache_stale_active = True
             return cached[1]
+        _ticker_cache_stale_active = False
     return data
 
 
@@ -77,6 +83,7 @@ def _ticker_cache_snapshot() -> dict:
         hits = _ticker_cache_hits
         misses = _ticker_cache_misses
         stale_uses = _ticker_cache_stale_uses
+        stale_active = _ticker_cache_stale_active
     age = None if cached is None else max(0.0, now - cached[0])
     return {
         "entries": 0 if cached is None else len(cached[1]),
@@ -84,6 +91,7 @@ def _ticker_cache_snapshot() -> dict:
         "ttl_seconds": _TICKER_CACHE_TTL,
         "stale_max_age_seconds": _TICKER_STALE_MAX_AGE,
         "fresh": bool(age is not None and age < _TICKER_CACHE_TTL),
+        "stale_active": stale_active,
         "hits": hits,
         "misses": misses,
         "stale_uses": stale_uses,
@@ -115,6 +123,13 @@ def _loss_cooldown(symbol: str) -> float:
 
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
+    with _ticker_cache_lock:
+        stale_active = _ticker_cache_stale_active
+    if stale_active:
+        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+        trace.update({"result": "REJECTED_STALE_TICKER", "ticker_stale_active": True, "trade_mode": mode, "execution": "NOT_RUN"})
+        _legacy.logger.info("ENTRY BLOCKED %s: stale ticker snapshot active mode=%s", symbol, mode)
+        return None
     remaining = _loss_cooldown(symbol)
     if remaining > 0:
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
