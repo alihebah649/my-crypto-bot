@@ -1,6 +1,7 @@
+import sys
 from types import SimpleNamespace
 
-from trade_manager.history import PositionHistoryService
+from trade_manager.history import PositionHistoryRepository, PositionHistoryService
 from trade_manager.models import Position, PositionSide, PositionStatus
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 
@@ -114,49 +115,49 @@ def _strategy_score():
     }
 
 
-def test_filled_position_captures_strategy_entry_context_and_reloads_from_history(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        __import__("sys").modules[__name__],
-        "latest_scores",
-        {"OPUSDT": _strategy_score()},
-        raising=False,
-    )
-    # The runtime deliberately looks through the active entrypoint module names.
-    import sys
-
+def test_filled_position_captures_strategy_entry_context_and_history_persists_it(tmp_path):
     fake_entrypoint = SimpleNamespace(latest_scores={"OPUSDT": _strategy_score()})
-    monkeypatch.setitem(sys.modules, "shadow_main", fake_entrypoint)
+    previous = sys.modules.get("shadow_main")
+    sys.modules["shadow_main"] = fake_entrypoint
+    try:
+        runtime = _runtime_for_capture()
+        position = runtime.open_position("OPUSDT", 101.0, 99.5, "SCALP")
 
-    runtime = _runtime_for_capture()
-    position = runtime.open_position("OPUSDT", 101.0, 99.5, "SCALP")
+        assert position is not None
+        assert position.entry_metadata["trade_mode"] == "SCALP"
+        context = position.entry_metadata["entry_context"]
+        assert context["schema_version"] == 1
+        assert context["strategy_context_available"] is True
+        assert context["score"] == 77
+        assert context["scalp_score"] == 77
+        assert context["swing_score"] == 61
+        assert context["rsi5m"] == 41.2
+        assert context["volume_ratio_5m"] == 1.21
+        assert context["pattern_confirmed"] is True
+        assert context["scalp_confirmed_reversal"] is True
+        assert context["mtf_timeframe_bias"]["1h"] == "NEUTRAL"
+        assert context["filled_entry_price"] == 101.25
+        assert context["stop_distance_percent"] > 0
+        assert runtime.repository.updated[-1].entry_context == context
 
-    assert position is not None
-    assert position.entry_metadata["trade_mode"] == "SCALP"
-    context = position.entry_metadata["entry_context"]
-    assert context["strategy_context_available"] is True
-    assert context["score"] == 77
-    assert context["scalp_score"] == 77
-    assert context["swing_score"] == 61
-    assert context["rsi5m"] == 41.2
-    assert context["volume_ratio_5m"] == 1.21
-    assert context["pattern_confirmed"] is True
-    assert context["scalp_confirmed_reversal"] is True
-    assert context["mtf_timeframe_bias"]["1h"] == "NEUTRAL"
-    assert context["filled_entry_price"] == 101.25
-    assert context["stop_distance_percent"] > 0
-    assert runtime.repository.updated[-1].entry_context == context
+        history_repository = PositionHistoryRepository(str(tmp_path / "position_history.json"))
+        history = PositionHistoryService(repository=history_repository)
+        position.status = PositionStatus.CLOSED
+        position.closed_at = position.opened_at + 60.0
+        position.current_price = 99.0
+        position.realized_pnl = -1.25
+        position.gross_pnl = -1.15
+        position.total_fees = 0.10
+        history.record_closed_position(position)
 
-    history_path = str(tmp_path / "position_history.json")
-    history = PositionHistoryService(persistence_dir=str(tmp_path))
-    position.status = PositionStatus.CLOSED
-    position.closed_at = position.opened_at + 60.0
-    position.current_price = 99.0
-    position.realized_pnl = -1.25
-    position.gross_pnl = -1.15
-    position.total_fees = 0.10
-    history.record_closed_position(position)
-
-    reloaded = PositionHistoryService(persistence_dir=str(tmp_path)).get_all_closed_positions()[0]
-    assert reloaded.entry_metadata["entry_context"]["score"] == 77
-    assert reloaded.entry_metadata["entry_context"]["rsi5m"] == 41.2
-    assert reloaded.entry_metadata["entry_context"]["volume_ratio_5m"] == 1.21
+        reloaded = PositionHistoryService(
+            repository=PositionHistoryRepository(str(tmp_path / "position_history.json"))
+        ).get_all_closed_positions()[0]
+        assert reloaded.entry_metadata["entry_context"]["score"] == 77
+        assert reloaded.entry_metadata["entry_context"]["rsi5m"] == 41.2
+        assert reloaded.entry_metadata["entry_context"]["volume_ratio_5m"] == 1.21
+    finally:
+        if previous is None:
+            sys.modules.pop("shadow_main", None)
+        else:
+            sys.modules["shadow_main"] = previous
