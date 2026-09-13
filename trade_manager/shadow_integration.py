@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -123,6 +124,86 @@ class _PaperLossPeriodLedger:
             self.tracker.update(daily_pnl=daily, weekly_pnl=weekly, monthly_pnl=monthly)
 
 
+def _current_strategy_score(symbol: str) -> Optional[dict]:
+    """Read the score snapshot exposed by the active paper entrypoint."""
+    symbol = str(symbol).upper()
+    for module_name in ("shadow_main", "shadow_main_base", "shadow_main_legacy"):
+        module = sys.modules.get(module_name)
+        scores = getattr(module, "latest_scores", None) if module is not None else None
+        if isinstance(scores, dict):
+            score = scores.get(symbol)
+            if isinstance(score, dict) and str(score.get("symbol", symbol)).upper() == symbol:
+                return dict(score)
+    return None
+
+
+def _build_entry_context(*, symbol: str, trade_mode: str, requested_entry_price: float,
+                         filled_entry_price: float, stop_loss: float) -> dict:
+    strategy_score = _current_strategy_score(symbol)
+    context = {
+        "schema_version": 1,
+        "captured_at": time.time(),
+        "symbol": str(symbol).upper(),
+        "trade_mode": str(trade_mode).upper(),
+        "requested_entry_price": float(requested_entry_price),
+        "filled_entry_price": float(filled_entry_price),
+        "stop_loss": float(stop_loss),
+        "stop_distance_percent": (
+            (float(filled_entry_price) - float(stop_loss)) / float(filled_entry_price) * 100.0
+            if filled_entry_price > 0 else 0.0
+        ),
+        "strategy_context_available": strategy_score is not None,
+        "strategy_score": strategy_score,
+    }
+    if strategy_score is not None:
+        context.update({
+            "score": strategy_score.get("score"),
+            "scalp_score": strategy_score.get("scalp_score"),
+            "swing_score": strategy_score.get("swing_score"),
+            "scalp_signal": strategy_score.get("scalp_signal"),
+            "swing_signal": strategy_score.get("swing_signal"),
+            "reasons": list(strategy_score.get("reasons", [])),
+            "scalp_reasons": list(strategy_score.get("scalp_reasons", [])),
+            "swing_reasons": list(strategy_score.get("swing_reasons", [])),
+            "scalp_gate": strategy_score.get("scalp_gate"),
+            "scalp_gate_reasons": list(strategy_score.get("scalp_gate_reasons", [])),
+            "rsi5m": strategy_score.get("rsi5m"),
+            "rsi15m": strategy_score.get("rsi"),
+            "volume_ratio_5m": strategy_score.get("volume_ratio_5m"),
+            "volume_ratio_15m": strategy_score.get("volume_ratio"),
+            "atr": strategy_score.get("atr"),
+            "atr5m": strategy_score.get("atr5m"),
+            "lower_band_15m": strategy_score.get("lower_band"),
+            "middle_band_15m": strategy_score.get("middle_band"),
+            "upper_band_15m": strategy_score.get("upper_band"),
+            "lower_band_5m": strategy_score.get("lower_band_5m"),
+            "middle_band_5m": strategy_score.get("middle_band_5m"),
+            "upper_band_5m": strategy_score.get("upper_band_5m"),
+            "pattern": strategy_score.get("pattern"),
+            "pattern_confirmed": strategy_score.get("pattern_confirmed"),
+            "scalp_confirmed_reversal": strategy_score.get("scalp_confirmed_reversal"),
+            "scalp_recovery_confirmation": strategy_score.get("scalp_recovery_confirmation"),
+            "scalp_recovery_trigger_count": strategy_score.get("scalp_recovery_trigger_count"),
+            "scalp_recovery_trigger_reasons": list(strategy_score.get("scalp_recovery_trigger_reasons", [])),
+            "scalp_high_confidence_recovery": strategy_score.get("scalp_high_confidence_recovery"),
+            "scalp_context_only": strategy_score.get("scalp_context_only"),
+            "mtf_context_available": strategy_score.get("mtf_context_available"),
+            "mtf_bias": strategy_score.get("mtf_bias"),
+            "mtf_net": strategy_score.get("mtf_net"),
+            "mtf_weighted_bull": strategy_score.get("mtf_weighted_bull"),
+            "mtf_weighted_bear": strategy_score.get("mtf_weighted_bear"),
+            "mtf_higher_timeframes_bearish": strategy_score.get("mtf_higher_timeframes_bearish"),
+            "mtf_higher_timeframes_bullish": strategy_score.get("mtf_higher_timeframes_bullish"),
+            "mtf_countertrend_warning": strategy_score.get("mtf_countertrend_warning"),
+            "mtf_countertrend_veto": strategy_score.get("mtf_countertrend_veto"),
+            "mtf_aligned_bullish": strategy_score.get("mtf_aligned_bullish"),
+            "mtf_timeframe_bias": dict(strategy_score.get("mtf_timeframe_bias", {})),
+            "mtf_timeframe_strength": dict(strategy_score.get("mtf_timeframe_strength", {})),
+            "mtf_patterns": dict(strategy_score.get("mtf_patterns", {})),
+        })
+    return context
+
+
 class ShadowTradeManagerRuntime:
     """Fully composed Trade Manager runtime used by ``shadow_main.py``."""
     def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
@@ -212,6 +293,18 @@ class ShadowTradeManagerRuntime:
         facade_trace = dict(self.facade.last_entry_diagnostic)
         trace["facade_diagnostic"] = facade_trace
         if position is not None:
+            entry_context = _build_entry_context(
+                symbol=symbol,
+                trade_mode=mode,
+                requested_entry_price=entry_price,
+                filled_entry_price=position.entry_price,
+                stop_loss=position.stop_loss,
+            )
+            position.entry_context = dict(entry_context)
+            position.entry_metadata["entry_context"] = dict(entry_context)
+            position.metadata["entry_context"] = dict(entry_context)
+            self.repository.update(position)
+            trace["entry_context"] = dict(entry_context)
             trace.update({"execution": "FILLED", "execution_outcome": {"quantity": position.quantity,
                          "entry_price": position.entry_price, "exchange_order_id": position.exchange_order_id},
                          "result": "POSITION_OPENED"})
