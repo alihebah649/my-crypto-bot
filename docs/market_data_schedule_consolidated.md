@@ -1,0 +1,1 @@
+The market-data scheduler uses two 11-symbol ticker groups 30 seconds apart. This keeps SCALP latency low while reducing repeated Binance requests. Candle caches are refreshed independently by timeframe and new closed-candle timing.
