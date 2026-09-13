@@ -11,7 +11,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -96,7 +96,7 @@ class MarketDataManager:
         *,
         ticker_symbols: Iterable[str],
         ticker_batch_size: int = 11,
-        ticker_group_interval_seconds: float = 120.0,
+        ticker_group_interval_seconds: float = 30.0,
         policies: Mapping[str, CachePolicy] | None = None,
     ):
         symbols = [str(symbol).upper() for symbol in ticker_symbols]
@@ -109,7 +109,7 @@ class MarketDataManager:
         self.ticker_batch_size = int(ticker_batch_size)
         self.ticker_group_interval_seconds = float(ticker_group_interval_seconds)
         self.policies = dict(policies or {
-            "ticker": CachePolicy(fresh_ttl_seconds=180.0, stale_max_age_seconds=900.0),
+            "ticker": CachePolicy(fresh_ttl_seconds=75.0, stale_max_age_seconds=300.0),
             "5m": CachePolicy(fresh_ttl_seconds=310.0, stale_max_age_seconds=900.0),
             "15m": CachePolicy(fresh_ttl_seconds=910.0, stale_max_age_seconds=1800.0),
             "1h": CachePolicy(fresh_ttl_seconds=3610.0, stale_max_age_seconds=7200.0),
@@ -171,10 +171,9 @@ class MarketDataManager:
                 return {}
             group = groups[self._next_ticker_group % len(groups)]
             fetched = dict(fetch_batch(group))
-            fetched_at = current
             for symbol in group:
                 if symbol in fetched:
-                    self.cache.put(f"ticker:{symbol}", fetched[symbol], fetched_at=fetched_at)
+                    self.cache.put(f"ticker:{symbol}", fetched[symbol], fetched_at=current)
             self._next_ticker_group = (self._next_ticker_group + 1) % len(groups)
             self._next_ticker_refresh_at = current + self.ticker_group_interval_seconds
             return {symbol: fetched[symbol] for symbol in group if symbol in fetched}
