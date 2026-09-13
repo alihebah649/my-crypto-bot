@@ -63,8 +63,10 @@ def _install_market_data_layer() -> bool:
             }
 
         def managed_tickers() -> dict[str, Any]:
+            refresh_succeeded = False
             try:
-                manager.refresh_ticker_group(fetch_ticker_batch)
+                fetched = manager.refresh_ticker_group(fetch_ticker_batch)
+                refresh_succeeded = bool(fetched)
             except Exception as exc:
                 main = _find_shadow_main()
                 set_block = getattr(main, "_set_binance_block", None) if main is not None else None
@@ -77,9 +79,20 @@ def _install_market_data_layer() -> bool:
             main = _find_shadow_main()
             if main is not None and hasattr(main, "_ticker_cache_lock"):
                 try:
+                    timestamps = []
+                    for symbol in manager.symbols:
+                        item = manager.cache.get(f"ticker:{symbol}")
+                        if item is None:
+                            timestamps = []
+                            break
+                        timestamps.append(item.fetched_at)
+                    oldest_fetched_at = min(timestamps) if timestamps else 0.0
                     with main._ticker_cache_lock:
-                        main._ticker_cache = (time.time(), dict(snapshot))
-                        main._ticker_cache_stale_active = False
+                        main._ticker_cache = (oldest_fetched_at, dict(snapshot))
+                        main._ticker_cache_stale_active = not refresh_succeeded and not timestamps
+                        if timestamps:
+                            now = time.time()
+                            main._ticker_cache_stale_active = (now - oldest_fetched_at) >= 75.0
                 except Exception:
                     pass
             return snapshot
@@ -101,7 +114,7 @@ def _install_market_data_layer() -> bool:
                 if data:
                     manager.cache.put(key, data)
                 return data
-            except Exception as exc:
+            except Exception:
                 return cached.payload if cached is not None else []
 
         legacy.fetch_24h_tickers = managed_tickers
