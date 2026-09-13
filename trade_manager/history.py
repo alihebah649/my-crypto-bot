@@ -79,8 +79,10 @@ class PositionHistoryRepository:
 
 
 class PositionHistoryService:
-    def __init__(self, calculator=None, repository=None):
-        self.repository = repository or PositionHistoryRepository()
+    def __init__(self, calculator=None, repository=None, persistence_dir: Optional[str] = None):
+        self.repository = repository or PositionHistoryRepository(
+            os.path.join(persistence_dir, "position_history.json") if persistence_dir else None
+        )
 
     def record_closed_position(self, position: Position) -> PositionHistoryRecord:
         if position.status != PositionStatus.CLOSED:
