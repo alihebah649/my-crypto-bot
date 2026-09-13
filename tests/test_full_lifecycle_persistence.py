@@ -1,30 +1,5 @@
-from trade_manager.integration_contracts import ExecutionGateway
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
-
-
-class _DeterministicPaperGateway(ExecutionGateway):
-    def __init__(self):
-        self.closed = []
-
-    def submit(self, request):
-        raise AssertionError("entry execution should use the runtime gateway")
-
-    def close_spot(self, *, symbol, quantity, client_order_id, execution_price=None):
-        self.closed.append((symbol, quantity, client_order_id, execution_price))
-        from trade_manager.integration_contracts import ExecutionOutcome, ExecutionOutcomeType
-
-        return ExecutionOutcome(
-            success=True,
-            outcome=ExecutionOutcomeType.FILLED,
-            requested_quantity=quantity,
-            executed_quantity=quantity,
-            average_price=float(execution_price or 101.0),
-            exchange_order_id="EXIT-RELOAD-1",
-            commission=0.0001,
-            message="paper close",
-            metadata={"source": "TEST"},
-        )
 
 
 def test_full_closed_lifecycle_persists_and_reloads(tmp_path):
