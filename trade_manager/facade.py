@@ -35,6 +35,7 @@ class PositionManagementFacade:
         execution_gateway: Optional[ExecutionGateway] = None,
         risk_gateway: Optional[RiskGateway] = None,
         risk_approval: Optional[Callable[..., bool]] = None,
+        persistence_dir: Optional[str] = None,
     ) -> None:
         self.repository = repository
         self.controller = controller
@@ -48,7 +49,7 @@ class PositionManagementFacade:
         if execution_gateway is not None and getattr(controller, "execution_gateway", None) is None:
             controller.execution_gateway = execution_gateway
 
-        self.history_service = PositionHistoryService(calculator)
+        self.history_service = PositionHistoryService(calculator, persistence_dir=persistence_dir)
         self.metrics = PositionMetricsService(self.history_service)
         self.synchronizer = (
             PositionSynchronizer(repository, controller, calculator, exchange_adapter)
