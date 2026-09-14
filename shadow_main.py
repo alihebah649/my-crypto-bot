@@ -369,7 +369,7 @@ def _emit_binance_metrics_snapshot() -> None:
         f"path_counts={path_counts} "
         f"path_weight_delta={path_weight} "
         f"weight_delta_sum={snapshot.get('observed_weight_delta_sum', 0)} "
-        f"last_weight_1m={snapshot.get('last_weight_1m')}" ,
+        f"last_weight_1m={snapshot.get('last_weight_1m')}",
         flush=True,
     )
 
