@@ -44,6 +44,10 @@ def test_generated_scalp_signal_reaches_selected_mode_runtime(monkeypatch):
         captured["entry_price"] = entry_price
         captured["stop_loss"] = stop_loss
         captured["mode"] = mode
+        # Match the contract of the real helper: opened positions carry the
+        # selected lane in both metadata stores used by the orchestrator trace.
+        position.entry_metadata["trade_mode"] = mode
+        position.metadata["trade_mode"] = mode
         return position
 
     monkeypatch.setattr(shadow_main, "_open_one_position", fake_open_one_position)
