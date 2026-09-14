@@ -7,12 +7,7 @@ from typing import Any, Callable
 
 
 def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock, kline_cache_ttl: dict[str, float]) -> Callable[[], dict]:
-    """Install diagnostics around the already-patched market-data wrappers.
-
-    This module deliberately does not alter market-data behavior. It only records
-    whether calls observe a fresh cache, an expired/missing cache, and whether the
-    guarded fetch subsequently refreshed the cache entry.
-    """
+    """Install diagnostics around the already-patched market-data wrappers."""
     if getattr(legacy, "_market_data_runtime_trace_installed", False):
         return legacy._market_data_runtime_trace_snapshot
 
@@ -36,6 +31,19 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
     last_events: list[dict[str, Any]] = []
     original_fetch_klines = legacy.fetch_klines
     original_fetch_strategy_data = legacy.fetch_strategy_data
+
+    def snapshot() -> dict[str, Any]:
+        now = time.time()
+        with lock:
+            data = dict(stats)
+            data["kline_calls_by_interval"] = dict(by_interval)
+            data["kline_hits_by_interval"] = dict(hits_by_interval)
+            data["kline_expired_or_missing_by_interval"] = dict(stale_by_interval)
+            data["kline_refreshes_by_interval"] = dict(refresh_by_interval)
+            data["kline_empty_returns_by_interval"] = dict(empty_by_interval)
+            data["last_events"] = list(last_events)
+        data["captured_at"] = now
+        return data
 
     def traced_fetch_klines(symbol: str, interval: str, limit: int):
         key = (str(symbol).upper(), str(interval), int(limit))
@@ -112,19 +120,6 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                     summary["kline_calls_by_interval"],
                     summary["kline_refreshes_by_interval"],
                 )
-
-    def snapshot() -> dict[str, Any]:
-        now = time.time()
-        with lock:
-            data = dict(stats)
-            data["kline_calls_by_interval"] = dict(by_interval)
-            data["kline_hits_by_interval"] = dict(hits_by_interval)
-            data["kline_expired_or_missing_by_interval"] = dict(stale_by_interval)
-            data["kline_refreshes_by_interval"] = dict(refresh_by_interval)
-            data["kline_empty_returns_by_interval"] = dict(empty_by_interval)
-            data["last_events"] = list(last_events)
-        data["captured_at"] = now
-        return data
 
     legacy.fetch_klines = traced_fetch_klines
     legacy.fetch_strategy_data = traced_fetch_strategy_data
