@@ -5,6 +5,16 @@ import threading
 import time
 from pathlib import Path
 
+# Explicitly load the existing process-wide Binance instrumentation before the
+# legacy entrypoint is executed. Render starts this file directly with
+# `python shadow_main.py`, so relying only on automatic sitecustomize discovery
+# is not sufficient for guaranteed observability.
+try:
+    import sitecustomize as _binance_metrics
+except Exception as exc:  # pragma: no cover - defensive runtime fallback
+    _binance_metrics = None
+    print(f"[BINANCE-METRICS] instrumentation_import_failed error={type(exc).__name__}: {exc}", flush=True)
+
 # PAPER ONLY entrypoint: execute the preserved original entrypoint in this
 # module's namespace so all existing globals/tests keep their behavior.
 _base_path = Path(__file__).with_name("shadow_main_base.py")
