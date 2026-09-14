@@ -29,11 +29,6 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         "market_data_manager_bound": False,
         "market_data_manager_kline_calls": 0,
     }
-    by_interval: Counter[str] = Counter()
-    hits_by_interval: Counter[str] = Counter()
-    stale_by_interval: Counter[str] = Counter()
-    refresh_by_interval: Counter[str] = Counter()
-    empty_by_interval: Counter[str] = Counter()
     freshness_by_state: Counter[str] = Counter()
     source_counts: Counter[str] = Counter()
     last_events: list[dict[str, Any]] = []
@@ -49,11 +44,6 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         now = time.time()
         with lock:
             data = dict(stats)
-            data["kline_calls_by_interval"] = dict(by_interval)
-            data["kline_hits_by_interval"] = dict(hits_by_interval)
-            data["kline_expired_or_missing_by_interval"] = dict(stale_by_interval)
-            data["kline_refreshes_by_interval"] = dict(refresh_by_interval)
-            data["kline_empty_returns_by_interval"] = dict(empty_by_interval)
             data["entry_freshness_by_state"] = dict(freshness_by_state)
             data["source_counts"] = dict(source_counts)
             data["last_events"] = list(last_events)
@@ -62,39 +52,46 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
 
     def _manager_cache_snapshot(symbol: str, interval: str, limit: int):
         if manager is None:
-            return None
+            return None, f"{interval}:{str(symbol).upper()}:{int(limit)}"
         key = f"{interval}:{str(symbol).upper()}:{int(limit)}"
         try:
             return manager.cache.get(key), key
         except Exception:
             return None, key
 
-    def _record_manager_kline(symbol: str, interval: str, limit: int, result: Any):
+    def _record_manager_kline(symbol: str, interval: str, limit: int, result: Any, before: Any, before_age: float | None):
         now = time.time()
-        cached, key = _manager_cache_snapshot(symbol, interval, limit)
-        cache_age = None
-        fetched_at = None
-        if cached is not None:
-            try:
-                fetched_at = float(cached.fetched_at)
-                cache_age = max(0.0, now - fetched_at)
-            except (TypeError, ValueError):
-                pass
-        previous = manager_provenance.get((str(symbol).upper(), str(interval), int(limit)))
-        source = "CACHE"
-        if previous is None or previous.get("manager_cache_fetched_at") != fetched_at:
-            if fetched_at is not None:
-                source = "REFRESHED"
-            elif result:
-                source = "FALLBACK_OR_UNTRACKED"
+        after, key = _manager_cache_snapshot(symbol, interval, limit)
+        before_fetched_at = None
+        after_fetched_at = None
+        try:
+            before_fetched_at = None if before is None else float(before.fetched_at)
+        except (TypeError, ValueError):
+            pass
+        try:
+            after_fetched_at = None if after is None else float(after.fetched_at)
+        except (TypeError, ValueError):
+            pass
+        if before_fetched_at is None and after_fetched_at is not None:
+            source = "REFRESHED"
+        elif before_fetched_at is not None and after_fetched_at != before_fetched_at:
+            source = "REFRESHED"
+        elif after_fetched_at is not None:
+            source = "CACHE_STALE" if (now - after_fetched_at) >= 310.0 else "CACHE"
+        elif result:
+            source = "FALLBACK_OR_UNTRACKED"
+        else:
+            source = "EMPTY"
+        after_age = None if after_fetched_at is None else max(0.0, now - after_fetched_at)
         provenance = {
             "captured_at": now,
             "symbol": str(symbol).upper(),
             "interval": str(interval),
             "limit": int(limit),
             "manager_cache_key": key,
-            "manager_cache_fetched_at": fetched_at,
-            "manager_cache_age_seconds": None if cache_age is None else round(cache_age, 3),
+            "manager_cache_fetched_at": after_fetched_at,
+            "manager_cache_age_seconds": None if after_age is None else round(after_age, 3),
+            "manager_cache_age_before_seconds": None if before_age is None else round(before_age, 3),
             "source": source,
             "returned_rows": len(result) if isinstance(result, list) else None,
         }
@@ -115,20 +112,15 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             cache_age = None if cached is None else max(0.0, now - cached[0])
             ttl = float(kline_cache_ttl.get(str(interval), 0.0))
             fresh = bool(cached is not None and cache_age is not None and cache_age < ttl)
-        with lock:
-            stats["kline_calls"] += 1
-            by_interval[str(interval)] += 1
-            if fresh:
-                stats["kline_hits"] += 1
-                hits_by_interval[str(interval)] += 1
-            else:
-                stats["kline_expired_or_missing"] += 1
-                stale_by_interval[str(interval)] += 1
         result = original_fetch_klines(symbol, interval, limit)
         with lock:
+            stats["kline_calls"] += 1
+            if fresh:
+                stats["kline_hits"] += 1
+            else:
+                stats["kline_expired_or_missing"] += 1
             if not result:
                 stats["kline_empty_returns"] += 1
-                empty_by_interval[str(interval)] += 1
             last_events.append({
                 "event": "LEGACY_KLINE",
                 "active_source": "LEGACY_FETCH_KLINES",
@@ -158,17 +150,15 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                 stats["fetch_strategy_last_elapsed_seconds"] = round(finished - started, 3)
                 summary = snapshot()
                 legacy.logger.info(
-                    "[MARKET-DATA-TRACE] strategy_call=%d elapsed=%.3fs kline_calls=%d manager_calls=%d freshness=%s source_counts=%s",
+                    "[MARKET-DATA-TRACE] strategy_call=%d elapsed=%.3fs manager_calls=%d freshness=%s source_counts=%s",
                     summary["fetch_strategy_calls"],
                     summary["fetch_strategy_last_elapsed_seconds"] or 0.0,
-                    summary["kline_calls"],
                     summary["market_data_manager_kline_calls"],
                     summary["entry_freshness_by_state"],
                     summary["source_counts"],
                 )
 
     def traced_score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m: list[dict]):
-        """Attach freshness using the exact manager provenance for this symbol."""
         result = original_score_symbol(symbol, ticker, candles_15m, candles_5m)
         symbol_key = str(symbol).upper()
         cache_key = (symbol_key, "5m", 60)
@@ -217,7 +207,6 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         return result
 
     def bind_market_data_manager(active_manager: Any) -> None:
-        """Bind tracing to the manager installed after legacy module import."""
         nonlocal manager, manager_wrapped
         with manager_lock:
             manager = active_manager
@@ -228,9 +217,16 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                 manager_wrapped = True
             else:
                 def traced_managed_kline(symbol: str, interval: str, limit: int):
+                    before, _ = _manager_cache_snapshot(symbol, interval, limit)
+                    before_age = None
+                    if before is not None:
+                        try:
+                            before_age = max(0.0, time.time() - float(before.fetched_at))
+                        except (TypeError, ValueError):
+                            before_age = None
                     result = active_fetch(symbol, interval, limit)
                     if str(interval) == "5m":
-                        _record_manager_kline(symbol, interval, limit, result)
+                        _record_manager_kline(symbol, interval, limit, result, before, before_age)
                     return result
                 traced_managed_kline._market_data_manager_runtime_wrapped = True
                 legacy.fetch_klines = traced_managed_kline
