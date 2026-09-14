@@ -124,6 +124,13 @@ def _install_market_data_layer() -> bool:
         legacy._market_data_manager_original_ticker = original_ticker
         legacy._market_data_manager_original_kline = original_kline
 
+        bind_trace = getattr(legacy, "_market_data_runtime_trace_bind_manager", None)
+        if callable(bind_trace):
+            try:
+                bind_trace(manager)
+            except Exception:
+                legacy.logger.exception("Market-data runtime trace manager binding failed")
+
         def refresh_loop() -> None:
             while True:
                 try:
