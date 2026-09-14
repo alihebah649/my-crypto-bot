@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 from core.market_data_runtime_trace import install
 
@@ -100,3 +101,45 @@ def test_score_result_marks_old_snapshot_stale_without_changing_signal():
     assert audit["cache_expired"] is True
     assert audit["decision_candle_close_time_ms"] == candles[-2]["close_time"]
     assert result["scalp_signal"] == "BUY"
+
+
+def test_trace_prefers_persistent_market_data_manager_cache():
+    now = time.time()
+    candles = [
+        _candle(int((now - 500) * 1000), int((now - 350) * 1000)),
+        _candle(int((now - 349) * 1000), int((now - 80) * 1000)),
+        _candle(int((now - 79) * 1000), int((now + 221) * 1000)),
+    ]
+    legacy = LegacyStub()
+    persistent_snapshot = SimpleNamespace(fetched_at=now - 25.0)
+
+    class CacheStub:
+        def get(self, key):
+            assert key == "5m:BTCUSDT:60"
+            return persistent_snapshot
+
+    class ManagerStub:
+        cache = CacheStub()
+        policies = {"5m": SimpleNamespace(fresh_ttl_seconds=310.0)}
+
+        def freshness_report(self):
+            return {"5m": {"entries": [{"key": "5m:BTCUSDT:60", "fresh": True}]}}
+
+    legacy.market_data_manager = ManagerStub()
+    legacy_manager_cache = {("BTCUSDT", "5m", 60): (now - 700.0, candles)}
+
+    install(
+        legacy=legacy,
+        kline_cache=legacy_manager_cache,
+        kline_cache_lock=threading.RLock(),
+        kline_cache_ttl={"5m": 310.0},
+    )
+
+    result = legacy.score_symbol("BTCUSDT", {"lastPrice": 100.5}, candles, candles)
+    audit = result["entry_freshness_5m"]
+
+    assert audit["cache_source"] == "PersistentMarketDataCache"
+    assert audit["cache_key"] == "5m:BTCUSDT:60"
+    assert audit["cache_age_seconds"] < 30.0
+    assert audit["cache_expired"] is False
+    assert audit["state"] == "FRESH"
