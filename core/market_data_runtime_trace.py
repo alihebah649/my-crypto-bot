@@ -202,7 +202,10 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                 "cache_expired": audit.get("cache_expired"),
                 "cache_source": audit.get("cache_source"),
             })
-            if isinstance(result, dict) and int(result.get("scalp_score", 0) or 0) >= 50:
+            if isinstance(result, dict) and (
+                int(result.get("scalp_score", 0) or 0) >= 50
+                or int(result.get("score", 0) or 0) >= 65
+            ):
                 diagnostic = {
                     "event": "SCALP_GATE_DIAGNOSTIC",
                     "at": time.time(),
