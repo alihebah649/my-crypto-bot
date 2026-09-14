@@ -27,11 +27,13 @@ def _find_shadow_main():
 
 
 def _start_score_snapshot_monitor(legacy: Any) -> None:
-    """Log high-value SCALP candidates from completed score snapshots.
+    """Log the highest completed score snapshots for SCALP diagnosis.
 
     This is diagnostic-only and reads in-memory state populated by the active
     market cycle. It performs no Binance/API requests and does not modify any
-    strategy, gate, risk, Trade Manager, or execution decision.
+    strategy, gate, risk, Trade Manager, or execution decision. Recording the
+    top snapshots regardless of score is intentional: a sub-65 scalp score is
+    precisely where we need to see which component is preventing entry.
     """
     if getattr(legacy, "_scalp_score_snapshot_monitor_started", False):
         return
@@ -49,44 +51,48 @@ def _start_score_snapshot_monitor(legacy: Any) -> None:
                         continue
                     selected_score = int(result.get("score", 0) or 0)
                     scalp_score = int(result.get("scalp_score", 0) or 0)
-                    if scalp_score >= 50 or selected_score >= 65:
-                        candidates.append({
-                            "symbol": str(symbol).upper(),
-                            "score": selected_score,
-                            "scalp_score": scalp_score,
-                            "swing_score": result.get("swing_score"),
-                            "scalp_signal": result.get("scalp_signal"),
-                            "trade_mode": result.get("trade_mode"),
-                            "scalp_gate": result.get("scalp_gate"),
-                            "scalp_gate_reasons": result.get("scalp_gate_reasons", []),
-                            "scalp_confirmed_reversal": result.get("scalp_confirmed_reversal"),
-                            "scalp_recovery_confirmation": result.get("scalp_recovery_confirmation"),
-                            "scalp_recovery_trigger_count": result.get("scalp_recovery_trigger_count"),
-                            "scalp_recovery_trigger_reasons": result.get("scalp_recovery_trigger_reasons", []),
-                            "scalp_context_only": result.get("scalp_context_only"),
-                            "volume_ratio_5m": result.get("volume_ratio_5m"),
-                            "scalp_min_volume_ratio": result.get("scalp_min_volume_ratio"),
-                            "rsi5m": result.get("rsi5m"),
-                            "scalp_max_rsi": result.get("scalp_max_rsi"),
-                            "pattern": result.get("pattern"),
-                            "pattern_confirmed": result.get("pattern_confirmed"),
-                            "mtf_countertrend_warning": result.get("mtf_countertrend_warning"),
-                            "mtf_countertrend_veto": result.get("mtf_countertrend_veto"),
-                            "mtf_aligned_bullish": result.get("mtf_aligned_bullish"),
-                            "entry_freshness_5m": result.get("entry_freshness_5m"),
-                        })
+                    candidates.append({
+                        "symbol": str(symbol).upper(),
+                        "score": selected_score,
+                        "scalp_score": scalp_score,
+                        "swing_score": result.get("swing_score"),
+                        "scalp_signal": result.get("scalp_signal"),
+                        "trade_mode": result.get("trade_mode"),
+                        "scalp_gate": result.get("scalp_gate"),
+                        "scalp_gate_reasons": result.get("scalp_gate_reasons", []),
+                        "scalp_confirmed_reversal": result.get("scalp_confirmed_reversal"),
+                        "scalp_recovery_confirmation": result.get("scalp_recovery_confirmation"),
+                        "scalp_recovery_trigger_count": result.get("scalp_recovery_trigger_count"),
+                        "scalp_recovery_trigger_reasons": result.get("scalp_recovery_trigger_reasons", []),
+                        "scalp_context_only": result.get("scalp_context_only"),
+                        "volume_ratio_5m": result.get("volume_ratio_5m"),
+                        "scalp_min_volume_ratio": result.get("scalp_min_volume_ratio"),
+                        "rsi5m": result.get("rsi5m"),
+                        "scalp_max_rsi": result.get("scalp_max_rsi"),
+                        "pattern": result.get("pattern"),
+                        "pattern_confirmed": result.get("pattern_confirmed"),
+                        "mtf_countertrend_warning": result.get("mtf_countertrend_warning"),
+                        "mtf_countertrend_veto": result.get("mtf_countertrend_veto"),
+                        "mtf_aligned_bullish": result.get("mtf_aligned_bullish"),
+                        "entry_freshness_5m": result.get("entry_freshness_5m"),
+                    })
                 candidates.sort(key=lambda row: (row["scalp_score"], row["score"], row["symbol"]), reverse=True)
-                if candidates:
+                top_candidates = candidates[:12]
+                if top_candidates:
                     fingerprint = tuple(
                         (
                             row["symbol"], row["score"], row["scalp_score"],
-                            row["scalp_gate"], tuple(row["scalp_gate_reasons"] or []),
+                            row["scalp_signal"], row["scalp_gate"],
+                            tuple(row["scalp_gate_reasons"] or []),
                         )
-                        for row in candidates[:12]
+                        for row in top_candidates
                     )
                     if fingerprint != last_fingerprint:
                         last_fingerprint = fingerprint
-                        legacy.logger.info("[SCALP-SNAPSHOT] %s", {"count": len(candidates), "candidates": candidates[:12]})
+                        legacy.logger.info(
+                            "[SCALP-SNAPSHOT] %s",
+                            {"count": len(candidates), "top": top_candidates},
+                        )
             except Exception:
                 try:
                     legacy.logger.exception("SCALP score snapshot monitor failed")
