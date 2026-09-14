@@ -48,10 +48,13 @@ def test_real_legacy_strategy_fetch_uses_current_kline_wrapper(monkeypatch):
         legacy.fetch_klines = lambda symbol, interval, limit: seen.append((symbol, interval, limit)) or [{"open_time": 1, "close": 1.0}]
         result = base._original_fetch_strategy_data()
         assert result[0]["TESTUSDT"]["lastPrice"] == "1"
-        assert set(seen) == {
+        # The legacy stage must request its two execution timeframes. The
+        # imported process can also have the independent MTF layer active,
+        # so extra 1h/4h observations are not failures of this assertion.
+        assert {
             ("TESTUSDT", "15m", 150),
             ("TESTUSDT", "5m", 60),
-        }
+        }.issubset(set(seen))
     finally:
         legacy.TRADING_SYMBOLS[:] = original_symbols
         legacy.fetch_24h_tickers = original_fetch_24h
