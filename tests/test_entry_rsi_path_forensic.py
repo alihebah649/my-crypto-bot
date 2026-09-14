@@ -18,18 +18,11 @@ def _series(count, price=100.0, volume=100.0):
 
 
 def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
-    """Lock the forensic distinction behind the observed Telegram symptom.
-
-    The live BUY message reads score['rsi'], while the dual-mode scalp gate
-    evaluates r5 (the 5m RSI). This test makes those values intentionally
-    different and proves the gate follows 5m RSI rather than the displayed
-    15m RSI.
-    """
+    """Prove the displayed RSI and scalp-gate RSI are intentionally distinct."""
     calls = []
 
     def fake_rsi(prices, period=14):
         calls.append(len(prices))
-        # score_symbol calculates 15m RSI before 5m RSI.
         return 57.21 if len(prices) >= 100 else 52.40
 
     monkeypatch.setattr("dual_mode_strategy.calculate_rsi", fake_rsi)
@@ -45,20 +38,19 @@ def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
             "frames": {},
         },
     )
-
-    candles_15m = _series(150)
-    candles_5m = _series(60)
-    # Make the latest closed 5m candles a confirmed bullish breakout so the
-    # gate can succeed without changing any production thresholds.
-    candles_5m[-3] = _candle(99.0, 100.0, 98.8, 99.5, 120.0)
-    candles_5m[-2] = _candle(99.5, 100.5, 99.4, 99.8, 130.0)
-    candles_5m[-1] = _candle(99.8, 101.5, 99.7, 101.0, 150.0)
+    # Force deterministic support and volume conditions, and a confirmed 5m
+    # reversal, without changing production logic or thresholds.
+    monkeypatch.setattr("dual_mode_strategy.calculate_bollinger", lambda *_args, **_kwargs: (100.0, 101.0, 102.0))
+    monkeypatch.setattr("dual_mode_strategy._volume_ratio", lambda *_args, **_kwargs: 1.20)
+    monkeypatch.setattr("dual_mode_strategy.calculate_atr", lambda *_args, **_kwargs: 1.0)
+    monkeypatch.setattr("dual_mode_strategy.calculate_ema", lambda *_args, **_kwargs: 99.0)
+    monkeypatch.setattr("dual_mode_strategy.bullish_pattern", lambda *_args, **_kwargs: (True, "BULLISH_BREAKOUT", True))
 
     result = score_symbol(
         "TESTUSDT",
-        {"lastPrice": "101.0"},
-        candles_15m,
-        candles_5m,
+        {"lastPrice": "100.0"},
+        _series(150),
+        _series(60),
     )
 
     assert result["rsi"] == 57.21
