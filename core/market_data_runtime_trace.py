@@ -51,9 +51,9 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         return data
 
     def _manager_cache_snapshot(symbol: str, interval: str, limit: int):
-        if manager is None:
-            return None, f"{interval}:{str(symbol).upper()}:{int(limit)}"
         key = f"{interval}:{str(symbol).upper()}:{int(limit)}"
+        if manager is None:
+            return None, key
         try:
             return manager.cache.get(key), key
         except Exception:
@@ -104,7 +104,6 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             del last_events[:-80]
 
     def traced_fetch_klines(symbol: str, interval: str, limit: int):
-        """Legacy-path fallback trace used only until the manager binding occurs."""
         key = (str(symbol).upper(), str(interval), int(limit))
         now = time.time()
         with kline_cache_lock:
