@@ -116,13 +116,17 @@ _original_rate_limited_fetch_klines = _legacy.fetch_klines
 
 def _rate_limited_fetch_klines(symbol: str, interval: str, limit: int):
     global _binance_kline_last_request_at
+    # Reserve only the send slot under the lock. The Binance network request
+    # must run after releasing it so one slow response cannot serialize all
+    # concurrent Kline workers.
     with _binance_kline_request_lock:
         now = time.monotonic()
         wait = _BINANCE_KLINE_MIN_INTERVAL - (now - _binance_kline_last_request_at)
         if wait > 0:
             time.sleep(wait)
         _binance_kline_last_request_at = time.monotonic()
-        return _original_rate_limited_fetch_klines(symbol, interval, limit)
+
+    return _original_rate_limited_fetch_klines(symbol, interval, limit)
 
 
 _legacy.fetch_klines = _rate_limited_fetch_klines
@@ -372,6 +376,27 @@ def _emit_binance_metrics_snapshot() -> None:
         f"last_weight_1m={snapshot.get('last_weight_1m')}",
         flush=True,
     )
+
+
+# Diagnostic-only runtime tracing. It wraps the already active fetch wrappers
+# and records cache HIT/EXPIRED/MISS plus cache refreshes without changing
+# return values, timings, thresholds, or trading decisions.
+try:
+    from core.market_data_runtime_trace import install as _install_market_data_runtime_trace
+    _market_data_runtime_trace_snapshot = _install_market_data_runtime_trace(
+        legacy=_legacy,
+        kline_cache=_kline_cache,
+        kline_cache_lock=_kline_cache_lock,
+        kline_cache_ttl=_KLINE_CACHE_TTL,
+    )
+except Exception as exc:  # pragma: no cover - diagnostic path must not break paper engine
+    _legacy.logger.exception("Market-data runtime trace installation failed: %s", exc)
+    _market_data_runtime_trace_snapshot = lambda: {"available": False, "error": str(exc)}
+
+
+@app.get("/market-data-trace")
+def _market_data_trace_endpoint():
+    return jsonify(_market_data_runtime_trace_snapshot()), 200
 
 
 def _market_health_loop() -> None:
