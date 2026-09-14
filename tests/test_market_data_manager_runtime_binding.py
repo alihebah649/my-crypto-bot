@@ -54,7 +54,6 @@ def test_runtime_trace_binds_to_actual_manager_cache_hit_path():
     cache = CacheStub({"5m:BTCUSDT:60": (now - 10.0, expected)})
     manager = ManagerStub(cache)
     legacy = LegacyStub()
-    legacy.market_data_manager = manager
 
     snapshot = install(
         legacy=legacy,
@@ -68,8 +67,11 @@ def test_runtime_trace_binds_to_actual_manager_cache_hit_path():
         cached = manager.get_for_analysis(interval, key)
         if cached is not None:
             return cached.payload
-        return legacy.fetch_klines(symbol, interval, limit)
+        data = legacy._raw_fetch(symbol, interval, limit)
+        manager.cache.put(key, data)
+        return data
 
+    legacy._raw_fetch = legacy.fetch_klines
     legacy.fetch_klines = managed_kline
     legacy._market_data_runtime_trace_bind_manager(manager)
 
@@ -88,7 +90,6 @@ def test_runtime_trace_records_manager_refresh_source():
     cache = CacheStub()
     manager = ManagerStub(cache)
     legacy = LegacyStub()
-    legacy.market_data_manager = manager
 
     snapshot = install(
         legacy=legacy,
