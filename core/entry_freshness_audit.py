@@ -16,10 +16,10 @@ def audit_5m_entry_freshness(
 ) -> dict[str, Any]:
     """Return diagnostic-only freshness metadata for a 5m strategy snapshot.
 
-    This function never changes candles or trading decisions. It identifies the
-    candle actually eligible for closed-candle strategy calculations and, when
-    a cache timestamp is available, measures snapshot age independently from
-    candle age.
+    The active strategy always scores ``candles_5m[:-1]``. Therefore the
+    penultimate raw candle is the exact candle used for the decision, even when
+    the newest raw row happens to be closed. This function mirrors that runtime
+    contract exactly and never changes the trading decision itself.
     """
     now = float(captured_at if captured_at is not None else time.time())
     result: dict[str, Any] = {
@@ -47,37 +47,38 @@ def audit_5m_entry_freshness(
     result["latest_raw_open_time_ms"] = latest_open
     result["latest_raw_close_time_ms"] = latest_close
 
-    latest_is_open = False
     if latest_close is not None:
         try:
-            latest_is_open = now * 1000.0 <= float(latest_close)
+            result["latest_raw_candle_open"] = now * 1000.0 <= float(latest_close)
         except (TypeError, ValueError):
-            latest_is_open = False
-    result["latest_raw_candle_open"] = latest_is_open
+            result["latest_raw_candle_open"] = False
 
-    # Strategy currently uses candles_5m[:-1], therefore the decision candle is
-    # the penultimate row when the newest Binance candle is still open. If the
-    # newest row is already closed, it is itself eligible.
-    if latest_is_open and len(candles_5m) >= 2:
-        decision = candles_5m[-2]
-    else:
-        decision = latest
+    if len(candles_5m) < 2:
+        return result
 
+    # This is the exact row selected by the active strategy's candles_5m[:-1]
+    # contract. We deliberately do not infer a different row from candle state.
+    decision = candles_5m[-2]
     decision_open = decision.get("open_time")
     decision_close = decision.get("close_time")
     result["decision_candle_open_time_ms"] = decision_open
     result["decision_candle_close_time_ms"] = decision_close
     if decision_close is not None:
         try:
-            result["decision_candle_age_seconds"] = round(max(0.0, now - float(decision_close) / 1000.0), 3)
+            result["decision_candle_age_seconds"] = round(
+                max(0.0, now - float(decision_close) / 1000.0), 3
+            )
         except (TypeError, ValueError):
             pass
 
     if cache_timestamp is not None:
-        age = max(0.0, now - float(cache_timestamp))
-        result["cache_age_seconds"] = round(age, 3)
-        if cache_ttl_seconds is not None:
-            result["cache_expired"] = age >= float(cache_ttl_seconds)
+        try:
+            age = max(0.0, now - float(cache_timestamp))
+            result["cache_age_seconds"] = round(age, 3)
+            if cache_ttl_seconds is not None:
+                result["cache_expired"] = age >= float(cache_ttl_seconds)
+        except (TypeError, ValueError):
+            pass
 
     if decision_close is None:
         result["state"] = "UNKNOWN"
