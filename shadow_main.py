@@ -331,6 +331,49 @@ def _observe_market_health() -> None:
     _market_health_notify("MARKET DATA UP", f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries")
 
 
+def _binance_metrics_snapshot_safe() -> dict:
+    if _binance_metrics is None:
+        return {"available": False, "error": "instrumentation_module_unavailable"}
+    try:
+        snapshot = _binance_metrics.binance_metrics_snapshot()
+        snapshot["available"] = True
+        return snapshot
+    except Exception as exc:  # pragma: no cover - defensive diagnostics path
+        return {"available": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.get("/binance-metrics")
+def _binance_metrics_endpoint():
+    return jsonify(_binance_metrics_snapshot_safe()), 200
+
+
+_BINANCE_METRICS_LAST_LOG_AT = 0.0
+_BINANCE_METRICS_LOG_INTERVAL = 60.0
+
+
+def _emit_binance_metrics_snapshot() -> None:
+    global _BINANCE_METRICS_LAST_LOG_AT
+    now = time.time()
+    if now - _BINANCE_METRICS_LAST_LOG_AT < _BINANCE_METRICS_LOG_INTERVAL:
+        return
+    _BINANCE_METRICS_LAST_LOG_AT = now
+    snapshot = _binance_metrics_snapshot_safe()
+    path_counts = snapshot.get("path_counts", {})
+    path_weight = snapshot.get("path_observed_weight_delta", {})
+    print(
+        "[BINANCE-METRICS-SNAPSHOT] "
+        f"total={snapshot.get('total_requests_seen', 0)} "
+        f"real={snapshot.get('real_outbound_requests', 0)} "
+        f"synthetic={snapshot.get('synthetic_circuit_responses', 0)} "
+        f"status={snapshot.get('status_counts', {})} "
+        f"path_counts={path_counts} "
+        f"path_weight_delta={path_weight} "
+        f"weight_delta_sum={snapshot.get('observed_weight_delta_sum', 0)} "
+        f"last_weight_1m={snapshot.get('last_weight_1m')}" ,
+        flush=True,
+    )
+
+
 def _market_health_loop() -> None:
     # Give the engine time to complete its first cycle before declaring a data
     # outage. Then sample once per minute; notifications remain transition/
@@ -339,6 +382,7 @@ def _market_health_loop() -> None:
     while True:
         try:
             _observe_market_health()
+            _emit_binance_metrics_snapshot()
         except Exception:
             _legacy.logger.exception("Market health observer failed")
         time.sleep(60.0)
