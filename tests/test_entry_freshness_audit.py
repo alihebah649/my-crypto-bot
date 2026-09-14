@@ -19,7 +19,7 @@ def _candles(*close_times):
 def test_open_latest_candle_uses_previous_closed_candle_and_reports_age():
     captured = 1_720_000_300.0
     candles = _candles(
-        int((captured - 300.0) * 1000),
+        int((captured - 60.0) * 1000),
         int((captured + 100.0) * 1000),
     )
     result = audit_5m_entry_freshness(
