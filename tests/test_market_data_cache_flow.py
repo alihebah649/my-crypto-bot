@@ -39,7 +39,11 @@ def test_real_legacy_strategy_fetch_uses_current_kline_wrapper(monkeypatch):
     original_fetch_klines = legacy.fetch_klines
     try:
         legacy.TRADING_SYMBOLS[:] = ["TESTUSDT"]
-        monkeypatch.setattr(legacy, "fetch_24h_tickers", lambda: {"TESTUSDT": {"lastPrice": "1", "bidPrice": "1", "askPrice": "1", "quoteVolume": "1"}})
+        monkeypatch.setattr(
+            legacy,
+            "fetch_24h_tickers",
+            lambda: {"TESTUSDT": {"lastPrice": "1", "bidPrice": "1", "askPrice": "1", "quoteVolume": "1"}},
+        )
         seen = []
         legacy.fetch_klines = lambda symbol, interval, limit: seen.append((symbol, interval, limit)) or [{"open_time": 1, "close": 1.0}]
         result = base._original_fetch_strategy_data()
