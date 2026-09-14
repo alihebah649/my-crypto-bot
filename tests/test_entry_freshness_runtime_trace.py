@@ -53,8 +53,8 @@ def test_score_result_contains_exact_5m_decision_candle_freshness():
     now = time.time()
     candles = [
         _candle(int((now - 700) * 1000), int((now - 400) * 1000)),
-        _candle(int((now - 399) * 1000), int((now - 99) * 1000)),
-        _candle(int((now - 98) * 1000), int((now + 202) * 1000)),
+        _candle(int((now - 399) * 1000), int((now - 80) * 1000)),
+        _candle(int((now - 79) * 1000), int((now + 221) * 1000)),
     ]
     cache = {("BTCUSDT", "5m", 60): (now - 20.0, candles)}
     legacy = LegacyStub()
