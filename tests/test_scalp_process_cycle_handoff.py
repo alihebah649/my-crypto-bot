@@ -65,10 +65,14 @@ def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
         captured["trade_mode"] = trade_mode
         return position
 
-    monkeypatch.setattr(shadow_main, "_original_runtime_open_position", fake_runtime_open_position)
+    # Test the actual orchestration handoff. Patching runtime.open_position
+    # avoids coupling this test to internal wrappers captured during module
+    # import and lets the assertion answer the intended question directly:
+    # did a generated SCALP BUY reach runtime?
+    monkeypatch.setattr(shadow_main.runtime, "open_position", fake_runtime_open_position)
     monkeypatch.setattr(shadow_main.runtime.controller, "has_position", lambda symbol: False)
-    monkeypatch.setattr(shadow_main, "_active_trade_modes", lambda symbol: set())
     monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda item: None)
+    monkeypatch.setattr(shadow_main, "_active_trade_modes", lambda symbol: set())
     monkeypatch.setattr(shadow_main, "_original_send_telegram_message", lambda message: True)
 
     shadow_main._legacy.process_market_cycle()
