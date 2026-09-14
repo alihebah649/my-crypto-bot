@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dual_mode_strategy
 import shadow_main
 from trade_manager.models import Position, PositionSide, PositionStatus
 
@@ -28,50 +27,34 @@ def _position() -> Position:
 
 
 def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
-    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 44.0)
-    monkeypatch.setattr(
-        dual_mode_strategy,
-        "calculate_bollinger",
-        lambda data, period=20, deviations=2.0: (
-            (100.0, 110.0, 121.0) if len(data) >= 100 else (99.5, 110.0, 121.0)
-        ),
-    )
-    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda data, window=20: 1.20)
-    monkeypatch.setattr(
-        dual_mode_strategy,
-        "bullish_pattern",
-        lambda data: (True, "MORNING_STAR", False),
-    )
-    monkeypatch.setattr(
-        dual_mode_strategy,
-        "_scalp_recovery_confirmation",
-        lambda data, current_rsi: (True, 2, ["5M_PRICE_RECOVERY", "5M_BULLISH_BODY"]),
-    )
-    monkeypatch.setattr(
-        dual_mode_strategy,
-        "analyze_multi_timeframe_context",
-        lambda data: {
-            "available": True,
-            "bias": "NEUTRAL",
-            "net": 0,
-            "weighted_bull": 0,
-            "weighted_bear": 0,
-            "weak_countertrend_recovery": False,
-            "aligned_bullish": False,
-            "higher_timeframes_bearish": False,
-            "higher_timeframes_bullish": False,
-            "frames": {},
-        },
-    )
-
-    ticker = {
-        "lastPrice": "100.0",
-        "bidPrice": "99.99",
-        "askPrice": "100.01",
-        "quoteVolume": "1000000.0",
+    synthetic_score = {
+        "symbol": "FETUSDT",
+        "price": 100.0,
+        "atr": 2.0,
+        "score": 68,
+        "scalp_score": 68,
+        "scalp_gate": True,
+        "scalp_signal": "BUY",
+        "swing_score": 0,
+        "swing_signal": "HOLD",
+        "trade_mode": "SCALP",
+        "signal": "BUY",
+        "rsi": 44.0,
+        "ema100": 99.0,
+        "reasons": ["TEST_SCALP_SIGNAL"],
     }
-    strategy_data = ({"FETUSDT": ticker}, {"FETUSDT": candles(130)}, {"FETUSDT": candles(30)})
+
+    strategy_data = (
+        {"FETUSDT": {"lastPrice": "100.0", "bidPrice": "99.99", "askPrice": "100.01", "quoteVolume": "1000000.0"}},
+        {"FETUSDT": candles(130)},
+        {"FETUSDT": candles(30)},
+    )
     monkeypatch.setattr(shadow_main._legacy, "fetch_strategy_data", lambda: strategy_data)
+    monkeypatch.setattr(
+        shadow_main._legacy,
+        "score_symbol",
+        lambda symbol, ticker, candles_15m, candles_5m: dict(synthetic_score),
+    )
     monkeypatch.setattr(shadow_main._legacy, "fetch_klines", lambda symbol, interval, limit: candles(6))
 
     captured = {}
