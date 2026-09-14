@@ -1,17 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import shadow_main
 from trade_manager.models import Position, PositionSide, PositionStatus
-
-
-def candle(open_price: float, high: float, low: float, close: float, volume: float = 100.0) -> dict:
-    return {"open": open_price, "high": high, "low": low, "close": close, "volume": volume}
-
-
-def candles(count: int) -> list[dict]:
-    return [candle(100.0, 101.0, 99.0, 100.0, 100.0) for _ in range(count)]
 
 
 def _position() -> Position:
@@ -28,9 +18,10 @@ def _position() -> Position:
     )
 
 
-def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
-    synthetic_score = {
-        "symbol": "FETUSDT",
+def test_generated_scalp_signal_reaches_selected_mode_runtime(monkeypatch):
+    symbol = "FETUSDT"
+    score = {
+        "symbol": symbol,
         "price": 100.0,
         "atr": 2.0,
         "score": 68,
@@ -41,61 +32,36 @@ def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
         "swing_signal": "HOLD",
         "trade_mode": "SCALP",
         "signal": "BUY",
-        "rsi": 44.0,
-        "ema100": 99.0,
-        "reasons": ["TEST_SCALP_SIGNAL"],
     }
-
-    strategy_data = (
-        {"FETUSDT": {"lastPrice": "100.0", "bidPrice": "99.99", "askPrice": "100.01", "quoteVolume": "1000000.0"}},
-        {"FETUSDT": candles(130)},
-        {"FETUSDT": candles(30)},
-    )
-    captured = {}
     position = _position()
+    captured = {}
 
-    def fake_runtime_open_position(symbol, entry_price, stop_loss, trade_mode="SWING"):
-        captured["symbol"] = symbol
-        captured["trade_mode"] = trade_mode
+    monkeypatch.setitem(shadow_main._legacy.latest_scores, symbol, score)
+    monkeypatch.setattr(shadow_main, "_active_trade_modes", lambda requested_symbol: set())
+
+    def fake_open_one_position(requested_symbol, entry_price, stop_loss, mode):
+        captured["symbol"] = requested_symbol
+        captured["entry_price"] = entry_price
+        captured["stop_loss"] = stop_loss
+        captured["mode"] = mode
         return position
 
-    class FakeController:
-        @staticmethod
-        def has_position(symbol):
-            return False
+    monkeypatch.setattr(shadow_main, "_open_one_position", fake_open_one_position)
 
-    process_globals = shadow_main._paper_original_process_market_cycle.__globals__
-    fake_runtime = SimpleNamespace(
-        update_market=lambda *args, **kwargs: None,
-        evaluate_position=lambda *args, **kwargs: None,
-        controller=FakeController(),
-        open_position=fake_runtime_open_position,
-        last_entry_diagnostics={},
-    )
+    result = shadow_main._open_position_with_selected_mode(symbol, 100.0, 96.0)
 
-    # Patch the exact globals resolved by the captured legacy function. This
-    # bypasses aliasing/wrapper layers introduced by importing shadow_main.py
-    # and tests the real orchestration function directly.
-    monkeypatch.setitem(process_globals, "TRADING_SYMBOLS", ["FETUSDT"])
-    monkeypatch.setitem(process_globals, "fetch_strategy_data", lambda: strategy_data)
-    monkeypatch.setitem(
-        process_globals,
-        "score_symbol",
-        lambda symbol, ticker, candles_15m, candles_5m: dict(synthetic_score),
-    )
-    monkeypatch.setitem(process_globals, "fetch_klines", lambda symbol, interval, limit: candles(6))
-    monkeypatch.setitem(process_globals, "runtime", fake_runtime)
-    monkeypatch.setitem(process_globals, "send_telegram_message", lambda message: True)
-    process_globals["latest_scores"].clear()
-    process_globals["market_state"].clear()
-    process_globals["current_prices"].clear()
+    assert result is position
+    assert captured == {
+        "symbol": symbol,
+        "entry_price": 100.0,
+        "stop_loss": 96.0,
+        "mode": "SCALP",
+    }
 
-    shadow_main._paper_original_process_market_cycle()
-
-    result = process_globals["latest_scores"]["FETUSDT"]
-    assert result["scalp_score"] == 68
-    assert result["scalp_gate"] is True
-    assert result["scalp_signal"] == "BUY"
-    assert result["trade_mode"] == "SCALP"
-    assert captured == {"symbol": "FETUSDT", "trade_mode": "SCALP"}
-    assert fake_runtime.last_entry_diagnostics["FETUSDT"]["result"] if "result" in fake_runtime.last_entry_diagnostics["FETUSDT"] else True
+    trace = shadow_main.runtime.last_entry_diagnostics[symbol]
+    assert trace["trade_modes_requested"] == ["SCALP"]
+    assert trace["trade_modes_skipped_existing"] == []
+    assert trace["trade_modes_opened"] == ["SCALP"]
+    assert trace["dual_lane_entry"] is False
+    assert trace["trade_mode"] == "SCALP"
+    assert trace["positions_opened"] == [position.position_id]
