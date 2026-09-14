@@ -2,8 +2,10 @@
 
 import logging
 import os
+import sys
 import threading
 import time
+import traceback
 from collections import deque
 from urllib.parse import parse_qs, urlparse
 
@@ -99,8 +101,6 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
             if previous is None or weight_1m >= previous:
                 delta = weight_1m if previous is None else weight_1m - previous
             else:
-                # The one-minute counter rolled/reset, so treat the new raw
-                # value as the observed delta for this response.
                 delta = weight_1m
             delta = max(0, int(delta))
             _BINANCE_METRICS_WEIGHT_DELTA_SUM += delta
@@ -138,9 +138,6 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
         else:
             summary = None
 
-    # Render receives stdout; keep the log line compact and avoid dumping full
-    # query strings or headers. Endpoint-level counts remain enough to identify
-    # whether ticker, klines, or another Binance path is driving traffic.
     print(
         "[BINANCE-METRICS] request "
         f"method={str(method).upper()} path={path} status={status} "
@@ -186,38 +183,57 @@ if requests is not None:
         response.headers["Retry-After"] = str(max(1, int(remaining)))
         response.headers["X-Shadow-Binance-Circuit"] = "open"
         response.url = str(url)
-        # Both protected market-data consumers already interpret an empty JSON
-        # list as no available market data. Returning a successful empty payload
-        # keeps the circuit state local to this layer and prevents upper guards
-        # from mistaking our own synthetic block for a new Binance 418/429.
         response._content = b"[]"
         response.encoding = "utf-8"
         return response
 
     _original_session_request = requests.sessions.Session.request
+    _SLOW_BINANCE_REQUEST_SECONDS = float(os.getenv("BINANCE_SLOW_REQUEST_SECONDS", "15"))
+
+    def _dump_slow_request_stack(method: str, url: str, thread_id: int, started: float) -> None:
+        elapsed = time.monotonic() - started
+        if elapsed < _SLOW_BINANCE_REQUEST_SECONDS:
+            return
+        frame = sys._current_frames().get(thread_id)
+        stack = "".join(traceback.format_stack(frame)) if frame is not None else "<thread frame unavailable>"
+        path, descriptor = _request_descriptor(url)
+        print(
+            "[BINANCE-SLOW-REQUEST] "
+            f"elapsed_s={elapsed:.1f} method={str(method).upper()} path={path} "
+            f"params={descriptor} thread_id={thread_id}\n{stack}",
+            flush=True,
+        )
 
     def _protected_session_request(self, method, url, **kwargs):
         global _BINANCE_BLOCK_UNTIL
         url_string = str(url)
         is_binance = _is_binance_market_host(url_string)
         started = time.monotonic()
+        slow_timer = None
         synthetic = False
         if is_binance:
+            slow_timer = threading.Timer(
+                _SLOW_BINANCE_REQUEST_SECONDS,
+                _dump_slow_request_stack,
+                args=(method, url_string, threading.get_ident(), started),
+            )
+            slow_timer.daemon = True
+            slow_timer.start()
             with _BINANCE_BLOCK_LOCK:
                 remaining = _BINANCE_BLOCK_UNTIL - time.time()
             if remaining > 0:
                 synthetic = True
                 response = _synthetic_block_response(url_string, remaining)
-                _record_binance_request(
-                    method=method,
-                    url=url_string,
-                    response=response,
-                    synthetic=True,
-                    elapsed_ms=(time.monotonic() - started) * 1000.0,
-                )
+                _record_binance_request(method=method, url=url_string, response=response, synthetic=True,
+                                        elapsed_ms=(time.monotonic() - started) * 1000.0)
+                slow_timer.cancel()
                 return response
 
-        response = _original_session_request(self, method, url, **kwargs)
+        try:
+            response = _original_session_request(self, method, url, **kwargs)
+        finally:
+            if slow_timer is not None:
+                slow_timer.cancel()
 
         if is_binance:
             _record_binance_request(
@@ -235,8 +251,4 @@ if requests is not None:
 
     requests.sessions.Session.request = _protected_session_request
 
-
-# Keep a conventional logger import available to code that introspects
-# sitecustomize during diagnostics; request metrics are emitted with print so
-# they remain visible even before application logging is configured.
 logging.getLogger("BinanceRequestMetrics")
