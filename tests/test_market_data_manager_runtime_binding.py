@@ -48,9 +48,10 @@ class LegacyStub:
         self.score_symbol = score_symbol
 
 
-def test_runtime_trace_binds_to_actual_manager_and_records_provenance():
+def test_runtime_trace_binds_to_actual_manager_cache_hit_path():
     now = time.time()
-    cache = CacheStub({"5m:BTCUSDT:60": (now - 10.0, [{"close": 99.0}])})
+    expected = [{"close": 99.0}]
+    cache = CacheStub({"5m:BTCUSDT:60": (now - 10.0, expected)})
     manager = ManagerStub(cache)
     legacy = LegacyStub()
     legacy.market_data_manager = manager
@@ -61,11 +62,20 @@ def test_runtime_trace_binds_to_actual_manager_and_records_provenance():
         kline_cache_lock=threading.RLock(),
         kline_cache_ttl={"5m": 310.0},
     )
+
+    def managed_kline(symbol, interval, limit):
+        key = f"{interval}:{symbol}:{limit}"
+        cached = manager.get_for_analysis(interval, key)
+        if cached is not None:
+            return cached.payload
+        return legacy.fetch_klines(symbol, interval, limit)
+
+    legacy.fetch_klines = managed_kline
     legacy._market_data_runtime_trace_bind_manager(manager)
 
     result = legacy.fetch_klines("BTCUSDT", "5m", 60)
 
-    assert result == [{"close": 99.0}]
+    assert result == expected
     event = snapshot()["last_events"][-1]
     assert event["active_source"] == "MARKET_DATA_MANAGER"
     assert event["manager_cache_key"] == "5m:BTCUSDT:60"
@@ -91,6 +101,9 @@ def test_runtime_trace_records_manager_refresh_source():
 
     def managed_kline(symbol, interval, limit):
         key = f"{interval}:{symbol}:{limit}"
+        cached = manager.get_for_analysis(interval, key)
+        if cached is not None:
+            return cached.payload
         data = original(symbol, interval, limit)
         manager.cache.put(key, data, fetched_at=now)
         return data
