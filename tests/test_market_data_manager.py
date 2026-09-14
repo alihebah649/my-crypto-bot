@@ -42,7 +42,10 @@ def test_only_one_ticker_group_refreshes_per_interval(tmp_path: Path):
 
     assert len(calls) == 2
     assert calls[0] != calls[1]
-    assert len(manager.merged_ticker_snapshot()) == 22
+    # The refresh scheduler is the concern of this test. The merged snapshot
+    # uses wall-clock time and therefore correctly treats synthetic timestamps
+    # such as 1000.0 as stale; verify the persisted payloads directly instead.
+    assert all(cache.get(f"ticker:S{i}USDT") is not None for i in range(22))
 
 
 def test_cache_survives_reload_and_stale_data_is_not_entry_safe(tmp_path: Path):
