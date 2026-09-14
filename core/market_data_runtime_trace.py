@@ -9,7 +9,13 @@ from core.entry_freshness_audit import audit_5m_entry_freshness
 
 
 def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock, kline_cache_ttl: dict[str, float]) -> Callable[[], dict]:
-    """Install diagnostics around the already-patched market-data wrappers."""
+    """Install diagnostics around the active market-data path.
+
+    The runtime trace is diagnostic-only.  In particular, entry freshness is
+    measured from ``legacy.market_data_manager.cache`` when that manager is
+    installed, because that is the cache actually read by ``managed_kline``.
+    The legacy in-memory cache is retained only as a compatibility fallback.
+    """
     if getattr(legacy, "_market_data_runtime_trace_installed", False):
         return legacy._market_data_runtime_trace_snapshot
 
@@ -37,6 +43,52 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
     original_fetch_strategy_data = legacy.fetch_strategy_data
     original_score_symbol = legacy.score_symbol
 
+    def _cache_observation(symbol: str, interval: str, limit: int, now: float) -> dict[str, Any]:
+        """Read freshness metadata from the cache that the active fetch path uses."""
+        symbol_key = str(symbol).upper()
+        interval_key = str(interval)
+        key = f"{interval_key}:{symbol_key}:{int(limit)}"
+        manager = getattr(legacy, "market_data_manager", None)
+        if manager is not None:
+            try:
+                cached = manager.cache.get(key)
+                policy = manager.policies.get(interval_key)
+                if cached is not None:
+                    age = max(0.0, now - float(cached.fetched_at))
+                    ttl = None if policy is None else float(policy.fresh_ttl_seconds)
+                    return {
+                        "source": "PersistentMarketDataCache",
+                        "cache_key": key,
+                        "cache_timestamp": float(cached.fetched_at),
+                        "cache_age_seconds": round(age, 3),
+                        "cache_ttl_seconds": ttl,
+                        "cache_expired": None if ttl is None else age >= ttl,
+                    }
+                return {
+                    "source": "PersistentMarketDataCache",
+                    "cache_key": key,
+                    "cache_timestamp": None,
+                    "cache_age_seconds": None,
+                    "cache_ttl_seconds": None if policy is None else float(policy.fresh_ttl_seconds),
+                    "cache_expired": True,
+                }
+            except Exception:
+                pass
+
+        key_tuple = (symbol_key, interval_key, int(limit))
+        with kline_cache_lock:
+            cached = kline_cache.get(key_tuple)
+            ttl = float(kline_cache_ttl.get(interval_key, 0.0))
+        age = None if cached is None else max(0.0, now - float(cached[0]))
+        return {
+            "source": "legacy_kline_cache",
+            "cache_key": key_tuple,
+            "cache_timestamp": None if cached is None else float(cached[0]),
+            "cache_age_seconds": None if age is None else round(age, 3),
+            "cache_ttl_seconds": ttl,
+            "cache_expired": None if age is None else age >= ttl,
+        }
+
     def snapshot() -> dict[str, Any]:
         now = time.time()
         with lock:
@@ -48,6 +100,16 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             data["kline_empty_returns_by_interval"] = dict(empty_by_interval)
             data["entry_freshness_by_state"] = dict(freshness_by_state)
             data["last_events"] = list(last_events)
+        manager = getattr(legacy, "market_data_manager", None)
+        if manager is not None:
+            try:
+                data["market_data_cache_source"] = "PersistentMarketDataCache"
+                data["market_data_freshness_report"] = manager.freshness_report()
+            except Exception as exc:
+                data["market_data_cache_source"] = "PersistentMarketDataCache"
+                data["market_data_freshness_report_error"] = str(exc)
+        else:
+            data["market_data_cache_source"] = "legacy_kline_cache"
         data["captured_at"] = now
         return data
 
@@ -115,7 +177,7 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                 legacy.logger.info(
                     "[MARKET-DATA-TRACE] strategy_call=%d elapsed=%.3fs "
                     "kline_calls=%d hits=%d stale_or_missing=%d refreshes=%d empty=%d "
-                    "by_interval=%s refresh_by_interval=%s",
+                    "by_interval=%s refresh_by_interval=%s source=%s",
                     summary["fetch_strategy_calls"],
                     summary["fetch_strategy_last_elapsed_seconds"] or 0.0,
                     summary["kline_calls"],
@@ -125,37 +187,44 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                     summary["kline_empty_returns"],
                     summary["kline_calls_by_interval"],
                     summary["kline_refreshes_by_interval"],
+                    summary.get("market_data_cache_source"),
                 )
 
     def traced_score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m: list[dict]):
         """Attach exact 5m decision-candle freshness without changing scoring."""
+        captured_at = time.time()
         result = original_score_symbol(symbol, ticker, candles_15m, candles_5m)
         symbol_key = str(symbol).upper()
-        cache_key = (symbol_key, "5m", 60)
-        with kline_cache_lock:
-            cached = kline_cache.get(cache_key)
-            cache_timestamp = None if cached is None else float(cached[0])
-            cache_ttl = float(kline_cache_ttl.get("5m", 0.0))
+        observation = _cache_observation(symbol_key, "5m", 60, captured_at)
         audit = audit_5m_entry_freshness(
             candles_5m=candles_5m,
-            captured_at=time.time(),
-            cache_timestamp=cache_timestamp,
-            cache_ttl_seconds=cache_ttl,
+            captured_at=captured_at,
+            cache_timestamp=observation.get("cache_timestamp"),
+            cache_ttl_seconds=observation.get("cache_ttl_seconds"),
         )
+        audit["cache_source"] = observation.get("source")
+        audit["cache_key"] = observation.get("cache_key")
+        audit["snapshot_at"] = captured_at
         if isinstance(result, dict):
             result["entry_freshness_5m"] = audit
         with lock:
             stats["entry_freshness_audits"] += 1
             freshness_by_state[str(audit.get("state", "UNKNOWN"))] += 1
             last_events.append({
-                "at": time.time(),
+                "at": captured_at,
                 "event": "ENTRY_FRESHNESS_AUDIT",
                 "symbol": symbol_key,
                 "state": audit.get("state"),
+                "snapshot_at": captured_at,
+                "cache_source": observation.get("source"),
+                "cache_key": observation.get("cache_key"),
+                "cache_timestamp": observation.get("cache_timestamp"),
+                "decision_candle_open_time_ms": audit.get("decision_candle_open_time_ms"),
                 "decision_candle_close_time_ms": audit.get("decision_candle_close_time_ms"),
                 "decision_candle_age_seconds": audit.get("decision_candle_age_seconds"),
-                "cache_age_seconds": audit.get("cache_age_seconds"),
-                "cache_expired": audit.get("cache_expired"),
+                "cache_age_seconds": observation.get("cache_age_seconds"),
+                "cache_ttl_seconds": observation.get("cache_ttl_seconds"),
+                "cache_expired": observation.get("cache_expired"),
             })
             del last_events[:-40]
         return result
