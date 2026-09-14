@@ -26,6 +26,77 @@ def _find_shadow_main():
     return None
 
 
+def _start_score_snapshot_monitor(legacy: Any) -> None:
+    """Log high-value SCALP candidates from completed score snapshots.
+
+    This is diagnostic-only and reads in-memory state populated by the active
+    market cycle. It performs no Binance/API requests and does not modify any
+    strategy, gate, risk, Trade Manager, or execution decision.
+    """
+    if getattr(legacy, "_scalp_score_snapshot_monitor_started", False):
+        return
+    legacy._scalp_score_snapshot_monitor_started = True
+    last_fingerprint = None
+
+    def monitor() -> None:
+        nonlocal last_fingerprint
+        while True:
+            try:
+                latest = getattr(legacy, "latest_scores", {}) or {}
+                candidates = []
+                for symbol, result in latest.items():
+                    if not isinstance(result, dict):
+                        continue
+                    selected_score = int(result.get("score", 0) or 0)
+                    scalp_score = int(result.get("scalp_score", 0) or 0)
+                    if scalp_score >= 50 or selected_score >= 65:
+                        candidates.append({
+                            "symbol": str(symbol).upper(),
+                            "score": selected_score,
+                            "scalp_score": scalp_score,
+                            "swing_score": result.get("swing_score"),
+                            "scalp_signal": result.get("scalp_signal"),
+                            "trade_mode": result.get("trade_mode"),
+                            "scalp_gate": result.get("scalp_gate"),
+                            "scalp_gate_reasons": result.get("scalp_gate_reasons", []),
+                            "scalp_confirmed_reversal": result.get("scalp_confirmed_reversal"),
+                            "scalp_recovery_confirmation": result.get("scalp_recovery_confirmation"),
+                            "scalp_recovery_trigger_count": result.get("scalp_recovery_trigger_count"),
+                            "scalp_recovery_trigger_reasons": result.get("scalp_recovery_trigger_reasons", []),
+                            "scalp_context_only": result.get("scalp_context_only"),
+                            "volume_ratio_5m": result.get("volume_ratio_5m"),
+                            "scalp_min_volume_ratio": result.get("scalp_min_volume_ratio"),
+                            "rsi5m": result.get("rsi5m"),
+                            "scalp_max_rsi": result.get("scalp_max_rsi"),
+                            "pattern": result.get("pattern"),
+                            "pattern_confirmed": result.get("pattern_confirmed"),
+                            "mtf_countertrend_warning": result.get("mtf_countertrend_warning"),
+                            "mtf_countertrend_veto": result.get("mtf_countertrend_veto"),
+                            "mtf_aligned_bullish": result.get("mtf_aligned_bullish"),
+                            "entry_freshness_5m": result.get("entry_freshness_5m"),
+                        })
+                candidates.sort(key=lambda row: (row["scalp_score"], row["score"], row["symbol"]), reverse=True)
+                if candidates:
+                    fingerprint = tuple(
+                        (
+                            row["symbol"], row["score"], row["scalp_score"],
+                            row["scalp_gate"], tuple(row["scalp_gate_reasons"] or []),
+                        )
+                        for row in candidates[:12]
+                    )
+                    if fingerprint != last_fingerprint:
+                        last_fingerprint = fingerprint
+                        legacy.logger.info("[SCALP-SNAPSHOT] %s", {"count": len(candidates), "candidates": candidates[:12]})
+            except Exception:
+                try:
+                    legacy.logger.exception("SCALP score snapshot monitor failed")
+                except Exception:
+                    pass
+            time.sleep(5.0)
+
+    threading.Thread(target=monitor, daemon=True, name="scalp-score-snapshot").start()
+
+
 def _install_market_data_layer() -> bool:
     try:
         legacy = _find_legacy()
@@ -100,10 +171,6 @@ def _install_market_data_layer() -> bool:
         def managed_kline(symbol: str, interval: str, limit: int):
             key = f"{interval}:{str(symbol).upper()}:{int(limit)}"
             cached = manager.get_for_analysis(interval, key)
-            # Analysis may use bounded-stale data, but the execution data path
-            # must honor the dataset's fresh TTL.  Do not let a stale 5m
-            # snapshot suppress the refresh indefinitely; otherwise the scorer
-            # can repeatedly evaluate the same old candle and starve SCALP.
             if cached is not None and manager.entry_data_is_fresh(interval, key):
                 return cached.payload
             main = _find_shadow_main()
@@ -119,10 +186,6 @@ def _install_market_data_layer() -> bool:
                     manager.cache.put(key, data)
                 return data
             except Exception:
-                # Preserve bounded-stale analysis availability on transient
-                # network/rate-limit failures. Entry safety remains responsible
-                # for rejecting stale data rather than turning it into a fake
-                # fresh snapshot.
                 return cached.payload if cached is not None else []
 
         legacy.fetch_24h_tickers = managed_tickers
@@ -138,6 +201,8 @@ def _install_market_data_layer() -> bool:
                 bind_trace(manager)
             except Exception:
                 legacy.logger.exception("Market-data runtime trace manager binding failed")
+
+        _start_score_snapshot_monitor(legacy)
 
         def refresh_loop() -> None:
             while True:
