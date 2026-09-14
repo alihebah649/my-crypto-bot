@@ -116,13 +116,17 @@ _original_rate_limited_fetch_klines = _legacy.fetch_klines
 
 def _rate_limited_fetch_klines(symbol: str, interval: str, limit: int):
     global _binance_kline_last_request_at
+    # Reserve only the send slot under the lock. The Binance network request
+    # must run after releasing it so one slow response cannot serialize all
+    # concurrent Kline workers.
     with _binance_kline_request_lock:
         now = time.monotonic()
         wait = _BINANCE_KLINE_MIN_INTERVAL - (now - _binance_kline_last_request_at)
         if wait > 0:
             time.sleep(wait)
         _binance_kline_last_request_at = time.monotonic()
-        return _original_rate_limited_fetch_klines(symbol, interval, limit)
+
+    return _original_rate_limited_fetch_klines(symbol, interval, limit)
 
 
 _legacy.fetch_klines = _rate_limited_fetch_klines
