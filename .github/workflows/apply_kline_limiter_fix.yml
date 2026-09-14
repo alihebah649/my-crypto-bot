@@ -1,0 +1,64 @@
+name: Apply Kline Limiter Fix
+
+on:
+  push:
+    branches:
+      - audit/market-data-centralization
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: "!startsWith(github.event.head_commit.message, 'Apply Kline limiter lock fix')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 1
+
+      - name: Patch limiter without holding lock during network
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('shadow_main.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''def _rate_limited_fetch_klines(symbol: str, interval: str, limit: int):
+    global _binance_kline_last_request_at
+    with _binance_kline_request_lock:
+        now = time.monotonic()
+        wait = _BINANCE_KLINE_MIN_INTERVAL - (now - _binance_kline_last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        _binance_kline_last_request_at = time.monotonic()
+        return _original_rate_limited_fetch_klines(symbol, interval, limit)
+'''
+          new = '''def _rate_limited_fetch_klines(symbol: str, interval: str, limit: int):
+    global _binance_kline_last_request_at
+    # Reserve the send time only; never hold the scheduler lock while waiting
+    # for Binance's network response.
+    with _binance_kline_request_lock:
+        now = time.monotonic()
+        wait = _BINANCE_KLINE_MIN_INTERVAL - (now - _binance_kline_last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        _binance_kline_last_request_at = time.monotonic()
+
+    return _original_rate_limited_fetch_klines(symbol, interval, limit)
+'''
+          if old not in text:
+              raise SystemExit('Expected limiter block not found; refusing unsafe edit.')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add shadow_main.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Apply Kline limiter lock fix'
+          git push origin HEAD:${{ github.ref_name }}
