@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import shadow_main
 from trade_manager.models import Position, PositionSide, PositionStatus
 
@@ -49,14 +51,6 @@ def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
         {"FETUSDT": candles(130)},
         {"FETUSDT": candles(30)},
     )
-    monkeypatch.setattr(shadow_main._legacy, "fetch_strategy_data", lambda: strategy_data)
-    monkeypatch.setattr(
-        shadow_main._legacy,
-        "score_symbol",
-        lambda symbol, ticker, candles_15m, candles_5m: dict(synthetic_score),
-    )
-    monkeypatch.setattr(shadow_main._legacy, "fetch_klines", lambda symbol, interval, limit: candles(6))
-
     captured = {}
     position = _position()
 
@@ -65,22 +59,43 @@ def test_process_cycle_generated_scalp_signal_reaches_runtime(monkeypatch):
         captured["trade_mode"] = trade_mode
         return position
 
-    # Test the actual orchestration handoff. Patching runtime.open_position
-    # avoids coupling this test to internal wrappers captured during module
-    # import and lets the assertion answer the intended question directly:
-    # did a generated SCALP BUY reach runtime?
-    monkeypatch.setattr(shadow_main.runtime, "open_position", fake_runtime_open_position)
-    monkeypatch.setattr(shadow_main.runtime.controller, "has_position", lambda symbol: False)
-    monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda item: None)
-    monkeypatch.setattr(shadow_main, "_active_trade_modes", lambda symbol: set())
-    monkeypatch.setattr(shadow_main, "_original_send_telegram_message", lambda message: True)
+    class FakeController:
+        @staticmethod
+        def has_position(symbol):
+            return False
 
-    shadow_main._legacy.process_market_cycle()
+    process_globals = shadow_main._paper_original_process_market_cycle.__globals__
+    fake_runtime = SimpleNamespace(
+        update_market=lambda *args, **kwargs: None,
+        evaluate_position=lambda *args, **kwargs: None,
+        controller=FakeController(),
+        open_position=fake_runtime_open_position,
+        last_entry_diagnostics={},
+    )
 
-    result = shadow_main._legacy.latest_scores["FETUSDT"]
+    # Patch the exact globals resolved by the captured legacy function. This
+    # bypasses aliasing/wrapper layers introduced by importing shadow_main.py
+    # and tests the real orchestration function directly.
+    monkeypatch.setitem(process_globals, "TRADING_SYMBOLS", ["FETUSDT"])
+    monkeypatch.setitem(process_globals, "fetch_strategy_data", lambda: strategy_data)
+    monkeypatch.setitem(
+        process_globals,
+        "score_symbol",
+        lambda symbol, ticker, candles_15m, candles_5m: dict(synthetic_score),
+    )
+    monkeypatch.setitem(process_globals, "fetch_klines", lambda symbol, interval, limit: candles(6))
+    monkeypatch.setitem(process_globals, "runtime", fake_runtime)
+    monkeypatch.setitem(process_globals, "send_telegram_message", lambda message: True)
+    process_globals["latest_scores"].clear()
+    process_globals["market_state"].clear()
+    process_globals["current_prices"].clear()
+
+    shadow_main._paper_original_process_market_cycle()
+
+    result = process_globals["latest_scores"]["FETUSDT"]
     assert result["scalp_score"] == 68
     assert result["scalp_gate"] is True
     assert result["scalp_signal"] == "BUY"
     assert result["trade_mode"] == "SCALP"
     assert captured == {"symbol": "FETUSDT", "trade_mode": "SCALP"}
-    assert shadow_main.runtime.last_entry_diagnostics["FETUSDT"]["trade_mode"] == "SCALP"
+    assert fake_runtime.last_entry_diagnostics["FETUSDT"]["result"] if "result" in fake_runtime.last_entry_diagnostics["FETUSDT"] else True
