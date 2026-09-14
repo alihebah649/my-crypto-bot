@@ -47,8 +47,6 @@ def test_real_legacy_strategy_fetch_uses_current_kline_wrapper(monkeypatch):
         assert set(seen) == {
             ("TESTUSDT", "15m", 150),
             ("TESTUSDT", "5m", 60),
-            ("TESTUSDT", "1h", 60),
-            ("TESTUSDT", "4h", 60),
         }
     finally:
         legacy.TRADING_SYMBOLS[:] = original_symbols
