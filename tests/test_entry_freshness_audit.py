@@ -37,7 +37,10 @@ def test_open_latest_candle_uses_previous_closed_candle_and_reports_age():
 
 def test_expired_snapshot_is_marked_stale_even_when_candle_is_recent():
     captured = 1_720_000_600.0
-    candles = _candles(int((captured - 30.0) * 1000))
+    candles = _candles(
+        int((captured - 30.0) * 1000),
+        int((captured - 5.0) * 1000),
+    )
     result = audit_5m_entry_freshness(
         candles_5m=candles,
         captured_at=captured,
