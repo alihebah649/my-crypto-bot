@@ -5,6 +5,8 @@ import time
 from collections import Counter
 from typing import Any, Callable
 
+from core.entry_freshness_audit import audit_5m_entry_freshness
+
 
 def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock, kline_cache_ttl: dict[str, float]) -> Callable[[], dict]:
     """Install diagnostics around the already-patched market-data wrappers."""
@@ -22,15 +24,18 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         "kline_expired_or_missing": 0,
         "kline_refreshes": 0,
         "kline_empty_returns": 0,
+        "entry_freshness_audits": 0,
     }
     by_interval: Counter[str] = Counter()
     hits_by_interval: Counter[str] = Counter()
     stale_by_interval: Counter[str] = Counter()
     refresh_by_interval: Counter[str] = Counter()
     empty_by_interval: Counter[str] = Counter()
+    freshness_by_state: Counter[str] = Counter()
     last_events: list[dict[str, Any]] = []
     original_fetch_klines = legacy.fetch_klines
     original_fetch_strategy_data = legacy.fetch_strategy_data
+    original_score_symbol = legacy.score_symbol
 
     def snapshot() -> dict[str, Any]:
         now = time.time()
@@ -41,6 +46,7 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             data["kline_expired_or_missing_by_interval"] = dict(stale_by_interval)
             data["kline_refreshes_by_interval"] = dict(refresh_by_interval)
             data["kline_empty_returns_by_interval"] = dict(empty_by_interval)
+            data["entry_freshness_by_state"] = dict(freshness_by_state)
             data["last_events"] = list(last_events)
         data["captured_at"] = now
         return data
@@ -121,8 +127,42 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                     summary["kline_refreshes_by_interval"],
                 )
 
+    def traced_score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m: list[dict]):
+        """Attach exact 5m decision-candle freshness without changing scoring."""
+        result = original_score_symbol(symbol, ticker, candles_15m, candles_5m)
+        symbol_key = str(symbol).upper()
+        cache_key = (symbol_key, "5m", 60)
+        with kline_cache_lock:
+            cached = kline_cache.get(cache_key)
+            cache_timestamp = None if cached is None else float(cached[0])
+            cache_ttl = float(kline_cache_ttl.get("5m", 0.0))
+        audit = audit_5m_entry_freshness(
+            candles_5m=candles_5m,
+            captured_at=time.time(),
+            cache_timestamp=cache_timestamp,
+            cache_ttl_seconds=cache_ttl,
+        )
+        if isinstance(result, dict):
+            result["entry_freshness_5m"] = audit
+        with lock:
+            stats["entry_freshness_audits"] += 1
+            freshness_by_state[str(audit.get("state", "UNKNOWN"))] += 1
+            last_events.append({
+                "at": time.time(),
+                "event": "ENTRY_FRESHNESS_AUDIT",
+                "symbol": symbol_key,
+                "state": audit.get("state"),
+                "decision_candle_close_time_ms": audit.get("decision_candle_close_time_ms"),
+                "decision_candle_age_seconds": audit.get("decision_candle_age_seconds"),
+                "cache_age_seconds": audit.get("cache_age_seconds"),
+                "cache_expired": audit.get("cache_expired"),
+            })
+            del last_events[:-40]
+        return result
+
     legacy.fetch_klines = traced_fetch_klines
     legacy.fetch_strategy_data = traced_fetch_strategy_data
+    legacy.score_symbol = traced_score_symbol
     legacy._market_data_runtime_trace_installed = True
     legacy._market_data_runtime_trace_snapshot = snapshot
     return snapshot
