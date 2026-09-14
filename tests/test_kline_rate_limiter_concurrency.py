@@ -17,6 +17,9 @@ def test_kline_rate_limiter_does_not_hold_lock_during_network(monkeypatch):
 
     monkeypatch.setattr(module, "_original_rate_limited_fetch_klines", fake_underlying)
     monkeypatch.setattr(module, "_binance_kline_last_request_at", 0.0)
+    # Disable pacing in this unit test so it isolates the critical property:
+    # the network call must not execute while the scheduling lock is held.
+    monkeypatch.setattr(module, "_BINANCE_KLINE_MIN_INTERVAL", 0.0)
 
     results = []
 
@@ -33,8 +36,6 @@ def test_kline_rate_limiter_does_not_hold_lock_during_network(monkeypatch):
 
     second.start()
     time.sleep(0.15)
-    # The second request must be able to reach the underlying network call
-    # while the first request is still waiting on its network response.
     assert len(started) == 2, "Kline limiter is serializing network requests under its lock"
 
     release.set()
