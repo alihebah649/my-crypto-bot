@@ -374,6 +374,27 @@ def _emit_binance_metrics_snapshot() -> None:
     )
 
 
+# Diagnostic-only runtime tracing. It wraps the already active fetch wrappers
+# and records cache HIT/EXPIRED/MISS plus cache refreshes without changing
+# return values, timings, thresholds, or trading decisions.
+try:
+    from core.market_data_runtime_trace import install as _install_market_data_runtime_trace
+    _market_data_runtime_trace_snapshot = _install_market_data_runtime_trace(
+        legacy=_legacy,
+        kline_cache=_kline_cache,
+        kline_cache_lock=_kline_cache_lock,
+        kline_cache_ttl=_KLINE_CACHE_TTL,
+    )
+except Exception as exc:  # pragma: no cover - diagnostic path must not break paper engine
+    _legacy.logger.exception("Market-data runtime trace installation failed: %s", exc)
+    _market_data_runtime_trace_snapshot = lambda: {"available": False, "error": str(exc)}
+
+
+@app.get("/market-data-trace")
+def _market_data_trace_endpoint():
+    return jsonify(_market_data_runtime_trace_snapshot()), 200
+
+
 def _market_health_loop() -> None:
     # Give the engine time to complete its first cycle before declaring a data
     # outage. Then sample once per minute; notifications remain transition/
