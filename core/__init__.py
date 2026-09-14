@@ -100,7 +100,11 @@ def _install_market_data_layer() -> bool:
         def managed_kline(symbol: str, interval: str, limit: int):
             key = f"{interval}:{str(symbol).upper()}:{int(limit)}"
             cached = manager.get_for_analysis(interval, key)
-            if cached is not None:
+            # Analysis may use bounded-stale data, but the execution data path
+            # must honor the dataset's fresh TTL.  Do not let a stale 5m
+            # snapshot suppress the refresh indefinitely; otherwise the scorer
+            # can repeatedly evaluate the same old candle and starve SCALP.
+            if cached is not None and manager.entry_data_is_fresh(interval, key):
                 return cached.payload
             main = _find_shadow_main()
             if main is not None and callable(getattr(main, "_binance_guard_active", None)):
@@ -115,6 +119,10 @@ def _install_market_data_layer() -> bool:
                     manager.cache.put(key, data)
                 return data
             except Exception:
+                # Preserve bounded-stale analysis availability on transient
+                # network/rate-limit failures. Entry safety remains responsible
+                # for rejecting stale data rather than turning it into a fake
+                # fresh snapshot.
                 return cached.payload if cached is not None else []
 
         legacy.fetch_24h_tickers = managed_tickers
