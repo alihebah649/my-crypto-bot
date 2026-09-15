@@ -1,5 +1,8 @@
 name: Current Strategy Replay (Research)
 
+# Diagnostic-only trigger marker; no runtime trading behavior change.
+# This push intentionally re-runs the research replay on the diagnostic branch.
+
 on:
   push:
     branches: [fix/scalp-runtime-diagnostics]
