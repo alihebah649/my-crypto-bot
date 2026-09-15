@@ -19,10 +19,18 @@ The candidate is deliberately NOT a production rule.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+
+# When invoked as `python analytics/current_strategy_replay.py`, Python places
+# analytics/ ahead of the repository root on sys.path. Add the repo root so the
+# research harness can import the runtime strategy without changing that strategy.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from dual_mode_strategy import score_symbol
 
