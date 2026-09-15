@@ -26,7 +26,7 @@ on:
 jobs:
   replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,13 +35,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt
-      - name: Fetch research dataset
+      - name: Fetch research datasets
         run: >-
-          python analytics/fetch_current_strategy_dataset.py BTCUSDT
-          --candles-5m 600
+          python analytics/fetch_current_strategy_dataset.py
+          BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
+          --candles-5m 1200
       - name: Replay current strategy
         run: >-
-          python analytics/current_strategy_replay.py BTCUSDT
+          python analytics/current_strategy_replay.py
+          BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
       - name: Upload replay result
         uses: actions/upload-artifact@v4
         with:
