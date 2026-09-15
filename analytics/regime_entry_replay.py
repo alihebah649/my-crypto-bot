@@ -85,7 +85,8 @@ def replay(symbol: str, data_dir: Path, max_decisions: int | None = None) -> pd.
         c15 = closed(fifteen, decision_time, "15m")
         c1h = closed(one_h, decision_time, "1h")
         c4h = closed(four_h, decision_time, "4h")
-        if len(c15) < 106 or len(c5) < 16 or len(c1h) < 2 or len(c4h) < 2:
+        # Keep enough 5m history for a stable 14-period ATR and 20-bar volume baseline.
+        if len(c15) < 106 or len(c5) < 30 or len(c1h) < 2 or len(c4h) < 2:
             continue
 
         result = score_symbol(
@@ -104,6 +105,7 @@ def replay(symbol: str, data_dir: Path, max_decisions: int | None = None) -> pd.
         atr15 = float(result.get("atr", 0.0) or 0.0)
         last = c5[-2]
         recent = p[-1]
+
         def pct(a: float, b: float) -> float:
             return (a / b - 1.0) * 100.0 if b else 0.0
 
