@@ -18,7 +18,7 @@ def _series(count, price=100.0, volume=100.0):
 
 
 def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
-    """Prove the displayed RSI and scalp-gate RSI are intentionally distinct."""
+    """Prove 15m RSI is displayed while 5m RSI drives the scalp gate."""
     calls = []
 
     def fake_rsi(prices, period=14):
@@ -38,13 +38,12 @@ def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
             "frames": {},
         },
     )
-    # Force deterministic support and volume conditions, and a confirmed 5m
-    # reversal, without changing production logic or thresholds.
     monkeypatch.setattr("dual_mode_strategy.calculate_bollinger", lambda *_args, **_kwargs: (100.0, 101.0, 102.0))
     monkeypatch.setattr("dual_mode_strategy._volume_ratio", lambda *_args, **_kwargs: 1.20)
     monkeypatch.setattr("dual_mode_strategy.calculate_atr", lambda *_args, **_kwargs: 1.0)
     monkeypatch.setattr("dual_mode_strategy.calculate_ema", lambda *_args, **_kwargs: 99.0)
     monkeypatch.setattr("dual_mode_strategy.bullish_pattern", lambda *_args, **_kwargs: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr("dual_mode_strategy._scalp_recovery_confirmation", lambda *_args, **_kwargs: (True, 2, ["5M_RSI_RISING", "5M_BULLISH_BODY"]))
 
     result = score_symbol(
         "TESTUSDT",
