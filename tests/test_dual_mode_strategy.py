@@ -78,6 +78,62 @@ def test_scalp_recovery_trigger_can_authorize_65_plus_without_pattern(monkeypatc
     assert result["trade_mode"] == "SCALP"
 
 
+def test_scalp_recovery_is_blocked_against_strong_negative_mtf(monkeypatch):
+    rsi_values = iter([40.0, 35.0, 33.0])
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+    monkeypatch.setattr(dual_mode_strategy, "analyze_multi_timeframe_context", lambda context: {
+        "available": True,
+        "bias": "BEARISH",
+        "net": -24,
+        "weighted_bull": 0,
+        "weighted_bear": 24,
+        "frames": {},
+        "weak_countertrend_recovery": False,
+        "aligned_bullish": False,
+    })
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    candles_5m[-3] = candle(99.0, 99.5, 97.8, 98.0, 120.0)
+    candles_5m[-2] = candle(98.0, 99.0, 97.9, 98.6, 120.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.6"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_recovery_confirmation"] is True
+    assert result["recovery_mtf_veto"] is True
+    assert "RECOVERY_STRONG_NEGATIVE_MTF_VETO" in result["scalp_gate_reasons"]
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+
+
+def test_scalp_recovery_remains_allowed_above_negative_mtf_limit(monkeypatch):
+    rsi_values = iter([40.0, 35.0, 33.0])
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+    monkeypatch.setattr(dual_mode_strategy, "analyze_multi_timeframe_context", lambda context: {
+        "available": True,
+        "bias": "BEARISH",
+        "net": -8,
+        "weighted_bull": 0,
+        "weighted_bear": 8,
+        "frames": {},
+        "weak_countertrend_recovery": False,
+        "aligned_bullish": False,
+    })
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    candles_5m[-3] = candle(99.0, 99.5, 97.8, 98.0, 120.0)
+    candles_5m[-2] = candle(98.0, 99.0, 97.9, 98.6, 120.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.6"}, candles_15m, candles_5m)
+    assert result["scalp_recovery_confirmation"] is True
+    assert result["recovery_mtf_veto"] is False
+    assert result["scalp_gate"] is True
+    assert result["scalp_signal"] == "BUY"
+
+
 def test_scalp_gate_rejects_without_confirmed_reversal():
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
