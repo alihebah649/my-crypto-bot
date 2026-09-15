@@ -1,5 +1,7 @@
 name: RSI Regime Threshold Analysis (Research)
 
+# Research-only workflow: compare RSI-floor candidates without changing runtime strategy.
+# Trigger marker: 2026-09-15
 on:
   push:
     branches: [fix/scalp-runtime-diagnostics]
