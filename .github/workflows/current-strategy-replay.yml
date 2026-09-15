@@ -38,7 +38,7 @@ jobs:
       - name: Fetch research dataset
         run: >-
           python analytics/fetch_current_strategy_dataset.py BTCUSDT
-          --candles-5m 1200
+          --candles-5m 600
       - name: Replay current strategy
         run: >-
           python analytics/current_strategy_replay.py BTCUSDT
