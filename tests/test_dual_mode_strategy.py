@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shadow_main
 import shadow_main_legacy
-dual_mode_strategy = __import__("dual_mode_strategy")
+import dual_mode_strategy
 from dual_mode_strategy import BUY_SCORE_THRESHOLD, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, score_symbol
 
 
