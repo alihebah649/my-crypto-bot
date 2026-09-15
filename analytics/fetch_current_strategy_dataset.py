@@ -17,9 +17,32 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-BASE_URL = "https://api.binance.com/api/v3/klines"
+# Binance can geo-restrict one REST hostname (for example api.binance.com
+# returning HTTP 451) while alternate production API hostnames remain usable.
+# Keep the fallback here research-only; runtime trading code is untouched.
+BASE_URLS = (
+    "https://api.binance.com/api/v3/klines",
+    "https://api1.binance.com/api/v3/klines",
+    "https://api2.binance.com/api/v3/klines",
+    "https://api3.binance.com/api/v3/klines",
+)
 INTERVAL_MS = 5 * 60 * 1000
 API_LIMIT = 1000
+
+
+def fetch_batch(symbol: str, params: dict) -> list:
+    failures = []
+    for base_url in BASE_URLS:
+        try:
+            response = requests.get(base_url, params=params, timeout=20)
+            if response.ok:
+                batch = response.json()
+                if isinstance(batch, list):
+                    return batch
+            failures.append(f"{base_url}: HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            failures.append(f"{base_url}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(f"All Binance research endpoints failed for {symbol}: {' | '.join(failures)}")
 
 
 def fetch_5m(symbol: str, candles: int, pause: float = 0.25) -> pd.DataFrame:
@@ -33,9 +56,7 @@ def fetch_5m(symbol: str, candles: int, pause: float = 0.25) -> pd.DataFrame:
             "limit": min(API_LIMIT, candles - len(rows)),
             "endTime": end_time,
         }
-        response = requests.get(BASE_URL, params=params, timeout=20)
-        response.raise_for_status()
-        batch = response.json()
+        batch = fetch_batch(symbol, params)
         if not batch:
             break
         rows = batch + rows
