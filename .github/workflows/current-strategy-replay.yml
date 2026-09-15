@@ -39,7 +39,7 @@ jobs:
         run: >-
           python analytics/fetch_current_strategy_dataset.py
           BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
-          --candles-5m 5000
+          --candles-5m 2000
       - name: Replay current strategy
         run: >-
           python analytics/current_strategy_replay.py
