@@ -5,76 +5,65 @@ Research-only utility. It does not import or alter trading runtime code.
 The current strategy needs closed 5m/15m/1h/4h candles. To avoid four
 independent Binance histories drifting apart, this utility downloads one
 5m history and deterministically resamples it into the higher timeframes.
-
-Output is gitignored under data_warehouse by design.
 """
 from __future__ import annotations
 
 import argparse
-import time
+import io
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 import requests
 
-# Binance can geo-restrict one REST hostname (for example api.binance.com
-# returning HTTP 451) while alternate production API hostnames remain usable.
-# Keep the fallback here research-only; runtime trading code is untouched.
-BASE_URLS = (
-    "https://api.binance.com/api/v3/klines",
-    "https://api1.binance.com/api/v3/klines",
-    "https://api2.binance.com/api/v3/klines",
-    "https://api3.binance.com/api/v3/klines",
-)
-INTERVAL_MS = 5 * 60 * 1000
-API_LIMIT = 1000
+PUBLIC_BASE_URL = "https://data.binance.vision/data/spot/daily/klines"
+KLINE_COLUMNS = [
+    "open_time", "open", "high", "low", "close", "volume",
+    "close_time", "quote_asset_volume", "number_of_trades",
+    "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore",
+]
 
 
-def fetch_batch(symbol: str, params: dict) -> list:
-    failures = []
-    for base_url in BASE_URLS:
-        try:
-            response = requests.get(base_url, params=params, timeout=20)
-            if response.ok:
-                batch = response.json()
-                if isinstance(batch, list):
-                    return batch
-            failures.append(f"{base_url}: HTTP {response.status_code}")
-        except requests.RequestException as exc:
-            failures.append(f"{base_url}: {type(exc).__name__}: {exc}")
-    raise RuntimeError(f"All Binance research endpoints failed for {symbol}: {' | '.join(failures)}")
+def read_daily_zip(symbol: str, day: datetime) -> pd.DataFrame | None:
+    date_text = day.strftime("%Y-%m-%d")
+    filename = f"{symbol}-5m-{date_text}.zip"
+    url = f"{PUBLIC_BASE_URL}/{symbol}/5m/{filename}"
+    try:
+        response = requests.get(url, timeout=30)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Binance public archive request failed for {url}: {exc}") from exc
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+        if not csv_names:
+            raise RuntimeError(f"No CSV found in {url}")
+        with archive.open(csv_names[0]) as handle:
+            df = pd.read_csv(handle, header=None, names=KLINE_COLUMNS)
+    return df
 
 
-def fetch_5m(symbol: str, candles: int, pause: float = 0.25) -> pd.DataFrame:
-    rows = []
-    end_time = int(time.time() * 1000)
-    batches = (candles + API_LIMIT - 1) // API_LIMIT
-    for _ in range(batches):
-        params = {
-            "symbol": symbol,
-            "interval": "5m",
-            "limit": min(API_LIMIT, candles - len(rows)),
-            "endTime": end_time,
-        }
-        batch = fetch_batch(symbol, params)
-        if not batch:
+def fetch_5m(symbol: str, candles: int) -> pd.DataFrame:
+    rows: list[pd.DataFrame] = []
+    day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    days_needed = candles // 288 + 3
+    for offset in range(days_needed):
+        frame = read_daily_zip(symbol, day - timedelta(days=offset))
+        if frame is not None and not frame.empty:
+            rows.append(frame)
+        combined_count = sum(len(item) for item in rows)
+        if combined_count >= candles:
             break
-        rows = batch + rows
-        end_time = int(batch[0][0]) - 1
-        if len(rows) >= candles:
-            break
-        time.sleep(pause)
-
     if not rows:
-        raise RuntimeError(f"No Binance data returned for {symbol}")
+        raise RuntimeError(f"No Binance public kline archive data returned for {symbol}")
 
-    columns = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore",
-    ]
-    df = pd.DataFrame(rows, columns=columns)
-    df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df = pd.concat(rows, ignore_index=True)
+    raw_time = pd.to_numeric(df["open_time"], errors="coerce")
+    # Spot archive timestamps are microseconds from 2025-01-01 onward.
+    unit = "us" if raw_time.dropna().median() > 10_000_000_000_000 else "ms"
+    df["timestamp"] = pd.to_datetime(raw_time, unit=unit, utc=True)
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return (
@@ -82,6 +71,7 @@ def fetch_5m(symbol: str, candles: int, pause: float = 0.25) -> pd.DataFrame:
         .dropna()
         .drop_duplicates("timestamp")
         .sort_values("timestamp")
+        .tail(candles)
         .reset_index(drop=True)
     )
 
