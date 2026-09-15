@@ -4,6 +4,7 @@ State mutation is deliberately downstream of execution. A rejected/failed
 execution never marks a Position CLOSED.
 """
 from __future__ import annotations
+import logging
 import threading
 import time
 from typing import List, Optional, Tuple
@@ -12,6 +13,8 @@ from .integration_contracts import ExecutionGateway
 from .models import Position, PositionCloseReason, PositionStatus
 from .repository import PositionRepository
 from .risk_manager import PositionExitDecision, PositionExitReason, PositionRiskManager
+
+logger = logging.getLogger(__name__)
 
 
 class PositionController:
@@ -60,11 +63,6 @@ class PositionController:
             if self.execution_gateway is None:
                 return None
 
-            # Protected exits are triggered by the observed market price but
-            # must execute at the protected position level in Paper Trading.
-            # This also keeps Break-Even protection compatible with the
-            # fee-aware floor: the stop itself is the authoritative requested
-            # execution level, not the later polling price.
             protected_exit = decision.reason in {
                 PositionExitReason.STOP_LOSS,
                 PositionExitReason.BREAK_EVEN,
@@ -130,6 +128,22 @@ class PositionController:
             self.repository.update(position)
             if self.history_service is not None:
                 self.history_service.record_closed_position(position)
+            logger.info(
+                "POSITION CLOSED: id=%s symbol=%s mode=%s reason=%s entry=%.10f exit=%.10f stop=%.10f pnl_pct=%.4f realized_pnl=%.6f fees=%.6f mfe_pct=%.4f mae_pct=%.4f holding_sec=%.1f",
+                position.position_id,
+                position.symbol,
+                str(position.entry_metadata.get("trade_mode", position.metadata.get("trade_mode", "SWING"))).upper(),
+                position.close_reason.name,
+                position.entry_price,
+                exit_price,
+                float(position.metadata.get("initial_stop_loss", position.stop_loss)),
+                result.net_pnl_percent,
+                position.realized_pnl,
+                position.total_fees,
+                float(position.max_profit_percent),
+                float(position.max_drawdown_percent),
+                float(position.closed_at - (position.opened_at or position.closed_at)),
+            )
             return position
 
     def execute_review_decision(self, position_id: str, should_exit: bool,
