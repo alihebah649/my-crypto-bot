@@ -148,7 +148,7 @@ def test_scalp_gate_rejects_confirmed_reversal_above_rsi_55(monkeypatch):
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
-    assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
     assert result["scalp_gate"] is False
     assert result["scalp_signal"] == "HOLD"
 
