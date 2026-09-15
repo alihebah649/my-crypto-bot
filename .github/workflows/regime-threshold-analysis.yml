@@ -1,0 +1,44 @@
+name: RSI Regime Threshold Analysis (Research)
+
+on:
+  push:
+    branches: [fix/scalp-runtime-diagnostics]
+    paths:
+      - 'analytics/regime_entry_replay.py'
+      - 'analytics/regime_threshold_analysis.py'
+      - 'analytics/fetch_current_strategy_dataset.py'
+      - 'dual_mode_strategy.py'
+      - 'multi_timeframe_context.py'
+      - '.github/workflows/regime-threshold-analysis.yml'
+  workflow_dispatch:
+
+jobs:
+  threshold-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Prepare research directory
+        run: mkdir -p research_database
+      - name: Replay symbols
+        shell: bash
+        run: |
+          set -e
+          for symbol in BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT; do
+            python analytics/fetch_current_strategy_dataset.py "$symbol" --candles-5m 1200
+            python analytics/regime_entry_replay.py "$symbol" --max-decisions 1200 --output "research_database/regime_${symbol}.csv"
+          done
+      - name: Analyze RSI floors
+        run: python analytics/regime_threshold_analysis.py
+      - name: Upload regime threshold analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: regime-threshold-analysis
+          path: research_database/
+          if-no-files-found: error
