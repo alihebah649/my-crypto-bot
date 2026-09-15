@@ -29,8 +29,8 @@ jobs:
       - name: Run current strategy replay
         run: >-
           python analytics/current_strategy_replay.py
+          BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
           --data-dir data_warehouse
-          --symbols BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
           --output research_database/current_strategy_replay.csv
       - name: Validate breakout gate walk-forward
         run: >-
