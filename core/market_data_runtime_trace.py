@@ -202,7 +202,42 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
                 "cache_expired": audit.get("cache_expired"),
                 "cache_source": audit.get("cache_source"),
             })
-            del last_events[:-80]
+            if isinstance(result, dict) and (
+                int(result.get("scalp_score", 0) or 0) >= 50
+                or int(result.get("score", 0) or 0) >= 65
+            ):
+                diagnostic = {
+                    "event": "SCALP_GATE_DIAGNOSTIC",
+                    "at": time.time(),
+                    "symbol": symbol_key,
+                    "score": result.get("score"),
+                    "scalp_score": result.get("scalp_score"),
+                    "swing_score": result.get("swing_score"),
+                    "scalp_signal": result.get("scalp_signal"),
+                    "trade_mode": result.get("trade_mode"),
+                    "scalp_gate": result.get("scalp_gate"),
+                    "scalp_gate_reasons": result.get("scalp_gate_reasons", []),
+                    "scalp_confirmed_reversal": result.get("scalp_confirmed_reversal"),
+                    "scalp_recovery_confirmation": result.get("scalp_recovery_confirmation"),
+                    "scalp_recovery_trigger_count": result.get("scalp_recovery_trigger_count"),
+                    "scalp_recovery_trigger_reasons": result.get("scalp_recovery_trigger_reasons", []),
+                    "scalp_context_only": result.get("scalp_context_only"),
+                    "volume_ratio_5m": result.get("volume_ratio_5m"),
+                    "scalp_min_volume_ratio": result.get("scalp_min_volume_ratio"),
+                    "rsi5m": result.get("rsi5m"),
+                    "scalp_max_rsi": result.get("scalp_max_rsi"),
+                    "pattern": result.get("pattern"),
+                    "pattern_confirmed": result.get("pattern_confirmed"),
+                    "mtf_countertrend_warning": result.get("mtf_countertrend_warning"),
+                    "mtf_countertrend_veto": result.get("mtf_countertrend_veto"),
+                    "mtf_aligned_bullish": result.get("mtf_aligned_bullish"),
+                    "entry_freshness_state": audit.get("state"),
+                    "manager_cache_age_seconds": audit.get("manager_cache_age_seconds"),
+                    "cache_source": audit.get("cache_source"),
+                }
+                last_events.append(diagnostic)
+                legacy.logger.info("[SCALP-GATE] %s", diagnostic)
+            del last_events[:-120]
         return result
 
     def bind_market_data_manager(active_manager: Any) -> None:

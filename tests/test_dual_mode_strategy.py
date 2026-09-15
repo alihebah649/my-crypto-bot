@@ -92,12 +92,49 @@ def test_scalp_gate_accepts_confirmed_reversal_at_rsi_50(monkeypatch):
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 50.0)
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
-    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_ENGULFING", True))
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
     assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
     assert result["scalp_max_rsi"] == 55.0
+    assert result["scalp_gate"] is True
+    assert result["scalp_signal"] == "BUY"
+    assert result["trade_mode"] == "SCALP"
+
+
+def test_breakout_alone_cannot_authorize_scalp(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 25.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr(dual_mode_strategy, "_scalp_recovery_confirmation", lambda candles, current_rsi: (False, 0, []))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["pattern"] == "BULLISH_BREAKOUT"
+    assert result["pattern_confirmed"] is True
+    assert result["scalp_confirmed_reversal"] is False
+    assert result["scalp_recovery_confirmation"] is False
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+
+
+def test_breakout_with_independent_recovery_can_authorize_scalp(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 25.0)
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr(dual_mode_strategy, "_scalp_recovery_confirmation", lambda candles, current_rsi: (True, 2, ["5M_RSI_RISING", "5M_BULLISH_BODY"]))
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["pattern"] == "BULLISH_BREAKOUT"
+    assert result["pattern_confirmed"] is True
+    assert result["scalp_confirmed_reversal"] is False
+    assert result["scalp_recovery_confirmation"] is True
     assert result["scalp_gate"] is True
     assert result["scalp_signal"] == "BUY"
     assert result["trade_mode"] == "SCALP"
@@ -122,7 +159,6 @@ def test_existing_swing_lane_can_still_reach_buy():
         base = 106.0 - i * 0.05
         candles_15m[-20 + i] = candle(base + 0.5, base + 0.6, base - 0.2, base)
     candles_15m[-2] = candle(102.0, 102.5, 100.5, 104.5, 150.0)
-    candles_15m[-1] = candle(105.0, 105.3, 101.0, 101.5, 100.0)
     candles_5m = rising_series(21, 100.0)
     candles_5m[-2] = candle(99.0, 103.0, 98.8, 102.5, 120.0)
     candles_5m[-1] = candle(102.5, 102.7, 101.8, 102.4, 100.0)

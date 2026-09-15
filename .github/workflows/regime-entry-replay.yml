@@ -1,0 +1,41 @@
+name: 5m Regime Entry Replay (Research)
+
+# Research-only workflow. It does not modify runtime trading behavior.
+on:
+  push:
+    branches: [fix/scalp-runtime-diagnostics]
+    paths:
+      - 'analytics/regime_entry_replay.py'
+      - 'analytics/fetch_current_strategy_dataset.py'
+      - 'dual_mode_strategy.py'
+      - 'multi_timeframe_context.py'
+      - 'multi_candle_context.py'
+      - '.github/workflows/regime-entry-replay.yml'
+  workflow_dispatch:
+
+jobs:
+  regime-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Fetch research dataset
+        run: >-
+          python analytics/fetch_current_strategy_dataset.py BTCUSDT
+          --candles-5m 1200
+      - name: Replay 5m entry regime
+        run: >-
+          python analytics/regime_entry_replay.py BTCUSDT
+          --max-decisions 1200
+      - name: Upload regime replay
+        uses: actions/upload-artifact@v4
+        with:
+          name: regime-entry-replay
+          path: research_database/regime_entry_replay.csv
+          if-no-files-found: error
