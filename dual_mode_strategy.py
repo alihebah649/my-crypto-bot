@@ -254,7 +254,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
     elif v5 >= SCALP_MIN_VOLUME_RATIO:
         scalp += 3
         scalp_reasons.append("5M_VOLUME_ACCEPTABLE")
-    if found and confirmed:
+    if found and confirmed and name != "BULLISH_BREAKOUT":
         scalp += 30
         scalp_reasons.append(f"5M_{name}_CONFIRMED")
     elif found:
