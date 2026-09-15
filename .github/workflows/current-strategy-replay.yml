@@ -1,7 +1,6 @@
 name: Current Strategy Replay (Research)
 
-# Diagnostic-only trigger marker; no runtime trading behavior change.
-# This push intentionally re-runs the research replay on the diagnostic branch.
+# Diagnostic/research-only workflow. No runtime trading behavior change.
 
 on:
   push:
@@ -13,6 +12,9 @@ on:
       - 'multi_timeframe_context.py'
       - 'multi_candle_context.py'
       - '.github/workflows/current-strategy-replay.yml'
+  pull_request:
+    branches: [main]
+    types: [synchronize]
   workflow_dispatch:
 
 jobs:
@@ -38,6 +40,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: current-strategy-replay
-          path: |
-            research_database/current_strategy_replay.csv
+          path: research_database/current_strategy_replay.csv
           if-no-files-found: error
