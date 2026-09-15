@@ -281,7 +281,12 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         scalp_reasons.append("MTF_COUNTERTREND_WARNING")
     scalp = max(0, min(scalp, 100))
 
-    confirmed_reversal = bool(found and confirmed)
+    # A breakout is still scored as evidence, but it is not a complete
+    # reversal trigger on its own. The exact A/B replay showed that allowing
+    # breakout-only scalp entries materially weakens entry quality. Requiring
+    # an independent recovery signal keeps breakout availability without
+    # letting the breakout candle alone authorize a trade.
+    confirmed_reversal = bool(found and confirmed and name != "BULLISH_BREAKOUT")
     high_confidence_recovery = bool(
         scalp >= SCALP_SCORE_THRESHOLD
         and r5 <= 45.0
@@ -291,8 +296,8 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
     )
 
     # Strong higher-timeframe bearish alignment vetoes only a weak recovery.
-    # A confirmed 5m reversal remains eligible so the scalp lane is not turned
-    # into a hidden swing strategy.
+    # A confirmed reversal remains eligible; breakout-only setups now require
+    # the independent recovery path above.
     mtf_countertrend_veto = bool(mtf_bearish and not confirmed_reversal)
     gate = bool(
         macro_points > 0
