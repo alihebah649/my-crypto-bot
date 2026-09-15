@@ -8,8 +8,10 @@ Expected input files (not committed; data_warehouse is gitignored):
     {symbol}_1h.parquet
     {symbol}_4h.parquet
 
-Each file must contain timestamp, open, high, low, close, volume.
-The replay evaluates the existing dual_mode_strategy at closed 5m decision
+Each file must contain timestamp, open, high, low, close, volume. The timestamp
+is treated as Binance-style candle OPEN time, matching fetch_data.py.
+
+The replay evaluates the existing dual_mode_strategy at CLOSED 5m decision
 points and compares the current entry decision with a research-only candidate:
     below EMA100 AND MTF net < +5 => candidate filtered
 
@@ -28,6 +30,7 @@ from dual_mode_strategy import score_symbol
 REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
 CANDIDATE_MTF_MIN = 5
+TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
 
 
 def load_frame(path: Path) -> pd.DataFrame:
@@ -54,11 +57,19 @@ def row_to_candle(row: pd.Series) -> dict:
     }
 
 
-def candles_until(df: pd.DataFrame, ts: pd.Timestamp) -> List[dict]:
-    # Replay at the close of a 5m candle. For the current strategy contract,
-    # append a duplicate "forming" candle so score_symbol removes it and uses
-    # the just-closed candle as the latest closed candle.
-    closed = df[df["timestamp"] <= ts]
+def closed_candles_at(
+    df: pd.DataFrame,
+    decision_time: pd.Timestamp,
+    timeframe: str,
+) -> List[dict]:
+    """Return only candles whose full interval has closed by decision_time.
+
+    score_symbol() removes the final supplied candle because its live contract
+    expects the newest candle to be forming. We therefore append a duplicate of
+    the latest genuinely closed candle so the strategy sees it as closed.
+    """
+    duration = pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
+    closed = df[df["timestamp"] + duration <= decision_time]
     candles = [row_to_candle(r) for _, r in closed.iterrows()]
     if candles:
         candles.append(dict(candles[-1]))
@@ -84,18 +95,23 @@ def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd
 
     decisions = []
     five = frames["5m"]
-    for idx in range(min_history_15m, len(five)):
-        ts = five.iloc[idx]["timestamp"]
-        five_closed = five.iloc[: idx + 1]
-        # The 5m candle at ts is treated as the just-closed decision candle.
-        # Higher timeframes are included only when their candle timestamp is
-        # already <= ts; score_symbol itself removes the final supplied item.
+    for idx in range(len(five)):
+        decision_time = five.iloc[idx]["timestamp"] + pd.Timedelta(minutes=5)
+        closed_15m = frames["15m"][
+            frames["15m"]["timestamp"] + pd.Timedelta(minutes=15) <= decision_time
+        ]
+        if len(closed_15m) < min_history_15m:
+            continue
+
         payload = {
-            "5m": candles_until(five_closed, ts),
-            "15m": candles_until(frames["15m"], ts),
-            "1h": candles_until(frames["1h"], ts),
-            "4h": candles_until(frames["4h"], ts),
+            "5m": closed_candles_at(five, decision_time, "5m"),
+            "15m": closed_candles_at(frames["15m"], decision_time, "15m"),
+            "1h": closed_candles_at(frames["1h"], decision_time, "1h"),
+            "4h": closed_candles_at(frames["4h"], decision_time, "4h"),
         }
+        if any(len(payload[tf]) < 2 for tf in TIMEFRAMES):
+            continue
+
         result = score_symbol(
             symbol,
             {"lastPrice": str(float(five.iloc[idx]["close"]))},
@@ -107,7 +123,7 @@ def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd
         if result.get("scalp_signal") == "BUY":
             decisions.append(
                 {
-                    "timestamp": ts.isoformat(),
+                    "decision_time": decision_time.isoformat(),
                     "symbol": symbol,
                     "scalp_score": result.get("scalp_score", 0),
                     "trade_mode": result.get("trade_mode", "NONE"),
@@ -152,7 +168,8 @@ def main() -> int:
             print(f"[SKIP] {symbol}: {exc}")
             continue
         print(f"[OK] {symbol}: {len(result)} current-strategy SCALP BUY decisions")
-        all_rows.append(result)
+        if not result.empty:
+            all_rows.append(result)
 
     if not all_rows:
         print("[NO DATA] No replayable symbol had all four required timeframe datasets.")
