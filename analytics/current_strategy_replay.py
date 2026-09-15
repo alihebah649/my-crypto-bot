@@ -8,13 +8,12 @@ Expected input files (not committed; data_warehouse is gitignored):
     {symbol}_1h.parquet
     {symbol}_4h.parquet
 
-Each file must contain timestamp, open, high, low, close, volume. The timestamp
-is treated as Binance-style candle OPEN time, matching fetch_data.py.
-
 The replay evaluates the existing dual_mode_strategy at CLOSED 5m decision
 points and compares the current entry decision with a research-only candidate:
     below EMA100 AND MTF net < +5 => candidate filtered
 
+For each BUY it also records forward price behavior at 15m/30m/60m/240m.
+These are diagnostic outcome measurements, not simulated Trade Manager exits.
 The candidate is deliberately NOT a production rule.
 """
 from __future__ import annotations
@@ -31,6 +30,7 @@ REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
 CANDIDATE_MTF_MIN = 5
 TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+FORWARD_HORIZONS_MIN = (15, 30, 60, 240)
 
 
 def load_frame(path: Path) -> pd.DataFrame:
@@ -88,6 +88,28 @@ def research_filter(result: dict) -> bool:
     return price < ema and mtf_net < CANDIDATE_MTF_MIN
 
 
+def forward_outcomes(five: pd.DataFrame, decision_idx: int, decision_time: pd.Timestamp, entry: float) -> dict:
+    """Measure post-entry behavior without assuming a particular exit policy."""
+    out: dict = {}
+    future = five[five["timestamp"] > decision_time]
+    for minutes in FORWARD_HORIZONS_MIN:
+        horizon_end = decision_time + pd.Timedelta(minutes=minutes)
+        window = future[future["timestamp"] <= horizon_end]
+        key = f"{minutes}m"
+        if window.empty:
+            out[f"future_return_{key}_pct"] = None
+            out[f"mfe_{key}_pct"] = None
+            out[f"mae_{key}_pct"] = None
+            out[f"bars_{key}"] = 0
+            continue
+        last_close = float(window.iloc[-1]["close"])
+        out[f"future_return_{key}_pct"] = (last_close / entry - 1.0) * 100.0
+        out[f"mfe_{key}_pct"] = (float(window["high"].max()) / entry - 1.0) * 100.0
+        out[f"mae_{key}_pct"] = (float(window["low"].min()) / entry - 1.0) * 100.0
+        out[f"bars_{key}"] = int(len(window))
+    return out
+
+
 def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd.DataFrame:
     frames: Dict[str, pd.DataFrame] = {
         tf: load_frame(data_dir / f"{symbol}_{tf}.parquet") for tf in TIMEFRAMES
@@ -121,32 +143,42 @@ def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd
             payload["4h"],
         )
         if result.get("scalp_signal") == "BUY":
-            decisions.append(
-                {
-                    "decision_time": decision_time.isoformat(),
-                    "symbol": symbol,
-                    "scalp_score": result.get("scalp_score", 0),
-                    "trade_mode": result.get("trade_mode", "NONE"),
-                    "price": result.get("price", 0),
-                    "ema100": result.get("ema100", 0),
-                    "price_vs_ema_pct": (
-                        (float(result["price"]) - float(result["ema100"]))
-                        / float(result["ema100"])
-                        * 100.0
-                        if float(result.get("ema100", 0) or 0) > 0
-                        else 0.0
-                    ),
-                    "mtf_net": result.get("mtf_net", 0),
-                    "trigger": result.get("pattern", "NEUTRAL"),
-                    "pattern_confirmed": result.get("pattern_confirmed", False),
-                    "recovery_trigger_count": result.get("scalp_recovery_trigger_count", 0),
-                    "volume_ratio_5m": result.get("volume_ratio_5m", 0),
-                    "rsi5m": result.get("rsi5m", 0),
-                    "candidate_filtered": research_filter(result),
-                }
-            )
+            entry = float(result.get("price", five.iloc[idx]["close"]) or five.iloc[idx]["close"])
+            row = {
+                "decision_time": decision_time.isoformat(),
+                "symbol": symbol,
+                "scalp_score": result.get("scalp_score", 0),
+                "trade_mode": result.get("trade_mode", "NONE"),
+                "price": entry,
+                "ema100": result.get("ema100", 0),
+                "price_vs_ema_pct": (
+                    (entry - float(result["ema100"])) / float(result["ema100"]) * 100.0
+                    if float(result.get("ema100", 0) or 0) > 0 else 0.0
+                ),
+                "mtf_net": result.get("mtf_net", 0),
+                "trigger": result.get("pattern", "NEUTRAL"),
+                "pattern_confirmed": result.get("pattern_confirmed", False),
+                "recovery_trigger_count": result.get("scalp_recovery_trigger_count", 0),
+                "volume_ratio_5m": result.get("volume_ratio_5m", 0),
+                "rsi5m": result.get("rsi5m", 0),
+                "candidate_filtered": research_filter(result),
+            }
+            row.update(forward_outcomes(five, idx, decision_time, entry))
+            decisions.append(row)
 
     return pd.DataFrame(decisions)
+
+
+def print_group_summary(report: pd.DataFrame, label: str) -> None:
+    subset = report[report["candidate_filtered"] == (label == "filtered")]
+    if subset.empty:
+        print(f"[OUTCOME] {label}: n=0")
+        return
+    vals = []
+    for col in ("future_return_60m_pct", "future_return_240m_pct", "mfe_60m_pct", "mae_60m_pct"):
+        series = pd.to_numeric(subset[col], errors="coerce").dropna()
+        vals.append(f"{col}={series.mean():.3f}%" if not series.empty else f"{col}=NA")
+    print(f"[OUTCOME] {label}: n={len(subset)} " + " ".join(vals))
 
 
 def main() -> int:
@@ -183,6 +215,8 @@ def main() -> int:
     print(f"[SUMMARY] scalp_buys={scalp_buys} candidate_filtered={filtered}")
     if scalp_buys:
         print(f"[SUMMARY] filter_rate={filtered / scalp_buys * 100:.2f}%")
+        print_group_summary(report, "filtered")
+        print_group_summary(report, "retained")
     print(f"[OUTPUT] {output}")
     return 0
 
