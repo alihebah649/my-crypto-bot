@@ -25,14 +25,11 @@ from typing import Dict, List
 
 import pandas as pd
 
-# When invoked as `python analytics/current_strategy_replay.py`, Python places
-# analytics/ ahead of the repository root on sys.path. Add the repo root so the
-# research harness can import the runtime strategy without changing that strategy.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dual_mode_strategy import score_symbol
+from dual_mode_strategy import score_symbol, calculate_atr
 
 REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
@@ -65,17 +62,7 @@ def row_to_candle(row: pd.Series) -> dict:
     }
 
 
-def closed_candles_at(
-    df: pd.DataFrame,
-    decision_time: pd.Timestamp,
-    timeframe: str,
-) -> List[dict]:
-    """Return only candles whose full interval has closed by decision_time.
-
-    score_symbol() removes the final supplied candle because its live contract
-    expects the newest candle to be forming. We therefore append a duplicate of
-    the latest genuinely closed candle so the strategy sees it as closed.
-    """
+def closed_candles_at(df: pd.DataFrame, decision_time: pd.Timestamp, timeframe: str) -> List[dict]:
     duration = pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
     closed = df[df["timestamp"] + duration <= decision_time]
     candles = [row_to_candle(r) for _, r in closed.iterrows()]
@@ -85,7 +72,6 @@ def closed_candles_at(
 
 
 def research_filter(result: dict) -> bool:
-    """Return True when the research-only structural filter would reject BUY."""
     if result.get("trade_mode") != "SCALP" or result.get("scalp_signal") != "BUY":
         return False
     price = float(result.get("price", 0.0) or 0.0)
@@ -96,8 +82,7 @@ def research_filter(result: dict) -> bool:
     return price < ema and mtf_net < CANDIDATE_MTF_MIN
 
 
-def forward_outcomes(five: pd.DataFrame, decision_idx: int, decision_time: pd.Timestamp, entry: float) -> dict:
-    """Measure post-entry behavior without assuming a particular exit policy."""
+def forward_outcomes(five: pd.DataFrame, decision_time: pd.Timestamp, entry: float) -> dict:
     out: dict = {}
     future = five[five["timestamp"] > decision_time]
     for minutes in FORWARD_HORIZONS_MIN:
@@ -119,20 +104,14 @@ def forward_outcomes(five: pd.DataFrame, decision_idx: int, decision_time: pd.Ti
 
 
 def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd.DataFrame:
-    frames: Dict[str, pd.DataFrame] = {
-        tf: load_frame(data_dir / f"{symbol}_{tf}.parquet") for tf in TIMEFRAMES
-    }
-
+    frames: Dict[str, pd.DataFrame] = {tf: load_frame(data_dir / f"{symbol}_{tf}.parquet") for tf in TIMEFRAMES}
     decisions = []
     five = frames["5m"]
     for idx in range(len(five)):
         decision_time = five.iloc[idx]["timestamp"] + pd.Timedelta(minutes=5)
-        closed_15m = frames["15m"][
-            frames["15m"]["timestamp"] + pd.Timedelta(minutes=15) <= decision_time
-        ]
+        closed_15m = frames["15m"][frames["15m"]["timestamp"] + pd.Timedelta(minutes=15) <= decision_time]
         if len(closed_15m) < min_history_15m:
             continue
-
         payload = {
             "5m": closed_candles_at(five, decision_time, "5m"),
             "15m": closed_candles_at(frames["15m"], decision_time, "15m"),
@@ -141,39 +120,47 @@ def replay_symbol(symbol: str, data_dir: Path, min_history_15m: int = 105) -> pd
         }
         if any(len(payload[tf]) < 2 for tf in TIMEFRAMES):
             continue
-
-        result = score_symbol(
-            symbol,
-            {"lastPrice": str(float(five.iloc[idx]["close"]))},
-            payload["15m"],
-            payload["5m"],
-            payload["1h"],
-            payload["4h"],
-        )
-        if result.get("scalp_signal") == "BUY":
-            entry = float(result.get("price", five.iloc[idx]["close"]) or five.iloc[idx]["close"])
-            row = {
-                "decision_time": decision_time.isoformat(),
-                "symbol": symbol,
-                "scalp_score": result.get("scalp_score", 0),
-                "trade_mode": result.get("trade_mode", "NONE"),
-                "price": entry,
-                "ema100": result.get("ema100", 0),
-                "price_vs_ema_pct": (
-                    (entry - float(result["ema100"])) / float(result["ema100"]) * 100.0
-                    if float(result.get("ema100", 0) or 0) > 0 else 0.0
-                ),
-                "mtf_net": result.get("mtf_net", 0),
-                "trigger": result.get("pattern", "NEUTRAL"),
-                "pattern_confirmed": result.get("pattern_confirmed", False),
-                "recovery_trigger_count": result.get("scalp_recovery_trigger_count", 0),
-                "volume_ratio_5m": result.get("volume_ratio_5m", 0),
-                "rsi5m": result.get("rsi5m", 0),
-                "candidate_filtered": research_filter(result),
-            }
-            row.update(forward_outcomes(five, idx, decision_time, entry))
-            decisions.append(row)
-
+        result = score_symbol(symbol, {"lastPrice": str(float(five.iloc[idx]["close"]))}, payload["15m"], payload["5m"], payload["1h"], payload["4h"])
+        if result.get("scalp_signal") != "BUY":
+            continue
+        entry = float(result.get("price", five.iloc[idx]["close"]) or five.iloc[idx]["close"])
+        atr15 = float(result.get("atr", 0.0) or 0.0)
+        atr5 = float(result.get("atr5", 0.0) or 0.0)
+        if atr15 <= 0:
+            atr15 = calculate_atr(payload["15m"][:-1])
+        stop_price = entry - (2.0 * atr15) if atr15 > 0 else None
+        stop_distance_pct = ((entry - stop_price) / entry * 100.0) if stop_price and stop_price > 0 else None
+        row = {
+            "decision_time": decision_time.isoformat(),
+            "symbol": symbol,
+            "scalp_score": result.get("scalp_score", 0),
+            "trade_mode": result.get("trade_mode", "NONE"),
+            "price": entry,
+            "ema100": result.get("ema100", 0),
+            "price_vs_ema_pct": ((entry - float(result["ema100"])) / float(result["ema100"]) * 100.0 if float(result.get("ema100", 0) or 0) > 0 else 0.0),
+            "mtf_net": result.get("mtf_net", 0),
+            "trigger": result.get("pattern", "NEUTRAL"),
+            "pattern_confirmed": result.get("pattern_confirmed", False),
+            "recovery_trigger_count": result.get("scalp_recovery_trigger_count", 0),
+            "volume_ratio_5m": result.get("volume_ratio_5m", 0),
+            "rsi5m": result.get("rsi5m", 0),
+            "atr15m": atr15,
+            "atr5m": atr5,
+            "initial_stop_price_2x_atr15m": stop_price,
+            "initial_stop_distance_pct": stop_distance_pct,
+            "candidate_filtered": research_filter(result),
+        }
+        row.update(forward_outcomes(five, decision_time, entry))
+        for minutes in FORWARD_HORIZONS_MIN:
+            key = f"{minutes}m"
+            mae = row.get(f"mae_{key}_pct")
+            if mae is None or stop_distance_pct in (None, 0):
+                row[f"mae_{key}_in_stop_R"] = None
+                row[f"stop_hit_{key}"] = None
+            else:
+                row[f"mae_{key}_in_stop_R"] = abs(float(mae)) / float(stop_distance_pct)
+                row[f"stop_hit_{key}"] = bool(float(mae) <= -float(stop_distance_pct))
+        decisions.append(row)
     return pd.DataFrame(decisions)
 
 
@@ -183,9 +170,11 @@ def print_group_summary(report: pd.DataFrame, label: str) -> None:
         print(f"[OUTCOME] {label}: n=0")
         return
     vals = []
-    for col in ("future_return_60m_pct", "future_return_240m_pct", "mfe_60m_pct", "mae_60m_pct"):
+    for col in ("future_return_60m_pct", "future_return_240m_pct", "mfe_60m_pct", "mae_60m_pct", "mae_60m_in_stop_R"):
         series = pd.to_numeric(subset[col], errors="coerce").dropna()
-        vals.append(f"{col}={series.mean():.3f}%" if not series.empty else f"{col}=NA")
+        vals.append(f"{col}={series.mean():.3f}" if not series.empty else f"{col}=NA")
+    stop_hit = subset["stop_hit_60m"].dropna()
+    vals.append(f"stop_hit_60m_rate={stop_hit.mean()*100:.1f}%" if not stop_hit.empty else "stop_hit_60m_rate=NA")
     print(f"[OUTCOME] {label}: n={len(subset)} " + " ".join(vals))
 
 
@@ -195,11 +184,9 @@ def main() -> int:
     parser.add_argument("--data-dir", default="data_warehouse")
     parser.add_argument("--output", default="research_database/current_strategy_replay.csv")
     args = parser.parse_args()
-
     data_dir = Path(args.data_dir)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-
     all_rows = []
     for symbol in args.symbols:
         try:
@@ -210,14 +197,11 @@ def main() -> int:
         print(f"[OK] {symbol}: {len(result)} current-strategy SCALP BUY decisions")
         if not result.empty:
             all_rows.append(result)
-
     if not all_rows:
         print("[NO DATA] No replayable symbol had all four required timeframe datasets.")
         return 2
-
     report = pd.concat(all_rows, ignore_index=True)
     report.to_csv(output, index=False)
-
     scalp_buys = len(report)
     filtered = int(report["candidate_filtered"].sum())
     print(f"[SUMMARY] scalp_buys={scalp_buys} candidate_filtered={filtered}")
