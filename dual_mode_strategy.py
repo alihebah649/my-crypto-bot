@@ -15,6 +15,7 @@ SCALP_MAX_RSI = 55.0
 SCALP_RSI_RISE_MIN = 1.5
 SCALP_RECOVERY_TRIGGER_MIN = 2
 SCALP_RECOVERY_POINTS = 4
+SCALP_RECOVERY_MAX_NEGATIVE_MTF = -12
 
 
 def calculate_ema(prices, period=100):
@@ -261,18 +262,11 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         scalp += 8
         scalp_reasons.append(f"5M_{name}")
 
-    # Recovery is a scoring component, not only a gate condition. This is a
-    # deliberately small bonus: the 65-point scalp threshold stays unchanged,
-    # while a confirmed recovery can complete an otherwise valid scalp setup.
     recovery_confirmation, recovery_trigger_count, recovery_trigger_reasons = _scalp_recovery_confirmation(c5, r5)
     if recovery_confirmation:
         scalp += SCALP_RECOVERY_POINTS
         scalp_reasons.append(f"5M_RECOVERY_CONFIRMATION_+{SCALP_RECOVERY_POINTS}")
 
-    # Multi-timeframe context is deliberately a light adjustment, not a new
-    # score lane. This preserves the 65-point Scalp identity while rewarding
-    # aligned higher-timeframe structure and penalizing the riskiest setup:
-    # a weak 5m recovery against bearish 15m + 1h + 4h structure.
     if mtf_bullish:
         scalp += 4
         scalp_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
@@ -281,12 +275,12 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         scalp_reasons.append("MTF_COUNTERTREND_WARNING")
     scalp = max(0, min(scalp, 100))
 
-    # A breakout is still scored as evidence, but it is not a complete
-    # reversal trigger on its own. The exact A/B replay showed that allowing
-    # breakout-only scalp entries materially weakens entry quality. Requiring
-    # an independent recovery signal keeps breakout availability without
-    # letting the breakout candle alone authorize a trade.
     confirmed_reversal = bool(found and confirmed and name != "BULLISH_BREAKOUT")
+    recovery_mtf_veto = bool(
+        recovery_confirmation
+        and not confirmed_reversal
+        and int(mtf.get("net", 0) or 0) <= SCALP_RECOVERY_MAX_NEGATIVE_MTF
+    )
     high_confidence_recovery = bool(
         scalp >= SCALP_SCORE_THRESHOLD
         and r5 <= 45.0
@@ -295,9 +289,6 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         and not mtf_bearish
     )
 
-    # Strong higher-timeframe bearish alignment vetoes only a weak recovery.
-    # A confirmed reversal remains eligible; breakout-only setups now require
-    # the independent recovery path above.
     mtf_countertrend_veto = bool(mtf_bearish and not confirmed_reversal)
     gate = bool(
         macro_points > 0
@@ -305,6 +296,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and (confirmed_reversal or recovery_confirmation)
         and not mtf_countertrend_veto
+        and not recovery_mtf_veto
     )
 
     gate_reasons = []
@@ -316,6 +308,8 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         gate_reasons.append("5M_VOLUME_TOO_LOW")
     if mtf_countertrend_veto:
         gate_reasons.append("MTF_STRONG_COUNTERTREND_VETO")
+    elif recovery_mtf_veto:
+        gate_reasons.append("RECOVERY_STRONG_NEGATIVE_MTF_VETO")
     elif mtf_bullish:
         gate_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
     if confirmed_reversal:
@@ -373,6 +367,8 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "scalp_rsi_rise_min": SCALP_RSI_RISE_MIN,
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
         "scalp_recovery_points": SCALP_RECOVERY_POINTS,
+        "scalp_recovery_max_negative_mtf": SCALP_RECOVERY_MAX_NEGATIVE_MTF,
+        "recovery_mtf_veto": recovery_mtf_veto,
         "mtf_context_available": bool(mtf.get("available")),
         "mtf_bias": str(mtf.get("bias", "UNKNOWN")),
         "mtf_net": int(mtf.get("net", 0) or 0),
