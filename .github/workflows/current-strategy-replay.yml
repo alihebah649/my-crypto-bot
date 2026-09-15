@@ -6,6 +6,7 @@ on:
     branches: [fix/scalp-runtime-diagnostics]
     paths:
       - 'analytics/current_strategy_replay.py'
+      - 'analytics/breakout_ab_replay.py'
       - 'analytics/fetch_current_strategy_dataset.py'
       - 'dual_mode_strategy.py'
       - 'multi_timeframe_context.py'
@@ -16,6 +17,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - 'analytics/current_strategy_replay.py'
+      - 'analytics/breakout_ab_replay.py'
       - 'analytics/fetch_current_strategy_dataset.py'
       - 'dual_mode_strategy.py'
       - 'multi_timeframe_context.py'
@@ -44,9 +46,11 @@ jobs:
         run: >-
           python analytics/current_strategy_replay.py
           BTCUSDT ETHUSDT BNBUSDT SOLUSDT ADAUSDT FETUSDT
+      - name: Exact breakout A/B replay
+        run: python analytics/breakout_ab_replay.py
       - name: Upload replay result
         uses: actions/upload-artifact@v4
         with:
           name: current-strategy-replay
-          path: research_database/current_strategy_replay.csv
+          path: research_database/
           if-no-files-found: error
