@@ -1,6 +1,7 @@
 name: Current Strategy Replay (Research)
 
 # Diagnostic-only research workflow. No runtime trading behavior change.
+# Exact breakout A/B validation enabled in this workflow.
 on:
   push:
     branches: [fix/scalp-runtime-diagnostics]
