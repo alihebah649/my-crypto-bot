@@ -94,6 +94,7 @@ def test_runtime_capture_wraps_existing_fetch_and_captures_only_buy_candidates()
     capture = bridge.latest_captures()["TESTUSDT"]
     assert capture["legacy_result"]["score"] == 72
     assert capture["entry_scenario"]["risk"]["reward_risk"] is None
+    assert capture["entry_scenario"]["risk"]["target_status"] == "NO_TARGET_ABOVE_ENTRY"
     assert len(capture["closed_candle_windows"]["5m"]) == 8
     assert len(capture["closed_candle_windows"]["15m"]) == 8
     assert len(capture["closed_candle_windows"]["1h"]) == 8
@@ -150,9 +151,68 @@ def test_runtime_capture_keeps_reward_risk_unknown_instead_of_borrowing_old_form
 
     assert capture["entry_scenario"]["risk"]["stop_distance_percent"] > 0
     assert capture["entry_scenario"]["risk"]["reward_risk"] is None
+    assert capture["entry_scenario"]["risk"]["target_status"] == "NO_TARGET_ABOVE_ENTRY"
     assert capture["v2_decision"]["failed_gate"] in {
         "SELLER_PRESSURE_NOT_INVALIDATED",
         "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
         "REWARD_RISK_PENDING",
         "VOLUME_NOT_CONFIRMING",
     }
+
+
+def test_runtime_capture_calculates_real_structure_target_without_changing_legacy():
+    class Legacy:
+        latest_scores = {
+            "TESTUSDT": {
+                "signal": "BUY",
+                "trade_mode": "SCALP",
+                "scalp_signal": "BUY",
+                "swing_signal": "HOLD",
+                "score": 70,
+                "scalp_score": 70,
+                "swing_score": 45,
+                "price": 100.0,
+                "atr": 1.0,
+                "scalp_reasons": ["15M_BOLLINGER_NEAR_SUPPORT"],
+                "scalp_confirmed_reversal": True,
+                "scalp_recovery_confirmation": False,
+                "volume_ratio_5m": 1.2,
+            }
+        }
+
+        def fetch_strategy_data(self):
+            candles = [
+                {"open": 100, "high": 100.5, "low": 99.5, "close": 100.2, "volume": 100.0},
+                {"open": 100.2, "high": 102.0, "low": 99.8, "close": 101.0, "volume": 100.0},
+                {"open": 101.0, "high": 101.5, "low": 100.0, "close": 100.6, "volume": 100.0},
+                {"open": 100.6, "high": 105.0, "low": 100.2, "close": 104.0, "volume": 100.0},
+                {"open": 104.0, "high": 104.5, "low": 103.5, "close": 100.5, "volume": 100.0},
+            ]
+            return (
+                {"TESTUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
+                {"TESTUSDT": candles},
+                {"TESTUSDT": candles},
+            )
+
+    class Runtime:
+        last_entry_diagnostics = {}
+
+    legacy = Legacy()
+    original = {"signal": "BUY", "trade_mode": "SCALP", "score": 70}
+    bridge = install(
+        legacy=legacy,
+        runtime=Runtime(),
+        mtf_candles={
+            "TESTUSDT": {"1h": [], "4h": []}
+        },
+        trading_symbols=["TESTUSDT"],
+    )
+    bridge.legacy.fetch_strategy_data()
+    bridge.capture_cycle()
+    capture = bridge.latest_captures()["TESTUSDT"]
+
+    assert capture["entry_scenario"]["risk"]["target_price"] == 105.0
+    assert capture["entry_scenario"]["risk"]["target_source"] == "5m_PIVOT_HIGH"
+    assert capture["entry_scenario"]["risk"]["reward_risk"] == 2.5
+    assert capture["entry_scenario"]["risk"]["target_status"] == "VALID"
+    assert capture["legacy_result"]["signal"] == original["signal"]
