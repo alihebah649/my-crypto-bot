@@ -51,6 +51,17 @@ def test_wide_stop_and_low_reward_are_hard_risk_gates():
     assert low_reward.decision == "REJECT_LOW_REWARD"
 
 
+def test_missing_reward_risk_is_data_pending_not_low_reward():
+    scenario = replace(
+        SCENARIOS["valid_reversal"],
+        risk={**SCENARIOS["valid_reversal"].risk, "reward_risk": None},
+    )
+    result = ENGINE.evaluate(scenario)
+    assert result.approved is False
+    assert result.decision == "REJECT_DATA_UNAVAILABLE"
+    assert result.failed_gate == "REWARD_RISK_PENDING"
+
+
 def test_reentry_lock_requires_new_structure_after_a_stop():
     locked = ENGINE.evaluate(SCENARIOS["reentry_trap"])
     new_structure = ENGINE.evaluate(SCENARIOS["reentry_new_structure"])
