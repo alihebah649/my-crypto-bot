@@ -38,4 +38,5 @@ jobs:
           tests/test_entry_v2_replay.py
           tests/test_entry_v2_capture.py
           tests/test_entry_v2_runtime_capture.py
+          tests/test_entry_v2_runtime_persistence.py
           tests/test_paper_runtime_mtf_wiring.py
