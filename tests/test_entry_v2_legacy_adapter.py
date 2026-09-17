@@ -1,4 +1,5 @@
 from engine.entry_v2_adapter import EntryV2MarketFacts, build_entry_scenario, evaluate_legacy_with_entry_v2
+from multi_candle_context import analyze_multi_candle_context
 
 
 def candle(o, c, low=None, high=None, volume=100.0):
@@ -38,13 +39,12 @@ def legacy_result(**overrides):
     return result
 
 
-def facts(legacy, same_candles=True):
+def facts(legacy):
     candles = base_candles()
-    other = list(candles)
     return EntryV2MarketFacts(
         legacy_result=legacy,
         candles_5m=candles,
-        candles_15m=other,
+        candles_15m=list(candles),
         candles_1h=list(candles),
         candles_4h=list(candles),
         stop_distance_percent=1.0,
@@ -79,9 +79,10 @@ def test_multi_candle_structure_is_carried_into_v2_contract_for_all_timeframes()
     assert all(by_tf[tf]["patterns"] for tf in by_tf)
     assert scenario["structure"]["higher_low"] is True
     assert scenario["structure"]["reclaim"] is True
+    assert "multi_candle_context_by_timeframe" in scenario["metadata"]
 
 
-def test_higher_timeframe_structure_changes_context_but_5m_remains_trigger_lane():
+def test_higher_timeframe_structure_is_kept_separate_from_5m_trigger():
     legacy = legacy_result(
         scalp_confirmed_reversal=True,
         scalp_recovery_confirmation=False,
@@ -91,6 +92,37 @@ def test_higher_timeframe_structure_changes_context_but_5m_remains_trigger_lane(
     assert scenario["market"]["1h_bias"] in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
     assert scenario["market"]["4h_bias"] in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
     assert scenario["trigger"]["confirmed_reversal"] is True
+
+
+def test_four_candle_reversal_is_detected_explicitly():
+    candles = [
+        candle(100, 98, 97.5, 100.3),
+        candle(98, 96, 95.5, 98.2),
+        candle(96, 97, 95.6, 97.4),
+        candle(97, 100, 96.8, 100.4),
+        candle(100, 100.2),
+        candle(100.2, 100.3),
+        candle(100.3, 100.4),
+        candle(100.4, 100.5),
+    ]
+    context = analyze_multi_candle_context(candles)
+    assert "FOUR_C_BEAR_TO_BULL_REVERSAL" in context["patterns"]
+
+
+def test_four_candle_bearish_sequence_can_raise_bearish_warning():
+    candles = [
+        candle(100, 101),
+        candle(101, 100),
+        candle(100, 99),
+        candle(99, 98),
+        candle(98, 97),
+        candle(97, 96),
+        candle(96, 95),
+        candle(95, 94),
+    ]
+    context = analyze_multi_candle_context(candles)
+    assert "FOUR_BEARISH_SEQUENCE" in context["patterns"]
+    assert context["bearish_warning"] is True
 
 
 def test_legacy_scalp_lane_never_falls_back_to_swing():
