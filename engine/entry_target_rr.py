@@ -62,12 +62,7 @@ class TargetRRDecision:
             "minimum_reward_risk": self.minimum_reward_risk,
             "target_source": self.target_source,
             "candidates": [
-                {
-                    "timeframe": item.timeframe,
-                    "price": item.price,
-                    "source": item.source,
-                    "candle_index": item.candle_index,
-                }
+                {"timeframe": item.timeframe, "price": item.price, "source": item.source, "candle_index": item.candle_index}
                 for item in self.candidates
             ],
         }
@@ -115,20 +110,16 @@ def calculate_target_rr(
     if entry <= 0 or stop <= 0 or risk <= 0:
         return TargetRRDecision("INVALID_RISK_INPUT", mode, entry, stop, None, None, risk, 0.0, minimum_rr, None)
 
+    timeframe_priority = {timeframe: index for index, timeframe in enumerate(LANE_TIMEFRAMES[mode])}
     candidates: list[TargetCandidate] = []
     for timeframe in LANE_TIMEFRAMES[mode]:
         pivots = _pivot_highs(candles_by_timeframe.get(timeframe, ()), WINDOW_LIMITS[(mode, timeframe)])
         for price, index in pivots:
             if price <= entry:
                 continue
-            candidates.append(TargetCandidate(
-                timeframe=timeframe,
-                price=price,
-                source=f"{timeframe}_PIVOT_HIGH",
-                candle_index=index,
-            ))
+            candidates.append(TargetCandidate(timeframe, price, f"{timeframe}_PIVOT_HIGH", index))
 
-    candidates = sorted(candidates, key=lambda item: (item.price, item.timeframe))
+    candidates = sorted(candidates, key=lambda item: (item.price, timeframe_priority[item.timeframe], -item.candle_index))
     if not candidates:
         return TargetRRDecision("NO_TARGET_ABOVE_ENTRY", mode, entry, stop, None, None, risk, 0.0, minimum_rr, None, ())
 
@@ -136,36 +127,12 @@ def calculate_target_rr(
         reward = candidate.price - entry
         rr = reward / risk
         if rr >= minimum_rr:
-            return TargetRRDecision(
-                "VALID",
-                mode,
-                entry,
-                stop,
-                candidate.price,
-                rr,
-                risk,
-                reward,
-                minimum_rr,
-                candidate.source,
-                tuple(candidates),
-            )
+            return TargetRRDecision("VALID", mode, entry, stop, candidate.price, rr, risk, reward, minimum_rr, candidate.source, tuple(candidates))
 
     nearest = candidates[0]
     reward = nearest.price - entry
     rr = reward / risk
-    return TargetRRDecision(
-        "NO_TARGET_MEETS_RR",
-        mode,
-        entry,
-        stop,
-        None,
-        rr,
-        risk,
-        reward,
-        minimum_rr,
-        None,
-        tuple(candidates),
-    )
+    return TargetRRDecision("NO_TARGET_MEETS_RR", mode, entry, stop, None, rr, risk, reward, minimum_rr, None, tuple(candidates))
 
 
 __all__ = ["TargetCandidate", "TargetRRDecision", "calculate_target_rr"]
