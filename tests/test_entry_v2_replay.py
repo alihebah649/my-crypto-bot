@@ -1,5 +1,5 @@
 from engine.entry_v2_adapter import EntryV2MarketFacts
-from engine.entry_v2_replay import replay_many, replay_one
+from engine.entry_v2_replay import replay_many, replay_one, summarize_replay
 
 
 def candle(o, c, low=None, high=None, volume=100.0):
@@ -66,7 +66,11 @@ def test_replay_preserves_legacy_and_records_v2_rejection():
     assert row.legacy_decision == "BUY"
     assert row.legacy_trade_mode == "SCALP"
     assert row.legacy_score == 82.0
-    assert row.v2_decision in {"REJECT_NO_RECLAIM", "REJECT_COUNTERTREND"}
+    assert row.v2_decision in {
+        "REJECT_NO_SELLER_FAILURE",
+        "REJECT_NO_RECLAIM",
+        "REJECT_COUNTERTREND",
+    }
     assert row.v2_trade_mode == "SCALP"
     assert row.candle_patterns_5m
     assert row.candle_patterns_15m
@@ -88,3 +92,17 @@ def test_replay_many_keeps_symbol_identity():
         "LINKUSDT": facts(legacy_buy_reversal()),
     })
     assert [row.symbol for row in rows] == ["ADAUSDT", "LINKUSDT"]
+
+
+def test_replay_summary_measures_legacy_to_v2_transition():
+    rows = replay_many({
+        "ADAUSDT": facts(legacy_buy_recovery()),
+        "LINKUSDT": facts(legacy_buy_reversal()),
+    })
+    summary = summarize_replay(rows)
+    assert summary.total_cases == 2
+    assert summary.legacy_buys == 2
+    assert summary.legacy_buy_v2_rejected >= 1
+    assert summary.legacy_buy_v2_rejected + summary.legacy_buy_v2_approved == 2
+    assert sum(summary.v2_decision_counts.values()) == 2
+    assert sum(summary.v2_lane_counts.values()) == 2
