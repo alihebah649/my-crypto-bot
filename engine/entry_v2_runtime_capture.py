@@ -17,6 +17,7 @@ from .entry_v2_adapter import EntryV2MarketFacts
 from .entry_v2_capture import EntryV2ShadowCapture, capture_entry_v2, capture_summary
 from .entry_v2_capture_store import EntryV2CaptureStore
 from .entry_v2_outcome_analysis import analyze_entry_v2_outcomes
+from .entry_v2_shadow_report import build_entry_v2_shadow_report
 
 
 @dataclass
@@ -236,12 +237,10 @@ class EntryV2RuntimeCapture:
         summary["persistent_store_error"] = self.capture_store.last_error if self.capture_store is not None else None
         return summary
 
-    def _historical_outcomes(self) -> dict[str, Any] | None:
-        if self.capture_store is None:
-            return None
+    def _repository_positions(self) -> list[Any]:
         repository = getattr(self.runtime, "repository", None)
         if repository is None:
-            return None
+            return []
         positions: list[Any] = []
         for method_name in ("get_open_positions", "get_closed_positions"):
             method = getattr(repository, method_name, None)
@@ -250,8 +249,21 @@ class EntryV2RuntimeCapture:
                     positions.extend(list(method() or []))
                 except Exception:
                     continue
+        return positions
+
+    def _historical_outcomes(self) -> dict[str, Any] | None:
+        if self.capture_store is None or getattr(self.runtime, "repository", None) is None:
+            return None
         try:
-            return analyze_entry_v2_outcomes(self.capture_store.read_all(), positions)
+            return analyze_entry_v2_outcomes(self.capture_store.read_all(), self._repository_positions())
+        except Exception as exc:
+            return {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _historical_shadow_report(self) -> dict[str, Any] | None:
+        if self.capture_store is None or getattr(self.runtime, "repository", None) is None:
+            return None
+        try:
+            return build_entry_v2_shadow_report(self.capture_store.read_all(), self._repository_positions())
         except Exception as exc:
             return {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -272,6 +284,7 @@ class EntryV2RuntimeCapture:
             "v2_no_target_above_entry": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_ABOVE_ENTRY"),
             "v2_no_target_meets_rr": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_MEETS_RR"),
             "historical_outcomes": self._historical_outcomes(),
+            "shadow_report": self._historical_shadow_report(),
             "latest": {
                 symbol: {
                     "capture_id": item.capture_id,
