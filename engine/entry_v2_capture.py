@@ -9,12 +9,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, Mapping
 
 from .entry_engine import EntryDecision, EntryEngineV2
 from .entry_v2_adapter import EntryV2MarketFacts, build_entry_scenario
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
 
 
@@ -34,9 +36,20 @@ def _last_closed_window(candles: Any, size: int = 8) -> list[dict[str, Any]]:
     return [_json_safe(candle) for candle in closed[-size:]]
 
 
+def _capture_id(symbol: str, captured_at: str, scenario: Mapping[str, Any]) -> str:
+    payload = {
+        "symbol": str(symbol).upper(),
+        "captured_at": str(captured_at),
+        "scenario": _json_safe(scenario),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
 @dataclass(frozen=True)
 class EntryV2ShadowCapture:
     schema_version: int
+    capture_id: str
     captured_at: str
     symbol: str
     legacy_result: Mapping[str, Any]
@@ -74,6 +87,7 @@ def capture_entry_v2(
 
     return EntryV2ShadowCapture(
         schema_version=SCHEMA_VERSION,
+        capture_id=_capture_id(symbol, timestamp, scenario),
         captured_at=str(timestamp),
         symbol=str(symbol),
         legacy_result=deepcopy(_json_safe(facts.legacy_result)),
@@ -101,6 +115,7 @@ def capture_summary(capture: EntryV2ShadowCapture) -> dict[str, Any]:
     risk = capture.entry_scenario.get("risk", {})
     return {
         "schema_version": capture.schema_version,
+        "capture_id": capture.capture_id,
         "captured_at": capture.captured_at,
         "symbol": capture.symbol,
         "legacy_signal": legacy.get("signal", "HOLD"),
