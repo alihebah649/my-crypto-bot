@@ -33,6 +33,7 @@ jobs:
           tests/test_entry_v2_swing_lane.py
           tests/test_entry_v2_legacy_adapter.py
           tests/test_entry_v2_target_rr.py
+          tests/test_entry_v2_target_gate.py
           tests/test_entry_v2_replay.py
           tests/test_entry_v2_capture.py
           tests/test_entry_v2_runtime_capture.py
