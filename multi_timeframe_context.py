@@ -1,8 +1,8 @@
 """Multi-timeframe closed-candle context for entry quality.
 
 The module deliberately does not create a standalone BUY signal. It compares
-3/5/7/8-candle structures on 5m, 15m, 1h and 4h, with higher timeframes used as
-context and 5m remaining the execution trigger.
+3/4/5/7/8-candle structures on 5m, 15m, 1h and 4h, with higher timeframes used
+as context and 5m remaining the execution trigger.
 
 Callers must pass CLOSED candles. The live/forming candle is removed by the
 strategy layer before this module is called, so this module never double-skips
@@ -28,7 +28,7 @@ def _bias(context: Mapping[str, object]) -> str:
 def analyze_multi_timeframe_context(
     candles_by_timeframe: Mapping[str, Iterable[dict]],
 ) -> Dict[str, object]:
-    """Compare closed-candle structures across 5m/15m/1h/4h."""
+    """Compare closed-candle 3/4/5/7/8 structures across 5m/15m/1h/4h."""
     frames: Dict[str, dict] = {}
     weighted_bull = 0
     weighted_bear = 0

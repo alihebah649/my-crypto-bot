@@ -1,8 +1,8 @@
 """Multi-candle price-action context for the dual-lane strategy.
 
-This module is intentionally independent from entry scoring at first. It provides
-an auditable, closed-candle-only view of 3/5/7/8-candle structure so it can be
-paper-tested before becoming a hard Scalp gate.
+Closed-candle-only structural analysis across 3/4/5/7/8-candle windows.
+The module is descriptive: it reports market structure and warnings but does
+not directly authorize a trade.
 """
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ def _lower_wick(c: Candle) -> float:
 
 
 def _consecutive_direction(candles: List[Candle]) -> Tuple[int, int]:
-    """Return consecutive bullish and bearish candles at the end of the series."""
     bulls = bears = 0
     for c in reversed(candles):
         if _bull(c):
@@ -49,12 +48,7 @@ def _consecutive_direction(candles: List[Candle]) -> Tuple[int, int]:
 
 
 def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
-    """Analyze closed-candle structure without using the currently forming candle.
-
-    The result is descriptive first: it does not add points to the existing
-    Scalp/Swing score. A strong bearish structure is surfaced as a warning,
-    while bullish structure is reported as confirmation.
-    """
+    """Analyze 3/4/5/7/8 closed-candle structure without issuing a BUY signal."""
     if len(candles) < 8:
         return {
             "available": False,
@@ -66,6 +60,7 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
         }
 
     c3 = candles[-3:]
+    c4 = candles[-4:]
     c5 = candles[-5:]
     c7 = candles[-7:]
     c8 = candles[-8:]
@@ -74,7 +69,7 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
     bull_score = 0
     bear_score = 0
 
-    # Three-candle directional structure.
+    # 3-candle directional structure and classic advance/decline shapes.
     a, b, c = c3
     if _bull(a) and _bull(b) and _bull(c) and float(a["close"]) > float(b["close"]) > float(c["close"]):
         patterns.append("THREE_BULLISH_ADVANCE")
@@ -83,7 +78,6 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
         patterns.append("THREE_BEARISH_DECLINE")
         bear_score += 2
 
-    # Three white soldiers / three black crows style structure.
     if all(_bull(x) for x in c3) and all(_lower_wick(x) <= _body(x) * 0.6 for x in c3):
         if float(c3[1]["close"]) > float(c3[0]["close"]) and float(c3[2]["close"]) > float(c3[1]["close"]):
             patterns.append("THREE_BULLISH_SOLDIERS")
@@ -93,7 +87,27 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
             patterns.append("THREE_BEARISH_CROWS")
             bear_score += 3
 
-    # Five-candle momentum and exhaustion.
+    # 4-candle sequence: two-candle confirmation after a directional pair.
+    bull4 = sum(_bull(x) for x in c4)
+    bear4 = sum(_bear(x) for x in c4)
+    if bull4 >= 3 and float(c4[-1]["close"]) > float(c4[0]["open"]):
+        patterns.append("FOUR_BULLISH_SEQUENCE")
+        bull_score += 2
+    if bear4 >= 3 and float(c4[-1]["close"]) < float(c4[0]["open"]):
+        patterns.append("FOUR_BEARISH_SEQUENCE")
+        bear_score += 2
+
+    # 4-candle reversal confirmation: an initial selloff, stabilization, then
+    # two bullish closes that reclaim the prior midpoint.
+    midpoint_first = (float(c4[0]["open"]) + float(c4[0]["close"])) / 2.0
+    if _bear(c4[0]) and _bear(c4[1]) and _bull(c4[2]) and _bull(c4[3]) and float(c4[3]["close"]) > midpoint_first:
+        patterns.append("FOUR_C_BEAR_TO_BULL_REVERSAL")
+        bull_score += 3
+    if _bull(c4[0]) and _bull(c4[1]) and _bear(c4[2]) and _bear(c4[3]) and float(c4[3]["close"]) < midpoint_first:
+        patterns.append("FOUR_C_BULL_TO_BEAR_REVERSAL")
+        bear_score += 3
+
+    # 5-candle momentum and pressure exhaustion.
     bulls5 = sum(_bull(x) for x in c5)
     bears5 = sum(_bear(x) for x in c5)
     if bulls5 >= 4 and float(c5[-1]["close"]) > float(c5[0]["close"]):
@@ -113,8 +127,7 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
         bear_score += 1
         reasons.append("BUYING_PRESSURE_WEAKENING")
 
-    # Seven/eight-candle context: distinguish a genuine recovery from a rally
-    # that is rolling over. This is deliberately structural, not predictive.
+    # 7/8-candle broader structure.
     older = c8[:4]
     recent = c8[4:]
     older_change = float(older[-1]["close"]) - float(older[0]["open"])
@@ -155,7 +168,12 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
 
     bearish_warning = bool(
         bear_score >= bull_score + 3
-        and ("5C_BEARISH_MOMENTUM" in patterns or "THREE_BEARISH_CROWS" in patterns or bears_end >= 3)
+        and (
+            "5C_BEARISH_MOMENTUM" in patterns
+            or "THREE_BEARISH_CROWS" in patterns
+            or "FOUR_BEARISH_SEQUENCE" in patterns
+            or bears_end >= 3
+        )
     )
 
     if bias == "BULLISH":
@@ -175,6 +193,7 @@ def analyze_multi_candle_context(candles: List[Candle]) -> Dict[str, object]:
         "reasons": reasons,
         "bearish_warning": bearish_warning,
         "window_3": 3,
+        "window_4": 4,
         "window_5": 5,
         "window_7": 7,
         "window_8": 8,

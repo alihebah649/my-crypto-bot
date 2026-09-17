@@ -200,6 +200,16 @@ def _record_btc_crash_guard(candles):
 
 _legacy.btc_crash_guard = _record_btc_crash_guard
 
+from engine.entry_v2_runtime_capture import install as _install_entry_v2_runtime_capture
+
+_entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
+    legacy=_legacy,
+    runtime=runtime,
+    mtf_candles=_mtf_candles,
+    trading_symbols=TRADING_SYMBOLS,
+    btc_guard_provider=lambda: _last_btc_guard,
+)
+
 
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
     protected_reasons = {PositionExitReason.STOP_LOSS, PositionExitReason.BREAK_EVEN}
@@ -267,6 +277,11 @@ runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 
 def _process_market_cycle_with_overlays():
     result = _paper_original_process_market_cycle()
+    try:
+        shadow_summary = _entry_v2_runtime_capture.capture_cycle()
+        runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["summary"] = shadow_summary
+    except Exception:
+        _legacy.logger.exception("Entry v2 shadow capture failed")
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
