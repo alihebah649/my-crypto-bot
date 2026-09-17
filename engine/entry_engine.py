@@ -37,8 +37,9 @@ class EntryEngineV2:
         execution = self._mapping(scenario, "execution")
         risk = self._mapping(scenario, "risk")
         metadata = self._mapping(scenario, "metadata")
-        mode = str(getattr(scenario, "trade_mode", "SCALP") or "SCALP").upper()
-        requested_setup = getattr(scenario, "setup_type", None)
+        mode = self._value(scenario, "trade_mode", "SCALP")
+        mode = str(mode or "SCALP").upper()
+        requested_setup = self._value(scenario, "setup_type")
         passed: list[str] = []
 
         if mode not in {"SCALP", "SWING"}:
@@ -129,8 +130,14 @@ class EntryEngineV2:
         })
 
     @staticmethod
-    def _mapping(obj: Any, name: str) -> Mapping[str, Any]:
-        value = getattr(obj, name, {})
+    def _value(obj: Any, name: str, default: Any = None) -> Any:
+        if isinstance(obj, Mapping):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    @classmethod
+    def _mapping(cls, obj: Any, name: str) -> Mapping[str, Any]:
+        value = cls._value(obj, name, {})
         return value if isinstance(value, Mapping) else {}
 
     @staticmethod
