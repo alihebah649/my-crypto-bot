@@ -37,6 +37,7 @@ class EntryV2RuntimeCapture:
     _latest: dict[str, EntryV2ShadowCapture] = field(default_factory=dict, init=False)
     _history: list[EntryV2ShadowCapture] = field(default_factory=list, init=False)
     _cycle_captured_symbols: set[str] = field(default_factory=set, init=False)
+    _cycle_persisted_symbols: set[str] = field(default_factory=set, init=False)
     _cycle_count: int = 0
 
     def __post_init__(self) -> None:
@@ -55,6 +56,7 @@ class EntryV2RuntimeCapture:
         def _capture_fetch():
             self._cycle_count += 1
             self._cycle_captured_symbols.clear()
+            self._cycle_persisted_symbols.clear()
             data = self._original_fetch_strategy_data()
             try:
                 tickers, candles_15m, candles_5m = data
@@ -196,7 +198,9 @@ class EntryV2RuntimeCapture:
         if self.capture_store is not None:
             try:
                 persisted = self.capture_store.append(capture.to_dict())
-                if not persisted:
+                if persisted:
+                    self._cycle_persisted_symbols.add(normalized)
+                else:
                     self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["persistence_error"] = self.capture_store.last_error
             except Exception as exc:
                 self.capture_store.last_error = f"{type(exc).__name__}: {exc}"
@@ -225,7 +229,7 @@ class EntryV2RuntimeCapture:
             del self._history[:-self.max_history]
 
         summary = self.summary(cycle_records)
-        summary["persisted_records"] = sum(1 for symbol in cycle_records if symbol in self._cycle_captured_symbols)
+        summary["persisted_records"] = len(self._cycle_persisted_symbols)
         summary["persistent_total_records"] = self.capture_store.count() if self.capture_store is not None else 0
         summary["persistent_store_error"] = self.capture_store.last_error if self.capture_store is not None else None
         return summary
