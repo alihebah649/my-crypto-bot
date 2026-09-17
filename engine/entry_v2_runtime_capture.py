@@ -90,12 +90,13 @@ class EntryV2RuntimeCapture:
             def _add_with_entry_v2_identity(position: Any):
                 try:
                     symbol = str(getattr(position, "symbol", "")).upper()
-                    capture = self._latest.get(symbol)
+                    capture = self._latest.get(symbol) if symbol in self._cycle_captured_symbols else None
                     if capture is not None:
                         metadata = getattr(position, "entry_metadata", None)
                         if isinstance(metadata, dict):
                             metadata.setdefault("entry_v2_shadow_capture_id", capture.capture_id)
                             metadata.setdefault("entry_v2_shadow_capture_at", capture.captured_at)
+                            metadata.setdefault("entry_v2_shadow_candidate_cycle", self._cycle_count)
                             metadata.setdefault("entry_v2_shadow_decision", dict(capture.v2_decision))
                             metadata.setdefault("entry_v2_shadow_target_price", capture.entry_scenario.get("risk", {}).get("target_price"))
                             metadata.setdefault("entry_v2_shadow_reward_risk", capture.entry_scenario.get("risk", {}).get("reward_risk"))
