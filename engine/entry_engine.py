@@ -100,6 +100,9 @@ class EntryEngineV2:
         return self._risk("SWING", setup, trigger, execution, risk, metadata, passed, same_context, 0.9, 5.0, 1.5)
 
     def _risk(self, mode, setup, trigger, execution, risk, metadata, passed, same_context, min_volume, max_stop, min_rr):
+        if bool(trigger.get("overextended")):
+            return self._reject(mode, setup, "REJECT_OVEREXTENDED", "ENTRY_TOO_FAR_FROM_VALID_LOCATION", passed)
+        passed.append("EXTENSION_VALID")
         volume = self._float(trigger.get("volume_ratio_5m", 0.0))
         if volume < min_volume:
             return self._reject(mode, setup, "REJECT_NO_VOLUME_CONFIRM", "VOLUME_NOT_CONFIRMING", passed)
