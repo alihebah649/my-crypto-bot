@@ -1,14 +1,15 @@
 """Legacy -> Entry v2 adapter.
 
-This module is deliberately a translation boundary. It does not change the
-legacy strategy and does not execute trades. It converts the existing
-``dual_mode_strategy`` result plus closed-candle context into the facts
-consumed by ``EntryEngineV2``.
+This module is a translation boundary only: it does not alter the legacy
+strategy and it does not execute trades. It converts the legacy result plus
+closed candles into explicit Entry v2 market facts.
 
-Important design rule:
-- scores/reasons from the legacy strategy remain diagnostics;
-- 5m/15m/1h/4h context and 3/5/7/8-candle structure become explicit facts;
-- recovery alone never becomes a structural reversal in this adapter.
+The important distinction is preserved:
+- 5m supplies the execution trigger;
+- 15m supplies setup/location context;
+- 1h and 4h supply higher-timeframe context;
+- 3/5/7/8-candle analysis is retained for each timeframe;
+- a legacy recovery flag never becomes a structural reversal by itself.
 """
 from __future__ import annotations
 
@@ -19,11 +20,12 @@ from multi_candle_context import analyze_multi_candle_context
 from multi_timeframe_context import analyze_multi_timeframe_context
 from .entry_engine import EntryDecision, EntryEngineV2
 
+TIMEFRAMES = ("5m", "15m", "1h", "4h")
+
 
 @dataclass(frozen=True)
 class EntryV2MarketFacts:
     """Inputs required to translate one legacy strategy observation."""
-
     legacy_result: Mapping[str, Any]
     candles_5m: Sequence[Mapping[str, Any]]
     candles_15m: Sequence[Mapping[str, Any]]
@@ -57,62 +59,60 @@ def _location_from_legacy(legacy: Mapping[str, Any]) -> tuple[bool, bool]:
     """Translate legacy support language into explicit location facts."""
     reasons = " ".join(str(x) for x in legacy.get("scalp_reasons", []))
     support = any(token in reasons for token in (
-        "BOLLINGER_LOWER_SUPPORT",
-        "BOLLINGER_NEAR_SUPPORT",
-        "BOLLINGER_LOWER_HALF",
-        "MACRO_SUPPORT",
+        "BOLLINGER_LOWER_SUPPORT", "BOLLINGER_NEAR_SUPPORT",
+        "BOLLINGER_LOWER_HALF", "MACRO_SUPPORT",
     ))
-    pullback = any(token in reasons for token in (
-        "PULLBACK",
-        "EMA100_TREND",
-    )) and not support
+    pullback = any(token in reasons for token in ("PULLBACK", "EMA100_TREND")) and not support
     return support, pullback
 
 
 def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
     legacy = facts.legacy_result
-    c5 = _closed(facts.candles_5m)
-    c15 = _closed(facts.candles_15m)
-    c1h = _closed(facts.candles_1h)
-    c4h = _closed(facts.candles_4h)
+    candles_by_timeframe = {
+        "5m": _closed(facts.candles_5m),
+        "15m": _closed(facts.candles_15m),
+        "1h": _closed(facts.candles_1h),
+        "4h": _closed(facts.candles_4h),
+    }
 
-    mtf = analyze_multi_timeframe_context({
-        "5m": c5,
-        "15m": c15,
-        "1h": c1h,
-        "4h": c4h,
-    })
-    multi = analyze_multi_candle_context(c5)
+    mtf = analyze_multi_timeframe_context(candles_by_timeframe)
+    candle_contexts = {
+        timeframe: analyze_multi_candle_context(candles_by_timeframe[timeframe])
+        for timeframe in TIMEFRAMES
+    }
+    multi5 = candle_contexts["5m"]
     support, pullback = _location_from_legacy(legacy)
-
     confirmed_reversal = bool(legacy.get("scalp_confirmed_reversal"))
-    continuation_break = _has_pattern(
-        multi,
-        "THREE_BULLISH_ADVANCE",
-        "THREE_BULLISH_SOLDIERS",
-        "5C_BULLISH_MOMENTUM",
-    ) and _bias(mtf, "5m") == "BULLISH"
-    pullback_holds = _has_pattern(multi, "7C_HIGHER_LOW_STRUCTURE", "8C_SELL_OFF_TO_RECOVERY")
-    higher_low = _has_pattern(multi, "7C_HIGHER_LOW_STRUCTURE")
-    reclaim = bool(confirmed_reversal and (
-        _has_pattern(multi, "8C_SELL_OFF_TO_RECOVERY", "THREE_BULLISH_ADVANCE")
-        or str(legacy.get("scalp_recovery_confirmation", False)).lower() == "false"
-    ))
 
-    # A legacy recovery flag is intentionally *not* mapped to higher_low or
-    # reclaim. This is the central protection against buying a fake recovery.
+    continuation_break = bool(
+        _has_pattern(multi5, "THREE_BULLISH_ADVANCE", "THREE_BULLISH_SOLDIERS", "5C_BULLISH_MOMENTUM")
+        and _bias(mtf, "5m") == "BULLISH"
+    )
+    pullback_holds = bool(
+        _has_pattern(multi5, "7C_HIGHER_LOW_STRUCTURE", "8C_SELL_OFF_TO_RECOVERY")
+        or _has_pattern(candle_contexts["15m"], "7C_HIGHER_LOW_STRUCTURE", "8C_SELL_OFF_TO_RECOVERY")
+    )
+    higher_low = _has_pattern(multi5, "7C_HIGHER_LOW_STRUCTURE")
+    reclaim = bool(
+        confirmed_reversal
+        and (
+            _has_pattern(multi5, "8C_SELL_OFF_TO_RECOVERY", "THREE_BULLISH_ADVANCE")
+            or _has_pattern(candle_contexts["15m"], "7C_HIGHER_LOW_STRUCTURE", "THREE_BULLISH_ADVANCE")
+        )
+    )
+
+    # Recovery alone cannot manufacture structural reversal.
     if not confirmed_reversal:
         higher_low = False
         reclaim = False
 
-    bearish_weak_recovery = (
+    bearish_weak_recovery = bool(
         all(_bias(mtf, tf) == "BEARISH" for tf in ("15m", "1h", "4h"))
         and not confirmed_reversal
     )
 
     mode = str(legacy.get("trade_mode", "NONE")).upper()
     if mode not in {"SCALP", "SWING"}:
-        # Preserve the lane selected by the legacy result when it is explicit.
         if legacy.get("scalp_signal") == "BUY":
             mode = "SCALP"
         elif legacy.get("swing_signal") == "BUY":
@@ -120,12 +120,10 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         else:
             mode = "SCALP"
 
-    if bearish_weak_recovery:
-        five_bias = "RECOVERY"
-    else:
-        five_bias = _bias(mtf, "5m")
-
-    setup_type = "REVERSAL" if confirmed_reversal else ("CONTINUATION" if continuation_break and pullback_holds else None)
+    five_bias = "RECOVERY" if bearish_weak_recovery else _bias(mtf, "5m")
+    setup_type = "REVERSAL" if confirmed_reversal else (
+        "CONTINUATION" if continuation_break and pullback_holds else None
+    )
 
     return {
         "trade_mode": mode,
@@ -140,15 +138,26 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         "structure": {
             "location_at_support": support,
             "location_pullback": pullback,
-            "selling_pressure_weakening": _has_pattern(multi, "5C_SELLING_PRESSURE_WEAKENING"),
+            "selling_pressure_weakening": _has_pattern(multi5, "5C_SELLING_PRESSURE_WEAKENING"),
             "higher_low": higher_low,
             "reclaim": reclaim,
             "continuation_break": continuation_break,
             "pullback_holds": pullback_holds,
             "new_structure_after_prior_stop": facts.new_structure_after_prior_stop,
-            "multi_candle_bias": multi.get("bias"),
-            "multi_candle_strength": multi.get("strength", 0),
-            "multi_candle_patterns": tuple(multi.get("patterns", [])),
+            "multi_candle_bias": multi5.get("bias"),
+            "multi_candle_strength": multi5.get("strength", 0),
+            "multi_candle_patterns": tuple(multi5.get("patterns", [])),
+            "multi_candle_by_timeframe": {
+                tf: {
+                    "bias": ctx.get("bias"),
+                    "strength": ctx.get("strength", 0),
+                    "bull_score": ctx.get("bull_score", 0),
+                    "bear_score": ctx.get("bear_score", 0),
+                    "patterns": tuple(ctx.get("patterns", [])),
+                    "bearish_warning": bool(ctx.get("bearish_warning")),
+                }
+                for tf, ctx in candle_contexts.items()
+            },
         },
         "trigger": {
             "confirmed_reversal": confirmed_reversal,
@@ -157,7 +166,7 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
             "volume_ratio_5m": float(legacy.get("volume_ratio_5m", legacy.get("scalp_min_volume_ratio", 0.0)) or 0.0),
         },
         "execution": {
-            "closed_candle": bool(c5 and c15),
+            "closed_candle": bool(candles_by_timeframe["5m"] and candles_by_timeframe["15m"]),
             "spread_percent": facts.spread_percent,
         },
         "risk": {
@@ -172,7 +181,9 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
             "legacy_confirmed_reversal": legacy.get("scalp_confirmed_reversal"),
             "legacy_mtf_bias": legacy.get("mtf_bias"),
             "legacy_mtf_timeframe_bias": legacy.get("mtf_timeframe_bias", {}),
-            "multi_candle_context": multi,
+            "multi_candle_context": multi5,
+            "multi_candle_context_by_timeframe": candle_contexts,
+            "mtf_context": mtf,
             "prior_exit": facts.prior_exit,
             "prior_context_fingerprint_same": facts.prior_context_fingerprint_same,
         },
