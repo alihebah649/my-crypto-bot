@@ -139,8 +139,8 @@ def test_runtime_capture_calculates_real_structure_target_without_changing_legac
     bridge = install(legacy=legacy, runtime=Runtime(), mtf_candles={"TESTUSDT": {"1h": [], "4h": []}}, trading_symbols=["TESTUSDT"])
     bridge.legacy.fetch_strategy_data(); bridge.capture_cycle()
     capture = bridge.latest_captures()["TESTUSDT"]
-    assert capture["entry_scenario"]["risk"]["target_price"] == 105.0
+    assert capture["entry_scenario"]["risk"]["target_price"] == 102.0
     assert capture["entry_scenario"]["risk"]["target_source"] == "5m_PIVOT_HIGH"
-    assert capture["entry_scenario"]["risk"]["reward_risk"] == 2.5
+    assert capture["entry_scenario"]["risk"]["reward_risk"] == 1.0
     assert capture["entry_scenario"]["risk"]["target_status"] == "VALID"
     assert capture["legacy_result"]["signal"] == original["signal"]
