@@ -8,8 +8,6 @@ def candle(o, c, low=None, high=None, volume=100.0):
 
 
 def base_candles():
-    # First four candles sell off; the later candles recover and form a higher
-    # low. The final closed candles also show weakening selling pressure.
     return [
         candle(110, 109, 108.5, 110.2),
         candle(109, 108, 107.5, 109.2),
@@ -18,7 +16,6 @@ def base_candles():
         candle(106.7, 106.3, 106.0, 106.9),
         candle(106.3, 106.55, 106.15, 106.8, 130),
         candle(106.55, 106.9, 106.35, 107.1, 135),
-        # Current forming candle is excluded by the adapter.
         candle(106.9, 107.2, 106.7, 107.4, 140),
         candle(107.2, 107.3, 107.0, 107.5, 145),
     ]
@@ -41,14 +38,15 @@ def legacy_result(**overrides):
     return result
 
 
-def facts(legacy):
+def facts(legacy, same_candles=True):
     candles = base_candles()
+    other = list(candles)
     return EntryV2MarketFacts(
         legacy_result=legacy,
         candles_5m=candles,
-        candles_15m=candles,
-        candles_1h=candles,
-        candles_4h=candles,
+        candles_15m=other,
+        candles_1h=list(candles),
+        candles_4h=list(candles),
         stop_distance_percent=1.0,
         reward_risk=1.8,
         spread_percent=0.02,
@@ -69,17 +67,30 @@ def test_legacy_score_cannot_authorize_fake_recovery():
     assert decision.decision in {"REJECT_NO_RECLAIM", "REJECT_COUNTERTREND"}
 
 
-def test_multi_candle_structure_is_carried_into_v2_contract():
+def test_multi_candle_structure_is_carried_into_v2_contract_for_all_timeframes():
     legacy = legacy_result(
         scalp_confirmed_reversal=True,
         scalp_recovery_confirmation=False,
         scalp_reasons=["15M_BOLLINGER_NEAR_SUPPORT"],
     )
     scenario = build_entry_scenario(facts(legacy))
-    structure = scenario["structure"]
-    assert structure["multi_candle_patterns"]
-    assert structure["higher_low"] is True
-    assert structure["reclaim"] is True
+    by_tf = scenario["structure"]["multi_candle_by_timeframe"]
+    assert set(by_tf) == {"5m", "15m", "1h", "4h"}
+    assert all(by_tf[tf]["patterns"] for tf in by_tf)
+    assert scenario["structure"]["higher_low"] is True
+    assert scenario["structure"]["reclaim"] is True
+
+
+def test_higher_timeframe_structure_changes_context_but_5m_remains_trigger_lane():
+    legacy = legacy_result(
+        scalp_confirmed_reversal=True,
+        scalp_recovery_confirmation=False,
+        scalp_reasons=["15M_BOLLINGER_NEAR_SUPPORT"],
+    )
+    scenario = build_entry_scenario(facts(legacy))
+    assert scenario["market"]["1h_bias"] in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
+    assert scenario["market"]["4h_bias"] in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}
+    assert scenario["trigger"]["confirmed_reversal"] is True
 
 
 def test_legacy_scalp_lane_never_falls_back_to_swing():
@@ -99,3 +110,22 @@ def test_legacy_swing_lane_remains_swing():
     )
     scenario = build_entry_scenario(facts(legacy))
     assert scenario["trade_mode"] == "SWING"
+
+
+def test_incomplete_higher_timeframe_data_is_exposed_not_fabricated():
+    legacy = legacy_result()
+    candles = base_candles()
+    market_facts = EntryV2MarketFacts(
+        legacy_result=legacy,
+        candles_5m=candles,
+        candles_15m=candles,
+        candles_1h=[],
+        candles_4h=[],
+        stop_distance_percent=1.0,
+        reward_risk=1.8,
+        spread_percent=0.02,
+    )
+    scenario = build_entry_scenario(market_facts)
+    assert scenario["structure"]["multi_candle_by_timeframe"]["1h"]["bias"] == "UNKNOWN"
+    assert scenario["structure"]["multi_candle_by_timeframe"]["4h"]["bias"] == "UNKNOWN"
+    assert scenario["metadata"]["mtf_context"]["available"] is True
