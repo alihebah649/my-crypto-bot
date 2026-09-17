@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from entry_v2_scenarios import SCENARIOS
 from engine.entry_engine import EntryEngineV2
 
@@ -61,3 +63,30 @@ def test_valid_continuation_does_not_require_reversal_signal():
     assert result.approved is True
     assert result.decision == "APPROVED_SCALP"
     assert result.setup_type == "CONTINUATION"
+
+
+def test_no_seller_failure_is_a_distinct_hard_rejection():
+    scenario = replace(
+        SCENARIOS["fake_recovery"],
+        structure={**SCENARIOS["fake_recovery"].structure, "selling_pressure_weakening": False},
+    )
+    result = ENGINE.evaluate(scenario)
+    assert result.decision == "REJECT_NO_SELLER_FAILURE"
+
+
+def test_low_volume_is_rejected_after_structure_is_confirmed():
+    scenario = replace(
+        SCENARIOS["valid_reversal"],
+        trigger={**SCENARIOS["valid_reversal"].trigger, "volume_ratio_5m": 0.74},
+    )
+    result = ENGINE.evaluate(scenario)
+    assert result.decision == "REJECT_NO_VOLUME_CONFIRM"
+
+
+def test_overextended_entry_is_rejected_even_with_good_structure():
+    scenario = replace(
+        SCENARIOS["valid_reversal"],
+        trigger={**SCENARIOS["valid_reversal"].trigger, "overextended": True},
+    )
+    result = ENGINE.evaluate(scenario)
+    assert result.decision == "REJECT_OVEREXTENDED"
