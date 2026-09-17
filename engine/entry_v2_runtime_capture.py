@@ -8,6 +8,8 @@ opens/closes positions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+import sys
 from typing import Any, Callable, Mapping
 
 from .entry_target_rr import calculate_target_rr
@@ -33,6 +35,13 @@ class EntryV2RuntimeCapture:
     _latest: dict[str, EntryV2ShadowCapture] = field(default_factory=dict, init=False)
     _history: list[EntryV2ShadowCapture] = field(default_factory=list, init=False)
     _cycle_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.capture_store is None:
+            persistence_dir = getattr(self.runtime, "persistence_dir", None)
+            if persistence_dir:
+                path = Path(persistence_dir) / "entry_v2_shadow" / "captures.jsonl"
+                self.capture_store = EntryV2CaptureStore(path)
 
     def install(self) -> "EntryV2RuntimeCapture":
         if self._original_fetch_strategy_data is not None:
@@ -61,6 +70,13 @@ class EntryV2RuntimeCapture:
                 return self.mtf_candles_provider() or {}
             except Exception:
                 return {}
+        # The production entrypoint executes shadow_main_base.py in the
+        # __main__ namespace, where _mtf_candles is rebound every market cycle.
+        # Read that live value instead of retaining a stale dictionary object.
+        main_module = sys.modules.get("__main__")
+        live = getattr(main_module, "_mtf_candles", None) if main_module is not None else None
+        if isinstance(live, Mapping):
+            return live
         return self.mtf_candles or {}
 
     def capture_cycle(self) -> dict[str, Any]:
