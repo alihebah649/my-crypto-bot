@@ -205,4 +205,4 @@ def test_runtime_summary_exposes_historical_outcomes_and_shadow_report_for_bound
     assert outcomes["by_decision"]["V2_APPROVED"]["losses"] + outcomes["by_decision"]["V2_REJECTED"]["losses"] == 1
     assert report["coverage"]["matched_positions"] == 1
     assert report["decision_flow"]["legacy_executed_v2_rejected"] in {0, 1}
-    assert report["rejected_executions"]
+    assert len(report["rejected_executions"]) == report["decision_flow"]["legacy_executed_v2_rejected"]
