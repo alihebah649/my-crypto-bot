@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
 from pathlib import Path
@@ -33,7 +32,6 @@ from core.paper_risk_overlay import (
     btc_recovery_eligible,
     btc_recovery_stop,
 )
-from engine.entry_v2_capture_store import EntryV2CaptureStore
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
@@ -41,12 +39,6 @@ _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
 _paper_original_facade_execute_decision = runtime.facade.execute_decision
 _paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
-
-# Durable Entry v2 evidence. This store is diagnostics-only; it does not
-# participate in execution, risk approval, or position lifecycle.
-_ENTRY_V2_STORE_MAX_RECORDS = int(os.getenv("ENTRY_V2_CAPTURE_MAX_RECORDS", "10000"))
-_ENTRY_V2_STORE_PATH = Path(PAPER_STATE_DIR) / "entry_v2_shadow" / "captures.jsonl"
-_entry_v2_capture_store = EntryV2CaptureStore(_ENTRY_V2_STORE_PATH, max_records=_ENTRY_V2_STORE_MAX_RECORDS)
 
 # A 24h ticker response is only used for current price, bid/ask and reporting
 # volume. Keep a valid snapshot available through short Binance rate-limit
@@ -216,8 +208,6 @@ _entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
     mtf_candles=_mtf_candles,
     trading_symbols=TRADING_SYMBOLS,
     btc_guard_provider=lambda: _last_btc_guard,
-    mtf_candles_provider=lambda: _mtf_candles,
-    capture_store=_entry_v2_capture_store,
 )
 
 
@@ -290,7 +280,6 @@ def _process_market_cycle_with_overlays():
     try:
         shadow_summary = _entry_v2_runtime_capture.capture_cycle()
         runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["summary"] = shadow_summary
-        runtime.last_entry_diagnostics["__entry_v2_shadow__"]["persistent_store"] = _entry_v2_capture_store.summary()
     except Exception:
         _legacy.logger.exception("Entry v2 shadow capture failed")
     if _last_btc_guard["crashing"]:
@@ -353,24 +342,94 @@ def _observe_market_health() -> None:
         _market_health_notify(f"BINANCE RATE LIMIT {status_code}", f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}")
         return
     if blocked:
-        _market_health_notify("BINANCE MARKET DATA BLOCKED", f"Retry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}")
+        _market_health_notify("BINANCE CIRCUIT OPEN", f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s")
         return
-    with _ticker_cache_lock:
-        stale_active = _ticker_cache_stale_active
-        ticker_entries = 0 if _ticker_cache is None else len(_ticker_cache[1])
-    if stale_active:
-        _market_health_notify("STALE TICKER SNAPSHOT", f"Ticker entries: {ticker_entries}\nData: {data_count}/{symbol_count}")
+    if data_count <= 0:
+        _market_health_notify("MARKET DATA DOWN", f"No scored symbols available: 0/{symbol_count}\nLast guard status: {status_code or 'none'}")
         return
-    if data_count == 0:
-        _market_health_notify("NO STRATEGY DATA", f"Data: 0/{symbol_count}")
-        return
-    if data_count < max(1, int(symbol_count * 0.5)):
-        _market_health_notify("DEGRADED MARKET DATA", f"Data: {data_count}/{symbol_count}")
-        return
-    _market_health_notify("HEALTHY", f"Data: {data_count}/{symbol_count}")
+    _market_health_notify("MARKET DATA UP", f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries")
 
 
+def _binance_metrics_snapshot_safe() -> dict:
+    if _binance_metrics is None:
+        return {"available": False, "error": "instrumentation_module_unavailable"}
+    try:
+        snapshot = _binance_metrics.binance_metrics_snapshot()
+        snapshot["available"] = True
+        return snapshot
+    except Exception as exc:  # pragma: no cover - defensive diagnostics path
+        return {"available": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.get("/binance-metrics")
+def _binance_metrics_endpoint():
+    return jsonify(_binance_metrics_snapshot_safe()), 200
+
+
+_BINANCE_METRICS_LAST_LOG_AT = 0.0
+_BINANCE_METRICS_LOG_INTERVAL = 60.0
+
+
+def _emit_binance_metrics_snapshot() -> None:
+    global _BINANCE_METRICS_LAST_LOG_AT
+    now = time.time()
+    if now - _BINANCE_METRICS_LAST_LOG_AT < _BINANCE_METRICS_LOG_INTERVAL:
+        return
+    _BINANCE_METRICS_LAST_LOG_AT = now
+    snapshot = _binance_metrics_snapshot_safe()
+    path_counts = snapshot.get("path_counts", {})
+    path_weight = snapshot.get("path_observed_weight_delta", {})
+    print(
+        "[BINANCE-METRICS-SNAPSHOT] "
+        f"total={snapshot.get('total_requests_seen', 0)} "
+        f"real={snapshot.get('real_outbound_requests', 0)} "
+        f"synthetic={snapshot.get('synthetic_circuit_responses', 0)} "
+        f"status={snapshot.get('status_counts', {})} "
+        f"path_counts={path_counts} "
+        f"path_weight_delta={path_weight} "
+        f"weight_delta_sum={snapshot.get('observed_weight_delta_sum', 0)} "
+        f"last_weight_1m={snapshot.get('last_weight_1m')}",
+        flush=True,
+    )
+
+
+# Diagnostic-only runtime tracing. It wraps the already active fetch wrappers
+# and records cache HIT/EXPIRED/MISS plus cache refreshes without changing
+# return values, timings, thresholds, or trading decisions.
 try:
-    _legacy.app.view_functions["diagnostics"] = _legacy.app.view_functions["diagnostics"]
-except Exception:
-    pass
+    from core.market_data_runtime_trace import install as _install_market_data_runtime_trace
+    _market_data_runtime_trace_snapshot = _install_market_data_runtime_trace(
+        legacy=_legacy,
+        kline_cache=_kline_cache,
+        kline_cache_lock=_kline_cache_lock,
+        kline_cache_ttl=_KLINE_CACHE_TTL,
+    )
+except Exception as exc:  # pragma: no cover - diagnostic path must not break paper engine
+    _legacy.logger.exception("Market-data runtime trace installation failed: %s", exc)
+    _market_data_runtime_trace_snapshot = lambda: {"available": False, "error": str(exc)}
+
+
+@app.get("/market-data-trace")
+def _market_data_trace_endpoint():
+    return jsonify(_market_data_runtime_trace_snapshot()), 200
+
+
+def _market_health_loop() -> None:
+    # Give the engine time to complete its first cycle before declaring a data
+    # outage. Then sample once per minute; notifications remain transition/
+    # heartbeat based, so this does not create Telegram spam.
+    time.sleep(30.0)
+    while True:
+        try:
+            _observe_market_health()
+            _emit_binance_metrics_snapshot()
+        except Exception:
+            _legacy.logger.exception("Market health observer failed")
+        time.sleep(60.0)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
+    threading.Thread(target=_market_health_loop, daemon=True, name="paper-market-health").start()
+    threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
+    _legacy.run_flask()
