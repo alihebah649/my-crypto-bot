@@ -126,10 +126,13 @@ class EntryV2RuntimeCapture:
         )
 
     def capture_candidate(self, symbol: str, legacy_result: Mapping[str, Any]) -> EntryV2ShadowCapture | None:
-        """Capture one scored BUY candidate immediately before legacy execution."""
+        """Capture and persist one scored BUY candidate before legacy execution."""
         if not isinstance(legacy_result, Mapping) or not self._is_candidate(legacy_result):
             return None
         normalized = str(symbol).upper()
+        if normalized in self._cycle_captured_symbols:
+            return self._latest.get(normalized)
+
         candles_15m = self._last_candles_15m.get(normalized, []) or self._last_candles_15m.get(symbol, []) or []
         candles_5m = self._last_candles_5m.get(normalized, []) or self._last_candles_5m.get(symbol, []) or []
         ticker = self._last_tickers.get(normalized, {}) or self._last_tickers.get(symbol, {}) or {}
@@ -175,11 +178,39 @@ class EntryV2RuntimeCapture:
         self._latest[normalized] = capture
         self._cycle_captured_symbols.add(normalized)
         self._history.append(capture)
+
+        summary = capture_summary(capture)
+        self.runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})["entry_v2_shadow"] = {
+            "capture_id": summary["capture_id"],
+            "v2_decision": summary["v2_decision"],
+            "v2_trade_mode": summary["v2_trade_mode"],
+            "v2_setup_type": summary["v2_setup_type"],
+            "v2_failed_gate": summary["v2_failed_gate"],
+            "v2_approved": summary["v2_approved"],
+            "target_price": summary["target_price"],
+            "target_source": summary["target_source"],
+            "target_status": summary["target_status"],
+            "reward_risk": summary["reward_risk"],
+        }
+
+        if self.capture_store is not None:
+            try:
+                persisted = self.capture_store.append(capture.to_dict())
+                if not persisted:
+                    self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["persistence_error"] = self.capture_store.last_error
+            except Exception as exc:
+                self.capture_store.last_error = f"{type(exc).__name__}: {exc}"
+                self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["persistence_error"] = str(exc)
         return capture
 
     def capture_cycle(self) -> dict[str, Any]:
-        """Capture the just-completed scan; never alter its execution result."""
-        cycle_records: dict[str, EntryV2ShadowCapture] = {}
+        """Finalize the just-completed scan; never alter its execution result."""
+        cycle_records: dict[str, EntryV2ShadowCapture] = {
+            symbol: self._latest[symbol]
+            for symbol in self._cycle_captured_symbols
+            if symbol in self._latest
+        }
+
         for symbol, legacy_result in (getattr(self.legacy, "latest_scores", {}) or {}).items():
             if not self._is_candidate(legacy_result):
                 continue
@@ -190,25 +221,11 @@ class EntryV2RuntimeCapture:
             if capture is not None:
                 cycle_records[normalized] = capture
 
-        if not cycle_records:
-            cycle_records = {
-                symbol: capture
-                for symbol, capture in self._latest.items()
-                if symbol in self._cycle_captured_symbols
-            }
-
         if len(self._history) > self.max_history:
             del self._history[:-self.max_history]
 
-        persisted = 0
-        if self.capture_store is not None and cycle_records:
-            try:
-                persisted = self.capture_store.append_many(capture.to_dict() for capture in cycle_records.values())
-            except Exception as exc:
-                self.capture_store.last_error = f"{type(exc).__name__}: {exc}"
-                self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["persistence_error"] = str(exc)
         summary = self.summary(cycle_records)
-        summary["persisted_records"] = persisted
+        summary["persisted_records"] = sum(1 for symbol in cycle_records if symbol in self._cycle_captured_symbols)
         summary["persistent_total_records"] = self.capture_store.count() if self.capture_store is not None else 0
         summary["persistent_store_error"] = self.capture_store.last_error if self.capture_store is not None else None
         return summary
