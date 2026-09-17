@@ -136,7 +136,7 @@ def test_capture_cycle_does_not_duplicate_pre_execution_candidate(tmp_path):
     assert bridge.capture_store.count() == 1
 
 
-def test_runtime_summary_exposes_historical_outcomes_for_bound_positions(tmp_path):
+def test_runtime_summary_exposes_historical_outcomes_and_shadow_report_for_bound_positions(tmp_path):
     class Legacy:
         latest_scores = {}
 
@@ -199,6 +199,10 @@ def test_runtime_summary_exposes_historical_outcomes_for_bound_positions(tmp_pat
 
     summary = bridge.capture_cycle()
     outcomes = summary["historical_outcomes"]
+    report = summary["shadow_report"]
     assert outcomes["matched_position_count"] == 1
     assert outcomes["unmatched_position_count"] == 0
     assert outcomes["by_decision"]["V2_APPROVED"]["losses"] + outcomes["by_decision"]["V2_REJECTED"]["losses"] == 1
+    assert report["coverage"]["matched_positions"] == 1
+    assert report["decision_flow"]["legacy_executed_v2_rejected"] in {0, 1}
+    assert report["rejected_executions"]
