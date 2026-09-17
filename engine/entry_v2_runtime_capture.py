@@ -187,6 +187,10 @@ class EntryV2RuntimeCapture:
         summary = capture_summary(capture)
         self.runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})["entry_v2_shadow"] = {
             "capture_id": summary["capture_id"],
+            "legacy_signal": summary["legacy_signal"],
+            "legacy_score": summary["legacy_score"],
+            "legacy_scalp_score": summary["legacy_scalp_score"],
+            "legacy_swing_score": summary["legacy_swing_score"],
             "v2_decision": summary["v2_decision"],
             "v2_trade_mode": summary["v2_trade_mode"],
             "v2_setup_type": summary["v2_setup_type"],
@@ -318,6 +322,9 @@ class EntryV2RuntimeCapture:
     def latest_captures(self) -> dict[str, dict[str, Any]]:
         return {symbol: capture.to_dict() for symbol, capture in self._latest.items()}
 
+    def persistent_records(self) -> list[dict[str, Any]]:
+        return self.capture_store.read_all() if self.capture_store is not None else []
+
 
 def install(
     *,
@@ -330,14 +337,17 @@ def install(
     capture_store: EntryV2CaptureStore | None = None,
     max_history: int = 500,
 ) -> EntryV2RuntimeCapture:
-    capture = EntryV2RuntimeCapture(
+    """Create and install a non-authoritative Entry v2 runtime shadow observer."""
+    return EntryV2RuntimeCapture(
         legacy=legacy,
         runtime=runtime,
         mtf_candles=mtf_candles,
-        trading_symbols=list(trading_symbols),
+        trading_symbols=trading_symbols,
         btc_guard_provider=btc_guard_provider,
         mtf_candles_provider=mtf_candles_provider,
         capture_store=capture_store,
         max_history=max_history,
-    )
-    return capture.install()
+    ).install()
+
+
+__all__ = ["EntryV2RuntimeCapture", "install"]
