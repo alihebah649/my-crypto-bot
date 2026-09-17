@@ -115,7 +115,9 @@ class EntryEngineV2:
         if stop <= 0 or stop > max_stop:
             return self._reject(mode, setup, "REJECT_STOP_TOO_WIDE", "STOP_DISTANCE_OUT_OF_RANGE", passed)
         passed.append("STOP_WIDTH_VALID")
-        rr = self._float(risk.get("reward_risk", 0.0))
+        if risk.get("reward_risk") is None:
+            return self._reject(mode, setup, "REJECT_DATA_UNAVAILABLE", "REWARD_RISK_PENDING", passed)
+        rr = self._float(risk.get("reward_risk"))
         if rr < min_rr:
             return self._reject(mode, setup, "REJECT_LOW_REWARD", "REWARD_RISK_TOO_LOW", passed)
         passed.append("REWARD_RISK_VALID")
