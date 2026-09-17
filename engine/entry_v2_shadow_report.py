@@ -12,6 +12,9 @@ from typing import Any, Iterable, Mapping
 from .entry_v2_outcome_analysis import analyze_entry_v2_outcomes
 
 
+_ACTIVE_STATUSES = {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
+
+
 def _value(obj: Any, name: str, default: Any = None) -> Any:
     if isinstance(obj, Mapping):
         return obj.get(name, default)
@@ -57,8 +60,6 @@ def _position_row(position: Any, capture: Mapping[str, Any]) -> dict[str, Any]:
     decision = _decision(capture)
     risk = _risk(capture)
     metadata = _position_metadata(position)
-    realized_pnl = _float(_value(position, "realized_pnl", 0.0))
-    fees = _float(_value(position, "total_fees", 0.0))
     return {
         "capture_id": _capture_identity(capture),
         "position_id": str(_value(position, "position_id", "")),
@@ -73,9 +74,8 @@ def _position_row(position: Any, capture: Mapping[str, Any]) -> dict[str, Any]:
         "target_price": risk.get("target_price"),
         "target_status": risk.get("target_status"),
         "reward_risk": risk.get("reward_risk"),
-        "realized_pnl": realized_pnl,
-        "fees": fees,
-        "net_after_reported_fees": realized_pnl - fees,
+        "realized_pnl": _float(_value(position, "realized_pnl", 0.0)),
+        "fees": _float(_value(position, "total_fees", 0.0)),
     }
 
 
@@ -98,7 +98,6 @@ def build_entry_v2_shadow_report(
         if _capture_identity(record)
     }
 
-    matched_rows: list[dict[str, Any]] = []
     rejected_execution_rows: list[dict[str, Any]] = []
 
     for position in position_list:
@@ -108,11 +107,9 @@ def build_entry_v2_shadow_report(
         if capture is None:
             continue
         row = _position_row(position, capture)
-        matched_rows.append(row)
         if row["v2_approved"] is False:
             rejected_execution_rows.append(row)
 
-    matched_rows.sort(key=lambda row: (row["captured_at"], row["capture_id"], row["position_id"]))
     rejected_execution_rows.sort(key=lambda row: (row["captured_at"], row["capture_id"], row["position_id"]))
 
     closed_rejected = [row for row in rejected_execution_rows if row["status"] == "CLOSED"]
@@ -120,6 +117,7 @@ def build_entry_v2_shadow_report(
     rejected_fees = sum(row["fees"] for row in closed_rejected)
     rejected_losses = sum(1 for row in closed_rejected if row["realized_pnl"] < 0)
     rejected_wins = sum(1 for row in closed_rejected if row["realized_pnl"] > 0)
+    rejected_open = sum(1 for row in rejected_execution_rows if row["status"] in _ACTIVE_STATUSES)
 
     return {
         "schema_version": 1,
@@ -137,12 +135,11 @@ def build_entry_v2_shadow_report(
         "legacy_executed_v2_rejected_outcomes": {
             "positions": len(rejected_execution_rows),
             "closed_positions": len(closed_rejected),
-            "open_positions": sum(1 for row in rejected_execution_rows if row["status"] != "CLOSED"),
+            "open_positions": rejected_open,
             "wins": rejected_wins,
             "losses": rejected_losses,
             "realized_pnl": rejected_realized_pnl,
             "fees": rejected_fees,
-            "net_after_reported_fees": rejected_realized_pnl - rejected_fees,
         },
         "by_decision": outcome["by_decision"],
         "by_lane": outcome["by_lane"],
