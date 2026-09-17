@@ -64,7 +64,11 @@ def test_recovery_does_not_become_structural_reversal():
 def test_legacy_score_cannot_authorize_fake_recovery():
     decision = evaluate_legacy_with_entry_v2(facts(legacy_result()))
     assert decision.approved is False
-    assert decision.decision in {"REJECT_NO_RECLAIM", "REJECT_COUNTERTREND"}
+    assert decision.decision in {
+        "REJECT_NO_SELLER_FAILURE",
+        "REJECT_NO_RECLAIM",
+        "REJECT_COUNTERTREND",
+    }
 
 
 def test_multi_candle_structure_is_carried_into_v2_contract_for_all_timeframes():
@@ -79,6 +83,7 @@ def test_multi_candle_structure_is_carried_into_v2_contract_for_all_timeframes()
     assert all(by_tf[tf]["patterns"] for tf in by_tf)
     assert scenario["structure"]["higher_low"] is True
     assert scenario["structure"]["reclaim"] is True
+    assert scenario["structure"]["selling_pressure_weakening"] is True
     assert "multi_candle_context_by_timeframe" in scenario["metadata"]
 
 
@@ -96,14 +101,14 @@ def test_higher_timeframe_structure_is_kept_separate_from_5m_trigger():
 
 def test_four_candle_reversal_is_detected_explicitly():
     candles = [
+        candle(110, 109),
+        candle(109, 108),
+        candle(108, 107),
+        candle(107, 106),
         candle(100, 98, 97.5, 100.3),
         candle(98, 96, 95.5, 98.2),
         candle(96, 97, 95.6, 97.4),
         candle(97, 100, 96.8, 100.4),
-        candle(100, 100.2),
-        candle(100.2, 100.3),
-        candle(100.3, 100.4),
-        candle(100.4, 100.5),
     ]
     context = analyze_multi_candle_context(candles)
     assert "FOUR_C_BEAR_TO_BULL_REVERSAL" in context["patterns"]
