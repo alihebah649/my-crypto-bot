@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
+from .entry_target_rr import calculate_target_rr
 from .entry_v2_adapter import EntryV2MarketFacts
 from .entry_v2_capture import EntryV2ShadowCapture, capture_entry_v2, capture_summary
 
@@ -70,14 +71,28 @@ class EntryV2RuntimeCapture:
 
             price = float(legacy_result.get("price", ticker.get("lastPrice", 0.0)) or 0.0)
             atr = float(legacy_result.get("atr", 0.0) or 0.0)
+            stop_loss = price - (2.0 * atr) if price > 0 and atr > 0 else 0.0
             stop_distance_percent = (2.0 * atr / price * 100.0) if price > 0 and atr > 0 else 0.0
             bid = float(ticker.get("bidPrice", price) or price)
             ask = float(ticker.get("askPrice", price) or price)
             spread_percent = ((ask - bid) / price * 100.0) if price > 0 else 0.0
 
-            # Entry v2 currently has no authoritative target/reward source in
-            # the active legacy path. Keep it explicitly pending instead of
-            # copying the older core strategy's take-profit formula.
+            mode = str(legacy_result.get("trade_mode", "NONE") or "NONE").upper()
+            if mode not in {"SCALP", "SWING"}:
+                mode = "SCALP" if legacy_result.get("scalp_signal") == "BUY" else "SWING"
+
+            target_rr = calculate_target_rr(
+                trade_mode=mode,
+                entry_price=price,
+                stop_loss=stop_loss,
+                candles_by_timeframe={
+                    "5m": candles_5m,
+                    "15m": candles_15m,
+                    "1h": candles_1h,
+                    "4h": candles_4h,
+                },
+            )
+
             facts = EntryV2MarketFacts(
                 legacy_result=legacy_result,
                 candles_5m=candles_5m,
@@ -85,8 +100,11 @@ class EntryV2RuntimeCapture:
                 candles_1h=candles_1h,
                 candles_4h=candles_4h,
                 stop_distance_percent=stop_distance_percent,
-                reward_risk=None,
+                reward_risk=target_rr.reward_risk if target_rr.status == "VALID" else None,
                 spread_percent=spread_percent,
+                target_price=target_rr.target_price,
+                target_source=target_rr.target_source,
+                target_status=target_rr.status,
                 btc_guard=btc_guard,
             )
 
@@ -120,6 +138,10 @@ class EntryV2RuntimeCapture:
                 "legacy_score": summary["legacy_score"],
                 "legacy_scalp_score": summary["legacy_scalp_score"],
                 "legacy_swing_score": summary["legacy_swing_score"],
+                "target_price": summary["target_price"],
+                "target_source": summary["target_source"],
+                "target_status": summary["target_status"],
+                "reward_risk": summary["reward_risk"],
             }
 
         if len(self._history) > self.max_history:
@@ -146,6 +168,8 @@ class EntryV2RuntimeCapture:
             "v2_approved": approved,
             "v2_rejected": rejected,
             "v2_reward_risk_pending": sum(1 for item in records if item.v2_decision.get("failed_gate") == "REWARD_RISK_PENDING"),
+            "v2_no_target_above_entry": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_ABOVE_ENTRY"),
+            "v2_no_target_meets_rr": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_MEETS_RR"),
             "latest": {
                 symbol: {
                     "legacy_signal": item.legacy_result.get("signal"),
@@ -154,6 +178,10 @@ class EntryV2RuntimeCapture:
                     "v2_trade_mode": item.v2_decision.get("trade_mode"),
                     "v2_setup_type": item.v2_decision.get("setup_type"),
                     "v2_failed_gate": item.v2_decision.get("failed_gate"),
+                    "target_price": item.entry_scenario.get("risk", {}).get("target_price"),
+                    "target_source": item.entry_scenario.get("risk", {}).get("target_source"),
+                    "target_status": item.entry_scenario.get("risk", {}).get("target_status"),
+                    "reward_risk": item.entry_scenario.get("risk", {}).get("reward_risk"),
                 }
                 for symbol, item in self._latest.items()
             },
