@@ -41,4 +41,5 @@ jobs:
           tests/test_entry_v2_runtime_persistence.py
           tests/test_entry_v2_candidate_binding.py
           tests/test_entry_v2_outcome_analysis.py
+          tests/test_entry_v2_shadow_report.py
           tests/test_paper_runtime_mtf_wiring.py
