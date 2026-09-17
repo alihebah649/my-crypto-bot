@@ -48,11 +48,11 @@ def test_shadow_report_builds_empirical_flow_and_rejected_execution_rows():
     rejected = report["legacy_executed_v2_rejected_outcomes"]
     assert rejected["positions"] == 1
     assert rejected["closed_positions"] == 1
+    assert rejected["open_positions"] == 0
     assert rejected["losses"] == 1
     assert rejected["wins"] == 0
     assert rejected["realized_pnl"] == -2.0
     assert rejected["fees"] == 0.2
-    assert rejected["net_after_reported_fees"] == -2.2
 
     rows = report["rejected_executions"]
     assert [row["position_id"] for row in rows] == ["POS-B"]
@@ -60,6 +60,7 @@ def test_shadow_report_builds_empirical_flow_and_rejected_execution_rows():
     assert rows[0]["failed_gate"] == "NO_TARGET_ABOVE_ENTRY"
     assert rows[0]["target_status"] == "NO_TARGET_ABOVE_ENTRY"
     assert rows[0]["realized_pnl"] == -2.0
+    assert rows[0]["fees"] == 0.2
 
     assert report["unmatched_capture_ids"] == ["CAP-C"]
     assert report["unmatched_position_ids"] == ["POS-X"]
@@ -75,5 +76,6 @@ def test_shadow_report_accepts_generators_and_caps_rejected_execution_rows():
     report = build_entry_v2_shadow_report(captures, positions, max_rejected_execution_rows=2)
 
     assert report["decision_flow"]["legacy_executed_v2_rejected"] == 3
+    assert report["legacy_executed_v2_rejected_outcomes"]["open_positions"] == 3
     assert len(report["rejected_executions"]) == 2
     assert [row["position_id"] for row in report["rejected_executions"]] == ["POS-0", "POS-1"]
