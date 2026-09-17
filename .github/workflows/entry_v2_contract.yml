@@ -26,12 +26,13 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest && python -m pip install -r requirements.txt
 
-      - name: Run Entry v2 contract, replay, capture, and runtime wiring tests
+      - name: Run Entry v2 contract, target/RR, replay, capture, and runtime wiring tests
         run: >-
           python -m pytest -q
           tests/test_entry_engine_v2_contract.py
           tests/test_entry_v2_swing_lane.py
           tests/test_entry_v2_legacy_adapter.py
+          tests/test_entry_v2_target_rr.py
           tests/test_entry_v2_replay.py
           tests/test_entry_v2_capture.py
           tests/test_entry_v2_runtime_capture.py
