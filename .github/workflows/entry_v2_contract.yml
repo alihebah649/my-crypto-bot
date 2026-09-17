@@ -1,0 +1,30 @@
+name: Entry v2 Contract
+
+on:
+  push:
+    branches:
+      - entry-v2-contract-tests
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Run Entry v2 contract
+        run: python -m pytest -q tests/test_entry_engine_v2_contract.py
