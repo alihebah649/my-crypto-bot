@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from engine.entry_v2_runtime_capture import install
+
+
+def _candle(value: float) -> dict:
+    return {
+        "open": value,
+        "high": value + 0.5,
+        "low": value - 0.5,
+        "close": value + 0.2,
+        "volume": 100.0,
+    }
+
+
+def test_runtime_capture_wraps_existing_fetch_and_captures_only_buy_candidates():
+    class Legacy:
+        def __init__(self):
+            self.latest_scores = {
+                "TESTUSDT": {
+                    "symbol": "TESTUSDT",
+                    "signal": "BUY",
+                    "trade_mode": "SCALP",
+                    "scalp_signal": "BUY",
+                    "swing_signal": "HOLD",
+                    "score": 72,
+                    "scalp_score": 72,
+                    "swing_score": 51,
+                    "price": 100.0,
+                    "atr": 1.0,
+                    "scalp_confirmed_reversal": False,
+                    "scalp_recovery_confirmation": True,
+                    "scalp_reasons": ["15M_BOLLINGER_NEAR_SUPPORT"],
+                    "volume_ratio_5m": 1.2,
+                },
+                "HOLDUSDT": {
+                    "symbol": "HOLDUSDT",
+                    "signal": "HOLD",
+                    "trade_mode": "NONE",
+                    "scalp_signal": "HOLD",
+                    "swing_signal": "HOLD",
+                    "score": 61,
+                    "price": 50.0,
+                    "atr": 0.5,
+                },
+            }
+
+        def fetch_strategy_data(self):
+            return self.payload
+
+    class Runtime:
+        def __init__(self):
+            self.last_entry_diagnostics = {}
+
+    legacy = Legacy()
+    runtime = Runtime()
+    candles_15m = {symbol: [_candle(100 + i) for i in range(12)] for symbol in legacy.latest_scores}
+    candles_5m = {symbol: [_candle(100 + i) for i in range(12)] for symbol in legacy.latest_scores}
+    mtf = {
+        "TESTUSDT": {
+            "1h": [_candle(200 + i) for i in range(12)],
+            "4h": [_candle(300 + i) for i in range(12)],
+        },
+        "HOLDUSDT": {
+            "1h": [_candle(400 + i) for i in range(12)],
+            "4h": [_candle(500 + i) for i in range(12)],
+        },
+    }
+    legacy.payload = (
+        {
+            "TESTUSDT": {"lastPrice": "100.0", "bidPrice": "99.99", "askPrice": "100.01"},
+            "HOLDUSDT": {"lastPrice": "50.0", "bidPrice": "49.99", "askPrice": "50.01"},
+        },
+        candles_15m,
+        candles_5m,
+    )
+
+    bridge = install(
+        legacy=legacy,
+        runtime=runtime,
+        mtf_candles=mtf,
+        trading_symbols=["TESTUSDT", "HOLDUSDT"],
+    )
+
+    assert legacy.fetch_strategy_data() is legacy.payload
+
+    summary = bridge.capture_cycle()
+
+    assert summary["evaluated_symbols"] == 2
+    assert summary["legacy_buy_candidates"] == 1
+    assert summary["captured_candidates"] == 1
+    assert set(bridge.latest_captures()) == {"TESTUSDT"}
+
+    capture = bridge.latest_captures()["TESTUSDT"]
+    assert capture["legacy_result"]["score"] == 72
+    assert capture["entry_scenario"]["risk"]["reward_risk"] is None
+    assert len(capture["closed_candle_windows"]["5m"]) == 8
+    assert len(capture["closed_candle_windows"]["15m"]) == 8
+    assert len(capture["closed_candle_windows"]["1h"]) == 8
+    assert len(capture["closed_candle_windows"]["4h"]) == 8
+    assert runtime.last_entry_diagnostics["TESTUSDT"]["entry_v2_shadow"]["legacy_score"] == 72
+    assert "HOLDUSDT" not in runtime.last_entry_diagnostics
+
+
+def test_runtime_capture_keeps_reward_risk_unknown_instead_of_borrowing_old_formula():
+    class Legacy:
+        latest_scores = {
+            "TESTUSDT": {
+                "signal": "BUY",
+                "trade_mode": "SCALP",
+                "scalp_signal": "BUY",
+                "swing_signal": "HOLD",
+                "score": 70,
+                "scalp_score": 70,
+                "swing_score": 45,
+                "price": 100.0,
+                "atr": 1.5,
+                "scalp_reasons": ["15M_BOLLINGER_NEAR_SUPPORT"],
+                "scalp_confirmed_reversal": False,
+                "scalp_recovery_confirmation": True,
+                "volume_ratio_5m": 1.1,
+            }
+        }
+
+        def fetch_strategy_data(self):
+            return (
+                {"TESTUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
+                {"TESTUSDT": [_candle(100 + i) for i in range(12)]},
+                {"TESTUSDT": [_candle(100 + i) for i in range(12)]},
+            )
+
+    class Runtime:
+        last_entry_diagnostics = {}
+
+    bridge = install(
+        legacy=Legacy(),
+        runtime=Runtime(),
+        mtf_candles={
+            "TESTUSDT": {
+                "1h": [_candle(200 + i) for i in range(12)],
+                "4h": [_candle(300 + i) for i in range(12)],
+            }
+        },
+        trading_symbols=["TESTUSDT"],
+    )
+
+    bridge.legacy.fetch_strategy_data()
+    bridge.capture_cycle()
+    capture = bridge.latest_captures()["TESTUSDT"]
+
+    assert capture["entry_scenario"]["risk"]["stop_distance_percent"] > 0
+    assert capture["entry_scenario"]["risk"]["reward_risk"] is None
+    assert capture["v2_decision"]["failed_gate"] in {
+        "SELLER_PRESSURE_NOT_INVALIDATED",
+        "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+        "REWARD_RISK_PENDING",
+        "VOLUME_NOT_CONFIRMING",
+    }
