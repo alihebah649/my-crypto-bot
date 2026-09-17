@@ -23,7 +23,10 @@ class EntryDecision:
 
 
 class EntryEngineV2:
-    """Pure, side-effect-free Entry v2 gate engine."""
+    """Pure, side-effect-free Entry v2 gate engine.
+
+    Score is diagnostic only. Entry authorization comes from hard gates.
+    """
 
     MAX_STOP_DISTANCE_PERCENT = 3.0
     MIN_REWARD_RISK = 1.0
@@ -90,6 +93,10 @@ class EntryEngineV2:
         if not structure_valid:
             return self._reject(mode, requested_setup, "REJECT_NO_RECLAIM", "STRUCTURAL_RECLAIM_NOT_CONFIRMED", passed)
         passed.append("STRUCTURE_CONFIRMED")
+
+        if bool(trigger.get("overextended")):
+            return self._reject(mode, setup_type, "REJECT_OVEREXTENDED", "PRICE_ALREADY_EXTENDED_FROM_ENTRY_LOCATION", passed)
+        passed.append("EXTENSION_VALID")
 
         volume_ratio = self._float(trigger.get("volume_ratio_5m", 0.0))
         if mode == "SCALP" and volume_ratio < 1.0:
