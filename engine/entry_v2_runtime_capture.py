@@ -251,27 +251,35 @@ class EntryV2RuntimeCapture:
                     continue
         return positions
 
-    def _historical_outcomes(self) -> dict[str, Any] | None:
+    def _historical_snapshot(self) -> tuple[list[dict[str, Any]], list[Any]] | None:
         if self.capture_store is None or getattr(self.runtime, "repository", None) is None:
             return None
         try:
-            return analyze_entry_v2_outcomes(self.capture_store.read_all(), self._repository_positions())
-        except Exception as exc:
-            return {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+            return self.capture_store.read_all(), self._repository_positions()
+        except Exception:
+            return None
 
-    def _historical_shadow_report(self) -> dict[str, Any] | None:
-        if self.capture_store is None or getattr(self.runtime, "repository", None) is None:
-            return None
+    def _historical_analysis(self) -> dict[str, Any]:
+        snapshot = self._historical_snapshot()
+        if snapshot is None:
+            return {"historical_outcomes": None, "shadow_report": None}
+        captures, positions = snapshot
         try:
-            return build_entry_v2_shadow_report(self.capture_store.read_all(), self._repository_positions())
+            outcomes = analyze_entry_v2_outcomes(captures, positions)
         except Exception as exc:
-            return {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+            outcomes = {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            shadow_report = build_entry_v2_shadow_report(captures, positions)
+        except Exception as exc:
+            shadow_report = {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
+        return {"historical_outcomes": outcomes, "shadow_report": shadow_report}
 
     def summary(self, cycle_records: Mapping[str, EntryV2ShadowCapture] | None = None) -> dict[str, Any]:
         records = list(cycle_records.values()) if cycle_records is not None else list(self._latest.values())
         legacy_rows = list((getattr(self.legacy, "latest_scores", {}) or {}).values())
         approved = sum(1 for item in records if item.v2_decision.get("approved") is True)
         rejected = sum(1 for item in records if item.v2_decision.get("approved") is False)
+        historical = self._historical_analysis()
         return {
             "schema_version": 2,
             "cycle": self._cycle_count,
@@ -283,8 +291,8 @@ class EntryV2RuntimeCapture:
             "v2_reward_risk_pending": sum(1 for item in records if item.v2_decision.get("failed_gate") == "REWARD_RISK_PENDING"),
             "v2_no_target_above_entry": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_ABOVE_ENTRY"),
             "v2_no_target_meets_rr": sum(1 for item in records if item.entry_scenario.get("risk", {}).get("target_status") == "NO_TARGET_MEETS_RR"),
-            "historical_outcomes": self._historical_outcomes(),
-            "shadow_report": self._historical_shadow_report(),
+            "historical_outcomes": historical["historical_outcomes"],
+            "shadow_report": historical["shadow_report"],
             "latest": {
                 symbol: {
                     "capture_id": item.capture_id,
