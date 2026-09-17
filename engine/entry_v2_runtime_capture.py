@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 from .entry_target_rr import calculate_target_rr
 from .entry_v2_adapter import EntryV2MarketFacts
 from .entry_v2_capture import EntryV2ShadowCapture, capture_entry_v2, capture_summary
+from .entry_v2_capture_store import EntryV2CaptureStore
 
 
 @dataclass
@@ -22,6 +23,8 @@ class EntryV2RuntimeCapture:
     mtf_candles: Mapping[str, Mapping[str, list[dict]]]
     trading_symbols: list[str]
     btc_guard_provider: Callable[[], Mapping[str, Any]] | None = None
+    mtf_candles_provider: Callable[[], Mapping[str, Mapping[str, list[dict]]]] | None = None
+    capture_store: EntryV2CaptureStore | None = None
     max_history: int = 500
     _original_fetch_strategy_data: Callable[[], Any] | None = field(default=None, init=False)
     _last_tickers: dict[str, dict] = field(default_factory=dict, init=False)
@@ -52,18 +55,27 @@ class EntryV2RuntimeCapture:
         self.legacy.fetch_strategy_data = _capture_fetch
         return self
 
+    def _current_mtf_candles(self) -> Mapping[str, Mapping[str, list[dict]]]:
+        if self.mtf_candles_provider is not None:
+            try:
+                return self.mtf_candles_provider() or {}
+            except Exception:
+                return {}
+        return self.mtf_candles or {}
+
     def capture_cycle(self) -> dict[str, Any]:
         """Capture the just-completed scan; never alter its execution result."""
         self._cycle_count += 1
         cycle_records: dict[str, EntryV2ShadowCapture] = {}
         btc = dict(self.btc_guard_provider() if self.btc_guard_provider else {})
         btc_guard = "REJECT" if bool(btc.get("crashing")) else "PASS"
+        current_mtf = self._current_mtf_candles()
 
         for symbol, legacy_result in (getattr(self.legacy, "latest_scores", {}) or {}).items():
             ticker = self._last_tickers.get(symbol, {}) or {}
             candles_15m = self._last_candles_15m.get(symbol, []) or []
             candles_5m = self._last_candles_5m.get(symbol, []) or []
-            context = self.mtf_candles.get(symbol, {}) or {}
+            context = current_mtf.get(symbol, {}) or {}
             candles_1h = context.get("1h", []) or []
             candles_4h = context.get("4h", []) or []
 
@@ -135,7 +147,21 @@ class EntryV2RuntimeCapture:
 
         if len(self._history) > self.max_history:
             del self._history[:-self.max_history]
-        return self.summary(cycle_records)
+
+        persisted = 0
+        if self.capture_store is not None and cycle_records:
+            try:
+                persisted = self.capture_store.append_many(
+                    capture.to_dict() for capture in cycle_records.values()
+                )
+            except Exception as exc:
+                self.capture_store.last_error = f"{type(exc).__name__}: {exc}"
+                self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["persistence_error"] = str(exc)
+        summary = self.summary(cycle_records)
+        summary["persisted_records"] = persisted
+        summary["persistent_total_records"] = self.capture_store.count() if self.capture_store is not None else 0
+        summary["persistent_store_error"] = self.capture_store.last_error if self.capture_store is not None else None
+        return summary
 
     def summary(self, cycle_records: Mapping[str, EntryV2ShadowCapture] | None = None) -> dict[str, Any]:
         records = list(cycle_records.values()) if cycle_records is not None else list(self._latest.values())
@@ -174,13 +200,25 @@ class EntryV2RuntimeCapture:
         return {symbol: capture.to_dict() for symbol, capture in self._latest.items()}
 
 
-def install(*, legacy: Any, runtime: Any, mtf_candles: Mapping[str, Mapping[str, list[dict]]], trading_symbols: list[str], btc_guard_provider: Callable[[], Mapping[str, Any]] | None = None, max_history: int = 500) -> EntryV2RuntimeCapture:
+def install(
+    *,
+    legacy: Any,
+    runtime: Any,
+    mtf_candles: Mapping[str, Mapping[str, list[dict]]],
+    trading_symbols: list[str],
+    btc_guard_provider: Callable[[], Mapping[str, Any]] | None = None,
+    mtf_candles_provider: Callable[[], Mapping[str, Mapping[str, list[dict]]]] | None = None,
+    capture_store: EntryV2CaptureStore | None = None,
+    max_history: int = 500,
+) -> EntryV2RuntimeCapture:
     capture = EntryV2RuntimeCapture(
         legacy=legacy,
         runtime=runtime,
         mtf_candles=mtf_candles,
         trading_symbols=list(trading_symbols),
         btc_guard_provider=btc_guard_provider,
+        mtf_candles_provider=mtf_candles_provider,
+        capture_store=capture_store,
         max_history=max_history,
     )
     return capture.install()
