@@ -32,8 +32,11 @@ class EntryV2MarketFacts:
     candles_1h: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     candles_4h: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     stop_distance_percent: float = 0.0
-    reward_risk: float = 0.0
+    reward_risk: float | None = None
     spread_percent: float = 0.0
+    target_price: float | None = None
+    target_source: str | None = None
+    target_status: str | None = None
     prior_exit: str | None = None
     prior_context_fingerprint_same: bool = False
     new_structure_after_prior_stop: bool = False
@@ -192,6 +195,9 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         "risk": {
             "stop_distance_percent": facts.stop_distance_percent,
             "reward_risk": facts.reward_risk,
+            "target_price": facts.target_price,
+            "target_source": facts.target_source,
+            "target_status": facts.target_status,
         },
         "metadata": {
             "legacy_score": legacy.get("score"),
