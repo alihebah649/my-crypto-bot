@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+        run: python -m pip install --upgrade pip pytest requests
 
       - name: Run Entry v2 contract, replay, capture, and runtime wiring tests
         run: >-
