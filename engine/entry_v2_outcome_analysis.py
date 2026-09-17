@@ -74,6 +74,7 @@ def analyze_entry_v2_outcomes(
 ) -> dict[str, Any]:
     """Join captures to actual positions and summarize realized outcomes."""
     capture_list = list(captures)
+    position_list = list(positions)
     capture_by_id = {
         str(record.get("capture_id")): record
         for record in capture_list
@@ -85,9 +86,10 @@ def analyze_entry_v2_outcomes(
     by_gate: dict[str, dict[str, Any]] = defaultdict(_bucket)
     unmatched_positions: list[str] = []
     matched_position_ids: set[str] = set()
+    matched_capture_ids: set[str] = set()
     rejected_execution_ids: list[str] = []
 
-    for position in positions:
+    for position in position_list:
         metadata = _position_metadata(position)
         capture_id = metadata.get("entry_v2_shadow_capture_id")
         position_id = str(_value(position, "position_id", ""))
@@ -96,7 +98,8 @@ def analyze_entry_v2_outcomes(
                 unmatched_positions.append(position_id)
             continue
 
-        capture = capture_by_id[str(capture_id)]
+        normalized_capture_id = str(capture_id)
+        capture = capture_by_id[normalized_capture_id]
         decision = capture.get("v2_decision", {}) or {}
         approved = decision.get("approved") is True
         decision_key = "V2_APPROVED" if approved else "V2_REJECTED"
@@ -106,6 +109,7 @@ def analyze_entry_v2_outcomes(
         _add_outcome(by_decision[decision_key], position)
         _add_outcome(by_lane[lane], position)
         _add_outcome(by_gate[gate], position)
+        matched_capture_ids.add(normalized_capture_id)
         if position_id:
             matched_position_ids.add(position_id)
         if not approved and position_id:
@@ -114,11 +118,7 @@ def analyze_entry_v2_outcomes(
     unmatched_captures = [
         str(record.get("capture_id"))
         for record in capture_list
-        if record.get("capture_id") and str(record.get("capture_id")) not in {
-            str(_position_metadata(position).get("entry_v2_shadow_capture_id"))
-            for position in positions
-            if _position_metadata(position).get("entry_v2_shadow_capture_id")
-        }
+        if record.get("capture_id") and str(record.get("capture_id")) not in matched_capture_ids
     ]
 
     return {
@@ -128,6 +128,7 @@ def analyze_entry_v2_outcomes(
         "unmatched_position_count": len(unmatched_positions),
         "unmatched_position_ids": unmatched_positions,
         "unmatched_capture_count": len(unmatched_captures),
+        "unmatched_capture_ids": unmatched_captures,
         "legacy_executed_v2_rejected": len(rejected_execution_ids),
         "legacy_executed_v2_rejected_position_ids": rejected_execution_ids,
         "by_decision": dict(by_decision),
