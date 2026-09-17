@@ -134,3 +134,71 @@ def test_capture_cycle_does_not_duplicate_pre_execution_candidate(tmp_path):
     assert summary["persisted_records"] == 1
     assert bridge.capture_store is not None
     assert bridge.capture_store.count() == 1
+
+
+def test_runtime_summary_exposes_historical_outcomes_for_bound_positions(tmp_path):
+    class Legacy:
+        latest_scores = {}
+
+        def fetch_strategy_data(self):
+            candles = [_candle(100 + i) for i in range(12)]
+            return (
+                {"TESTUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
+                {"TESTUSDT": candles},
+                {"TESTUSDT": candles},
+            )
+
+        def score_symbol(self, symbol, *args):
+            result = {
+                "symbol": symbol,
+                "signal": "BUY",
+                "trade_mode": "SCALP",
+                "scalp_signal": "BUY",
+                "swing_signal": "HOLD",
+                "score": 70,
+                "scalp_score": 70,
+                "swing_score": 50,
+                "price": 100.0,
+                "atr": 1.0,
+                "scalp_confirmed_reversal": True,
+                "scalp_reasons": ["15M_BOLLINGER_NEAR_SUPPORT"],
+                "volume_ratio_5m": 1.2,
+            }
+            self.latest_scores[symbol] = result
+            return result
+
+    stored_positions = []
+
+    class Repository:
+        def add(self, position):
+            stored_positions.append(position)
+        def get_open_positions(self):
+            return [p for p in stored_positions if p.status == "OPEN"]
+        def get_closed_positions(self):
+            return [p for p in stored_positions if p.status == "CLOSED"]
+
+    runtime = SimpleNamespace(
+        persistence_dir=str(tmp_path),
+        repository=Repository(),
+        last_entry_diagnostics={},
+    )
+    bridge = install(
+        legacy=Legacy(), runtime=runtime,
+        mtf_candles={"TESTUSDT": {"1h": [_candle(200 + i) for i in range(12)], "4h": [_candle(300 + i) for i in range(12)]}},
+        trading_symbols=["TESTUSDT"],
+    )
+    bridge.legacy.fetch_strategy_data()
+    bridge.legacy.score_symbol("TESTUSDT", {}, [], [])
+    capture = bridge.latest_captures()["TESTUSDT"]
+    position = SimpleNamespace(
+        position_id="POS-1", symbol="TESTUSDT", status="CLOSED",
+        entry_metadata={"entry_v2_shadow_capture_id": capture["capture_id"], "trade_mode": "SCALP"},
+        realized_pnl=-1.25, total_fees=0.2,
+    )
+    runtime.repository.add(position)
+
+    summary = bridge.capture_cycle()
+    outcomes = summary["historical_outcomes"]
+    assert outcomes["matched_position_count"] == 1
+    assert outcomes["unmatched_position_count"] == 0
+    assert outcomes["by_decision"]["V2_APPROVED"]["losses"] + outcomes["by_decision"]["V2_REJECTED"]["losses"] == 1
