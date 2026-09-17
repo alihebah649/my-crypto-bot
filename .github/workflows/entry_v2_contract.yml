@@ -26,5 +26,10 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest
 
-      - name: Run Entry v2 contract
-        run: python -m pytest -q tests/test_entry_engine_v2_contract.py
+      - name: Run Entry v2 contract and replay tests
+        run: >-
+          python -m pytest -q
+          tests/test_entry_engine_v2_contract.py
+          tests/test_entry_v2_swing_lane.py
+          tests/test_entry_v2_legacy_adapter.py
+          tests/test_entry_v2_replay.py
