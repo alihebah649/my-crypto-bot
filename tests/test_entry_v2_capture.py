@@ -51,13 +51,20 @@ def facts():
 def test_capture_is_non_authoritative_and_contains_decision_evidence():
     record = capture_entry_v2("LINKUSDT", facts(), captured_at="2026-09-17T08:00:00+03:00")
     data = record.to_dict()
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
+    assert len(data["capture_id"]) == 24
     assert data["symbol"] == "LINKUSDT"
     assert data["legacy_result"]["scalp_score"] == 68
     assert data["entry_scenario"]["market"]["5m_bias"]
     assert set(data["entry_scenario"]["structure"]["multi_candle_by_timeframe"]) == {"5m", "15m", "1h", "4h"}
     assert data["v2_decision"]["decision"].startswith(("APPROVED_", "REJECT_"))
     assert all(tf in data["closed_candle_windows"] for tf in ("5m", "15m", "1h", "4h"))
+
+
+def test_capture_id_is_deterministic_for_same_observation():
+    first = capture_entry_v2("LINKUSDT", facts(), captured_at="2026-09-17T08:00:00+03:00")
+    second = capture_entry_v2("LINKUSDT", facts(), captured_at="2026-09-17T08:00:00+03:00")
+    assert first.capture_id == second.capture_id
 
 
 def test_captured_scenario_can_be_replayed_without_raw_market_access():
@@ -73,6 +80,7 @@ def test_capture_summary_is_compact_and_preserves_candle_patterns():
     record = capture_entry_v2("LINKUSDT", facts(), captured_at="2026-09-17T08:00:00+03:00")
     summary = capture_summary(record)
     assert summary["symbol"] == "LINKUSDT"
+    assert summary["capture_id"] == record.capture_id
     assert summary["legacy_trade_mode"] == "SCALP"
     assert summary["legacy_score"] == 68
     assert summary["v2_trade_mode"] == "SCALP"
