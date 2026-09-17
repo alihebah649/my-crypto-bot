@@ -96,8 +96,8 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
     reclaim = bool(
         confirmed_reversal
         and (
-            _has_pattern(multi5, "8C_SELL_OFF_TO_RECOVERY", "THREE_BULLISH_ADVANCE")
-            or _has_pattern(candle_contexts["15m"], "7C_HIGHER_LOW_STRUCTURE", "THREE_BULLISH_ADVANCE")
+            _has_pattern(multi5, "8C_SELL_OFF_TO_RECOVERY", "THREE_BULLISH_ADVANCE", "FOUR_C_BEAR_TO_BULL_REVERSAL")
+            or _has_pattern(candle_contexts["15m"], "7C_HIGHER_LOW_STRUCTURE", "THREE_BULLISH_ADVANCE", "FOUR_C_BEAR_TO_BULL_REVERSAL")
         )
     )
 
@@ -125,6 +125,21 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         "CONTINUATION" if continuation_break and pullback_holds else None
     )
 
+    seller_failure = bool(
+        _has_pattern(
+            multi5,
+            "5C_SELLING_PRESSURE_WEAKENING",
+            "FOUR_C_BEAR_TO_BULL_REVERSAL",
+            "8C_SELL_OFF_TO_RECOVERY",
+        )
+        or _has_pattern(
+            candle_contexts["15m"],
+            "5C_SELLING_PRESSURE_WEAKENING",
+            "FOUR_C_BEAR_TO_BULL_REVERSAL",
+            "8C_SELL_OFF_TO_RECOVERY",
+        )
+    )
+
     return {
         "trade_mode": mode,
         "setup_type": setup_type,
@@ -138,7 +153,7 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         "structure": {
             "location_at_support": support,
             "location_pullback": pullback,
-            "selling_pressure_weakening": _has_pattern(multi5, "5C_SELLING_PRESSURE_WEAKENING"),
+            "selling_pressure_weakening": seller_failure,
             "higher_low": higher_low,
             "reclaim": reclaim,
             "continuation_break": continuation_break,
@@ -161,9 +176,14 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         },
         "trigger": {
             "confirmed_reversal": confirmed_reversal,
-            "bullish_pattern": next((x for x in legacy.get("scalp_reasons", []) if "BULLISH" in str(x)), None),
+            "bullish_pattern": next(
+                (x for x in legacy.get("scalp_reasons", []) if "BULLISH" in str(x)),
+                None,
+            ),
             "rsi_recovering": bool(legacy.get("scalp_recovery_confirmation")),
-            "volume_ratio_5m": float(legacy.get("volume_ratio_5m", legacy.get("scalp_min_volume_ratio", 0.0)) or 0.0),
+            "volume_ratio_5m": float(
+                legacy.get("volume_ratio_5m", legacy.get("scalp_min_volume_ratio", 0.0)) or 0.0
+            ),
         },
         "execution": {
             "closed_candle": bool(candles_by_timeframe["5m"] and candles_by_timeframe["15m"]),
