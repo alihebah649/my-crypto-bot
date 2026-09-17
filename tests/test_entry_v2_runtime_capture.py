@@ -187,6 +187,7 @@ def test_runtime_capture_calculates_real_structure_target_without_changing_legac
                 {"open": 101.0, "high": 101.5, "low": 100.0, "close": 100.6, "volume": 100.0},
                 {"open": 100.6, "high": 105.0, "low": 100.2, "close": 104.0, "volume": 100.0},
                 {"open": 104.0, "high": 104.5, "low": 103.5, "close": 100.5, "volume": 100.0},
+                {"open": 100.5, "high": 101.0, "low": 99.8, "close": 100.0, "volume": 100.0},
             ]
             return (
                 {"TESTUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
