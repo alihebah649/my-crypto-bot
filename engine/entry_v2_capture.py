@@ -98,6 +98,7 @@ def capture_summary(capture: EntryV2ShadowCapture) -> dict[str, Any]:
     """Return a compact row suitable for CSV/JSON reporting."""
     legacy = capture.legacy_result
     decision = capture.v2_decision
+    risk = capture.entry_scenario.get("risk", {})
     return {
         "schema_version": capture.schema_version,
         "captured_at": capture.captured_at,
@@ -112,6 +113,11 @@ def capture_summary(capture: EntryV2ShadowCapture) -> dict[str, Any]:
         "v2_setup_type": decision.get("setup_type"),
         "v2_failed_gate": decision.get("failed_gate"),
         "v2_approved": decision.get("approved", False),
+        "target_price": risk.get("target_price"),
+        "target_source": risk.get("target_source"),
+        "target_status": risk.get("target_status"),
+        "reward_risk": risk.get("reward_risk"),
+        "stop_distance_percent": risk.get("stop_distance_percent"),
         "candle_patterns_5m": tuple(capture.entry_scenario.get("structure", {}).get("multi_candle_by_timeframe", {}).get("5m", {}).get("patterns", ())),
         "candle_patterns_15m": tuple(capture.entry_scenario.get("structure", {}).get("multi_candle_by_timeframe", {}).get("15m", {}).get("patterns", ())),
         "candle_patterns_1h": tuple(capture.entry_scenario.get("structure", {}).get("multi_candle_by_timeframe", {}).get("1h", {}).get("patterns", ())),
