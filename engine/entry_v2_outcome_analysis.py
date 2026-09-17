@@ -81,7 +81,10 @@ def analyze_entry_v2_outcomes(
         if record.get("capture_id")
     }
 
-    by_decision: dict[str, dict[str, Any]] = defaultdict(_bucket)
+    by_decision: dict[str, dict[str, Any]] = {
+        "V2_APPROVED": _bucket(),
+        "V2_REJECTED": _bucket(),
+    }
     by_lane: dict[str, dict[str, Any]] = defaultdict(_bucket)
     by_gate: dict[str, dict[str, Any]] = defaultdict(_bucket)
     unmatched_positions: list[str] = []
@@ -131,7 +134,7 @@ def analyze_entry_v2_outcomes(
         "unmatched_capture_ids": unmatched_captures,
         "legacy_executed_v2_rejected": len(rejected_execution_ids),
         "legacy_executed_v2_rejected_position_ids": rejected_execution_ids,
-        "by_decision": dict(by_decision),
+        "by_decision": by_decision,
         "by_lane": dict(by_lane),
         "by_failed_gate": dict(by_gate),
     }
