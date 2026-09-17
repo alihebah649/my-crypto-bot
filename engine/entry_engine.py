@@ -116,6 +116,13 @@ class EntryEngineV2:
             return self._reject(mode, setup, "REJECT_STOP_TOO_WIDE", "STOP_DISTANCE_OUT_OF_RANGE", passed)
         passed.append("STOP_WIDTH_VALID")
         if risk.get("reward_risk") is None:
+            target_status = str(risk.get("target_status", "")).upper()
+            target_reason = {
+                "NO_TARGET_ABOVE_ENTRY": "NO_TARGET_ABOVE_ENTRY",
+                "NO_TARGET_MEETS_RR": "NO_TARGET_MEETS_RR",
+            }.get(target_status)
+            if target_reason:
+                return self._reject(mode, setup, "REJECT_NO_VALID_TARGET", target_reason, passed)
             return self._reject(mode, setup, "REJECT_DATA_UNAVAILABLE", "REWARD_RISK_PENDING", passed)
         rr = self._float(risk.get("reward_risk"))
         if rr < min_rr:
@@ -127,6 +134,8 @@ class EntryEngineV2:
             "volume_ratio_5m": volume,
             "stop_distance_percent": stop,
             "reward_risk": rr,
+            "target_price": risk.get("target_price"),
+            "target_source": risk.get("target_source"),
             "reentry_same_context": same_context,
             "lane_threshold": self.SCALP_SCORE_THRESHOLD if mode == "SCALP" else self.SWING_SCORE_THRESHOLD,
         })
