@@ -23,20 +23,24 @@ def test_open_position_preserves_entry_v2_shadow_diagnostic(tmp_path):
         "stale_field": "must_not_be_carried",
     }
 
-    runtime.risk_gateway.approve = lambda request: SimpleNamespace(
-        approved=True,
-        reason="APPROVED",
-        quantity=0.5,
-        position_value=50.0,
-        capital_required=50.0,
-        metadata={"source": "test"},
+    runtime.risk_gateway = SimpleNamespace(
+        approve=lambda request: SimpleNamespace(
+            approved=True,
+            reason="APPROVED",
+            quantity=0.5,
+            position_value=50.0,
+            capital_required=50.0,
+            metadata={"source": "test"},
+        )
     )
-    runtime.facade.open_position = lambda **kwargs: None
-    runtime.facade.last_entry_diagnostic = {
-        "execution_gateway": "PASS",
-        "execution_outcome": {"success": True},
-        "result": "POSITION_COMMITTED",
-    }
+    runtime.facade = SimpleNamespace(
+        open_position=lambda **kwargs: None,
+        last_entry_diagnostic={
+            "execution_gateway": "PASS",
+            "execution_outcome": {"success": True},
+            "result": "POSITION_COMMITTED",
+        },
+    )
 
     runtime.open_position("TESTUSDT", 100.0, 99.0, trade_mode="SCALP")
 
@@ -52,13 +56,15 @@ def test_open_position_does_not_invent_entry_v2_shadow_without_candidate(tmp_pat
         persistence_dir=str(tmp_path / "paper"),
     )
 
-    runtime.risk_gateway.approve = lambda request: SimpleNamespace(
-        approved=False,
-        reason="MAX_PORTFOLIO_EXPOSURE",
-        quantity=0.0,
-        position_value=0.0,
-        capital_required=0.0,
-        metadata={},
+    runtime.risk_gateway = SimpleNamespace(
+        approve=lambda request: SimpleNamespace(
+            approved=False,
+            reason="MAX_PORTFOLIO_EXPOSURE",
+            quantity=0.0,
+            position_value=0.0,
+            capital_required=0.0,
+            metadata={},
+        )
     )
 
     runtime.open_position("TESTUSDT", 100.0, 99.0, trade_mode="SCALP")
