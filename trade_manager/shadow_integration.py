@@ -266,9 +266,18 @@ class ShadowTradeManagerRuntime:
         mode = str(trade_mode or "SWING").upper()
         if mode not in {"SCALP", "SWING"}:
             mode = "SWING"
+        # Entry v2 is a shadow observer attached immediately before legacy
+        # execution. Preserve its per-candidate evidence when the execution
+        # trace is rebuilt here; otherwise this lifecycle boundary would erase
+        # the observer result before diagnostics/position reconciliation can
+        # consume it. No Legacy decision or execution behavior changes.
+        prior_trace = self.last_entry_diagnostics.get(symbol, {})
+        prior_v2_shadow = prior_trace.get("entry_v2_shadow") if isinstance(prior_trace, dict) else None
         trace = {"symbol": symbol, "started_at": time.time(), "trade_mode": mode, "risk_gateway": "NOT_RUN", "risk_reason": None,
                  "risk_quantity": 0.0, "risk_position_value": 0.0, "risk_capital_required": 0.0, "risk_metadata": {},
                  "facade": "NOT_RUN", "execution": "NOT_RUN", "execution_outcome": None, "result": "UNKNOWN"}
+        if isinstance(prior_v2_shadow, dict):
+            trace["entry_v2_shadow"] = dict(prior_v2_shadow)
         self.last_entry_diagnostics[symbol] = trace
         account = self.portfolio_provider.snapshot()
         target = float(self.risk_config.position_sizing.target_position_value)
