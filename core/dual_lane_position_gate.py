@@ -28,5 +28,5 @@ def block_for_existing_position(
     requested = requested_trade_modes(strategy)
     active = {str(mode).upper() for mode in active_trade_modes}
     if not requested:
-        return bool(active)
+        return False
     return requested.issubset(active)
