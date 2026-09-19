@@ -541,10 +541,14 @@ def _run_brain_shadow_cycle() -> None:
                     if str(trace.get("result", "")).upper() == "REJECTED_EXISTING_POSITION":
                         existing_before_entry = True
 
-                capture_id = (
-                    trace.get("entry_v2_shadow", {}) or {}
-                ).get("capture_id")
+                entry_v2_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
+                mode_capture = entry_v2_by_mode.get(mode, {}) or {}
+                capture_id = mode_capture.get("capture_id")
 
+                # In dual-lane candidates the Brain record must inherit the
+                # capture ID belonging to the same lane. Never fall back to a
+                # symbol-level capture here, because that would mix SCALP and
+                # SWING outcomes during post-hoc attribution.
                 record = brain_shadow_runtime.evaluate_entry(
                     normalized,
                     mode_context,
