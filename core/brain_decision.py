@@ -40,6 +40,9 @@ class BrainDecisionEngine:
         scalp_score: Optional[float] = None,
         swing_score: Optional[float] = None,
         scalp_recovery_confirmation: bool = False,
+        volume_ratio_5m: Optional[float] = None,
+        seller_failure_confirmed: bool = False,
+        higher_timeframe_bearish: bool = False,
     ) -> BrainDecision:
         """Evaluate the strategy lane without taking execution authority.
 
@@ -64,8 +67,37 @@ class BrainDecisionEngine:
             return BrainDecision("HOLD", 100.0, "EXISTING_POSITION", metadata={"authority": "portfolio"})
         if signal != "BUY":
             return BrainDecision("HOLD", 90.0, "SIGNAL_NOT_BUY")
+
+        # A bear market is not treated as an automatic shutdown of every
+        # scalp. The Brain may recognize a short-lived counter-trend rebound,
+        # but only when the existing strategy facts show a real reversal,
+        # seller failure, participation, and no confirmed higher-timeframe
+        # bear continuation. Swing buys remain disabled in a bear regime.
         if regime == "BEAR":
-            return BrainDecision("HOLD", 90.0, "BEAR_REGIME")
+            if mode != "SCALP":
+                return BrainDecision("HOLD", 95.0, "BEAR_SWING_DISABLED")
+            lane_score = scalp_score if scalp_score is not None else score
+            if lane_score < 65.0:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_SCALP_SCORE_BELOW_THRESHOLD")
+            if not scalp_confirmed_reversal:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_NO_CONFIRMED_REVERSAL")
+            if not seller_failure_confirmed:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_SELLER_FAILURE_NOT_CONFIRMED")
+            if volume_ratio_5m is None or float(volume_ratio_5m) < 1.0:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_VOLUME_NOT_CONFIRMING")
+            if higher_timeframe_bearish:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_HIGHER_TIMEFRAME_CONTINUATION")
+            return BrainDecision(
+                "BUY",
+                self._clamp(lane_score),
+                "BEAR_COUNTERTREND_SCALP_CONFIRMED",
+                metadata={
+                    "trade_mode": "SCALP",
+                    "market_regime": "BEAR",
+                    "countertrend": True,
+                    "scalp_recovery_confirmation": bool(scalp_recovery_confirmation),
+                },
+            )
 
         if mode == "SCALP":
             lane_score = scalp_score if scalp_score is not None else score
@@ -106,24 +138,40 @@ class BrainDecisionEngine:
         recovery_score: float = 0.0,
         exit_signal: str = "HOLD",
         age_minutes: float = 0.0,
+        market_regime: str = "NEUTRAL",
     ) -> BrainDecision:
         """Recommend an action without overriding the authoritative exit layer."""
         pnl_percent = float(pnl_percent)
         recovery_score = self._clamp(recovery_score)
         exit_signal = str(exit_signal or "HOLD").upper()
+        regime = str(market_regime or "NEUTRAL").upper()
 
         if hard_stop_triggered:
             return BrainDecision("SELL", 100.0, "HARD_STOP", metadata={"authoritative": True})
         if take_profit_triggered:
             return BrainDecision("SELL", 100.0, "TAKE_PROFIT", metadata={"authoritative": True})
 
+        if exit_signal == "SELL":
+            return BrainDecision("SELL", 85.0, "EXIT_POLICY_SELL_SIGNAL")
+
+        # In a bear regime the Brain becomes more protective without touching
+        # hard-stop or Exit Policy authority. Positive positions can be protected
+        # early; losing positions are sold only when recovery is weak or the loss
+        # has remained unresolved long enough to represent a deteriorating thesis.
+        if regime == "BEAR":
+            if pnl_percent > 0:
+                return BrainDecision("SELL", 80.0, "BEAR_PROFIT_PROTECTION")
+            if recovery_active and recovery_score < 50.0:
+                return BrainDecision("SELL", 80.0, "BEAR_RECOVERY_WEAK")
+            if pnl_percent < 0 and age_minutes >= 30.0 and recovery_score < 70.0:
+                return BrainDecision("SELL", 75.0, "BEAR_LOSS_REVIEW")
+            if recovery_active and recovery_score >= 70.0:
+                return BrainDecision("HOLD", recovery_score, "BEAR_RECOVERY_STRONG", exception="RECOVERY_HOLD")
+
         if recovery_active and pnl_percent < 0:
             if recovery_score >= 70:
                 return BrainDecision("HOLD", recovery_score, "RECOVERY_STRONG", exception="RECOVERY_HOLD")
             return BrainDecision("HOLD", 60.0, "RECOVERY_WAIT", exception="RECOVERY_HOLD")
-
-        if exit_signal == "SELL":
-            return BrainDecision("SELL", 85.0, "EXIT_POLICY_SELL_SIGNAL")
 
         if age_minutes >= 0 and age_minutes > 240 and pnl_percent <= 0:
             return BrainDecision("REVIEW", 70.0, "STALE_POSITION_REVIEW", exception="EXTENDED_HOLD_REVIEW")
