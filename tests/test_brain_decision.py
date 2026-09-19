@@ -116,3 +116,33 @@ def test_bear_market_can_keep_a_strong_local_bull_swing():
         higher_timeframe_bearish=False,
     )
     assert d.action == "BUY"
+
+
+def test_swing_brain_rejects_unaligned_mtf_context_below_strong_threshold():
+    d = BrainDecisionEngine().decide_entry(
+        83,
+        "BUY",
+        trade_mode="SWING",
+        swing_score=83,
+        symbol_regime="BULL",
+        market_regime="BULL",
+        mtf_aligned_bullish=False,
+        mtf_countertrend_veto=False,
+    )
+    assert d.action == "HOLD"
+    assert d.reason == "SWING_MTF_ALIGNMENT_MISSING"
+
+
+def test_swing_brain_rejects_explicit_countertrend_veto():
+    d = BrainDecisionEngine().decide_entry(
+        91,
+        "BUY",
+        trade_mode="SWING",
+        swing_score=91,
+        symbol_regime="BULL",
+        market_regime="BULL",
+        mtf_aligned_bullish=True,
+        mtf_countertrend_veto=True,
+    )
+    assert d.action == "HOLD"
+    assert d.reason == "MTF_COUNTERTREND_VETO"
