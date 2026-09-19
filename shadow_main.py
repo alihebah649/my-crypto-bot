@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -30,6 +31,7 @@ finally:
 from trade_manager.models import PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
+from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.dual_lane_position_gate import block_for_existing_position
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
@@ -42,6 +44,70 @@ from core.paper_risk_overlay import (
 )
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
+
+_paper_original_notify_closed_positions = _notify_closed_positions
+
+
+def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
+    if not capture_id:
+        return None
+    try:
+        records = brain_shadow_store.read_all()
+    except Exception:
+        records = []
+    for record in reversed(records):
+        if str(record.get("capture_id") or "") == str(capture_id):
+            return dict(record)
+    return None
+
+
+def _emit_paper_outcome_evidence() -> int:
+    emitted = 0
+    try:
+        closed_positions = list(runtime.repository.get_closed_positions())
+    except Exception:
+        _legacy.logger.exception("Paper outcome evidence: failed to read closed positions")
+        return 0
+
+    for position in closed_positions:
+        metadata = getattr(position, "exit_metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("paper_outcome_evidence_logged"):
+            continue
+
+        entry_metadata = getattr(position, "entry_metadata", {}) or {}
+        capture_id = entry_metadata.get("entry_v2_shadow_capture_id")
+        brain_record = _find_brain_record_for_capture(capture_id)
+
+        record = build_paper_outcome_evidence(
+            position,
+            brain_record=brain_record,
+        )
+        _legacy.logger.info(
+            "PAPER OUTCOME EVIDENCE %s",
+            json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+        )
+
+        metadata["paper_outcome_evidence_logged"] = True
+        metadata["paper_outcome_evidence_logged_at"] = time.time()
+        try:
+            runtime.repository.update(position)
+        except Exception:
+            _legacy.logger.exception(
+                "Paper outcome evidence: failed to mark position logged position=%s",
+                getattr(position, "position_id", ""),
+            )
+        emitted += 1
+    return emitted
+
+
+def _notify_closed_positions_with_evidence() -> int:
+    _emit_paper_outcome_evidence()
+    return _paper_original_notify_closed_positions()
+
+
+_notify_closed_positions = _notify_closed_positions_with_evidence
 
 def _lane_aware_existing_position_gate(symbol: str) -> bool:
     """Preserve one position per lane, not one position per symbol."""
