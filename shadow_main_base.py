@@ -517,7 +517,7 @@ async def _dual_mode_engine():
         await asyncio.sleep(max(1.0, _legacy.LOOP_SECONDS - elapsed))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not globals().get("_SHADOW_MAIN_EMBEDDED", False):
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
     threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
     _legacy.run_flask()
