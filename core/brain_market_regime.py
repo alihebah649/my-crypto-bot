@@ -107,4 +107,70 @@ def derive_market_regime(strategy: Mapping[str, Any], *, btc_crashing: bool = Fa
     )
 
 
-__all__ = ["BrainMarketRegime", "derive_market_regime"]
+def derive_market_breadth(
+    strategies: Mapping[str, Mapping[str, Any]],
+    *,
+    btc_crashing: bool = False,
+) -> BrainMarketRegime:
+    """Derive the broad market regime from the current universe snapshot.
+
+    The calculation aggregates the MTF bull/bear weights already produced for
+    each symbol. It is intentionally separate from a symbol's own regime.
+    """
+    if btc_crashing:
+        return BrainMarketRegime(
+            regime="BEAR",
+            strength=100.0,
+            reason="BTC_CRASH_GUARD",
+            higher_timeframe_bearish=False,
+            higher_timeframe_bullish=False,
+            local_reversal=False,
+        )
+
+    weighted_bull = weighted_bear = 0.0
+    bullish_symbols = bearish_symbols = 0
+    available = 0
+    for strategy in strategies.values():
+        if not isinstance(strategy, Mapping):
+            continue
+        bias = _norm(strategy.get("mtf_bias"))
+        bull = float(strategy.get("mtf_weighted_bull", 0.0) or 0.0)
+        bear = float(strategy.get("mtf_weighted_bear", 0.0) or 0.0)
+        if bias in {"BULLISH", "BEARISH"} or bull > 0 or bear > 0:
+            available += 1
+        if bias == "BULLISH":
+            bullish_symbols += 1
+        elif bias == "BEARISH":
+            bearish_symbols += 1
+        weighted_bull += bull
+        weighted_bear += bear
+
+    if available == 0:
+        return BrainMarketRegime(
+            regime="TRANSITION",
+            strength=0.0,
+            reason="NO_MARKET_BREADTH_DATA",
+            higher_timeframe_bearish=False,
+            higher_timeframe_bullish=False,
+            local_reversal=False,
+        )
+
+    net = weighted_bull - weighted_bear
+    if net > 0:
+        regime = "BULL"
+    elif net < 0:
+        regime = "BEAR"
+    else:
+        regime = "TRANSITION"
+
+    return BrainMarketRegime(
+        regime=regime,
+        strength=min(100.0, abs(net)),
+        reason="BREADTH_WEIGHTED_MTF",
+        higher_timeframe_bearish=bearish_symbols > bullish_symbols and bearish_symbols > 0,
+        higher_timeframe_bullish=bullish_symbols > bearish_symbols and bullish_symbols > 0,
+        local_reversal=False,
+    )
+
+
+__all__ = ["BrainMarketRegime", "derive_market_regime", "derive_market_breadth"]
