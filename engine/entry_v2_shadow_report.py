@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from .entry_v2_outcome_analysis import analyze_entry_v2_outcomes
+from core.brain_shadow_outcome_analysis import analyze_brain_shadow_outcomes
 
 
 _ACTIVE_STATUSES = {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
@@ -83,6 +84,7 @@ def build_entry_v2_shadow_report(
     captures: Iterable[Mapping[str, Any]],
     positions: Iterable[Any],
     *,
+    brain_records: Iterable[Mapping[str, Any]] | None = None,
     max_rejected_execution_rows: int = 100,
 ) -> dict[str, Any]:
     """Build a compact empirical report from durable captures and Paper positions."""
@@ -91,6 +93,9 @@ def build_entry_v2_shadow_report(
 
     capture_list = [record for record in captures if isinstance(record, Mapping)]
     position_list = list(positions)
+    brain_record_list = [
+        record for record in (brain_records or []) if isinstance(record, Mapping)
+    ]
     outcome = analyze_entry_v2_outcomes(capture_list, position_list)
     capture_by_id = {
         _capture_identity(record): record
@@ -144,6 +149,10 @@ def build_entry_v2_shadow_report(
         "by_decision": outcome["by_decision"],
         "by_lane": outcome["by_lane"],
         "by_failed_gate": outcome["by_failed_gate"],
+        "brain_shadow": analyze_brain_shadow_outcomes(
+            brain_record_list,
+            position_list,
+        ) if brain_record_list else None,
         "rejected_executions": rejected_execution_rows[:max_rejected_execution_rows],
         "unmatched_capture_ids": outcome["unmatched_capture_ids"],
         "unmatched_position_ids": outcome["unmatched_position_ids"],
