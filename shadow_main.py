@@ -29,6 +29,7 @@ finally:
 
 from trade_manager.models import PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
+from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -143,6 +144,23 @@ def _loss_cooldown(symbol: str) -> float:
 
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
+    score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
+    freshness = score.get("entry_freshness_5m") if isinstance(score, dict) else None
+    if not entry_execution_freshness_allowed(freshness, mode):
+        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+        trace.update({
+            "result": "REJECTED_STALE_ENTRY_DATA",
+            "trade_mode": mode,
+            "execution": "NOT_RUN",
+            "entry_freshness_5m": freshness,
+        })
+        _legacy.logger.info(
+            "ENTRY BLOCKED %s: stale 5m decision data mode=%s age=%ss",
+            symbol,
+            mode,
+            (freshness or {}).get("decision_candle_age_seconds"),
+        )
+        return None
     with _ticker_cache_lock:
         stale_active = _ticker_cache_stale_active
     if stale_active:
