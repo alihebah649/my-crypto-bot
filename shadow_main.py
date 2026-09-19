@@ -434,8 +434,68 @@ def _market_health_loop() -> None:
         time.sleep(60.0)
 
 
+# Diagnostic-only thread liveness state. This does not control trading; it only
+# exposes whether the background Paper engine thread is still alive.
+_dual_mode_engine_thread: threading.Thread | None = None
+_dual_mode_engine_thread_last_exit: dict[str, object] = {}
+
+
+def _run_dual_mode_engine_thread() -> None:
+    global _dual_mode_engine_thread_last_exit
+    try:
+        asyncio.run(_dual_mode_engine())
+    except BaseException as exc:
+        _dual_mode_engine_thread_last_exit = {
+            "at": time.time(),
+            "exception_type": type(exc).__name__,
+            "exception": str(exc),
+        }
+        runtime.last_entry_diagnostics.setdefault("__paper_loop__", {})["thread_exception"] = dict(_dual_mode_engine_thread_last_exit)
+        _legacy.logger.exception("Dual-mode market engine thread terminated unexpectedly")
+        raise
+    else:
+        _dual_mode_engine_thread_last_exit = {
+            "at": time.time(),
+            "exception_type": None,
+            "exception": None,
+            "reason": "ASYNC_ENGINE_RETURNED",
+        }
+        runtime.last_entry_diagnostics.setdefault("__paper_loop__", {})["thread_exit"] = dict(_dual_mode_engine_thread_last_exit)
+        _legacy.logger.error("Dual-mode market engine thread returned unexpectedly; trading loop is no longer running")
+
+
+def _paper_engine_thread_watchdog() -> None:
+    while True:
+        try:
+            thread = _dual_mode_engine_thread
+            alive = bool(thread is not None and thread.is_alive())
+            heartbeat = runtime.last_entry_diagnostics.setdefault("__paper_loop__", {})
+            heartbeat["thread_alive"] = alive
+            heartbeat["thread_watchdog_at"] = time.time()
+            if not alive and thread is not None:
+                heartbeat["thread_failure_detected_at"] = time.time()
+                heartbeat["thread_last_exit"] = dict(_dual_mode_engine_thread_last_exit)
+                _legacy.logger.error(
+                    "PAPER ENGINE WATCHDOG: dual-mode engine thread is NOT ALIVE last_exit=%s",
+                    _dual_mode_engine_thread_last_exit,
+                )
+        except Exception:
+            _legacy.logger.exception("Paper engine thread watchdog failed")
+        time.sleep(30.0)
+
+
 if __name__ == "__main__":
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
     threading.Thread(target=_market_health_loop, daemon=True, name="paper-market-health").start()
-    threading.Thread(target=lambda: asyncio.run(_dual_mode_engine()), daemon=True, name="dual-mode-market-engine").start()
+    _dual_mode_engine_thread = threading.Thread(
+        target=_run_dual_mode_engine_thread,
+        daemon=True,
+        name="dual-mode-market-engine",
+    )
+    _dual_mode_engine_thread.start()
+    threading.Thread(
+        target=_paper_engine_thread_watchdog,
+        daemon=True,
+        name="paper-engine-thread-watchdog",
+    ).start()
     _legacy.run_flask()
