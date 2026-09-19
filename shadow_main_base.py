@@ -20,6 +20,7 @@ import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
+from core.brain_market_regime import derive_market_breadth
 from core.mtf_context_cache import MTFContextCache
 
 # Additional assets are deliberately limited to established Spot assets that
@@ -477,6 +478,12 @@ def _sanitize_entry_diagnostics() -> None:
 
 def _run_brain_shadow_cycle() -> None:
     latest = getattr(_legacy, "latest_scores", {}) or {}
+    btc_guard = globals().get("_last_btc_guard", {})
+    market_view = derive_market_breadth(
+        latest,
+        btc_crashing=bool(btc_guard.get("crashing")) if isinstance(btc_guard, dict) else False,
+    )
+    runtime.last_entry_diagnostics.setdefault("__brain_shadow__", {})["market_regime"] = market_view.to_dict()
     open_symbols = {str(position.symbol).upper() for position in runtime.repository.get_open_positions() if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}}
     for symbol, strategy in latest.items():
         try:
@@ -498,6 +505,7 @@ def _run_brain_shadow_cycle() -> None:
                 normalized,
                 strategy,
                 existing_position=existing_before_entry,
+                market_regime=market_view.regime,
             )
             runtime.last_entry_diagnostics.setdefault(normalized, {})["brain_shadow"] = record.to_dict()
             if not record.agreement:
