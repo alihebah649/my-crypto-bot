@@ -43,8 +43,13 @@ from core.paper_risk_overlay import (
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 
+_lane_gate_active = False
+
+
 def _lane_aware_existing_position_gate(symbol: str) -> bool:
-    """Preserve one position per lane, not one position per symbol."""
+    """Preserve one position per lane only during the Legacy entry precheck."""
+    if not _lane_gate_active:
+        return _original_controller_has_position(symbol)
     strategy = (
         _legacy.latest_scores.get(symbol, {})
         or _legacy.market_state.get(symbol, {})
@@ -315,11 +320,14 @@ runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 
 
 def _process_market_cycle_with_overlays():
+    global _lane_gate_active
     original_has_position = runtime.controller.has_position
     runtime.controller.has_position = _lane_aware_existing_position_gate
+    _lane_gate_active = True
     try:
         result = _paper_original_process_market_cycle()
     finally:
+        _lane_gate_active = False
         runtime.controller.has_position = original_has_position
     try:
         shadow_summary = _entry_v2_runtime_capture.capture_cycle()
