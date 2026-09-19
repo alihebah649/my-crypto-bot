@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
 from core.paper_execution_adapter import PaperExecutionAdapter
+from core.brain_market_regime import derive_market_regime
 
 from .calculator import PositionCalculator
 from .controller import PositionController
@@ -236,7 +237,12 @@ class ShadowTradeManagerRuntime:
         self.facade = PositionManagementFacade(repository=self.repository, controller=self.controller, calculator=self.calculator,
                                                risk_manager=self.position_risk, execution_gateway=self.execution_gateway,
                                                risk_gateway=self.risk_gateway, persistence_dir=persistence_dir)
-        self.exit_watchdog = ExitWatchdog(repository=self.repository, risk_manager=self.position_risk, facade=self.facade)
+        self.exit_watchdog = ExitWatchdog(
+            repository=self.repository,
+            risk_manager=self.position_risk,
+            facade=self.facade,
+            brain_market_regime_provider=self._brain_market_regime,
+        )
 
         original_close_position = self.facade.close_position
         original_execute_decision = self.facade.execute_decision
@@ -342,6 +348,20 @@ class ShadowTradeManagerRuntime:
         }
         self.loss_ledger.sync(self.repository.get_closed_positions())
         return result
+
+    def _brain_market_regime(self, symbol: str) -> str:
+        """Read the current strategy snapshot and derive a Brain-only regime.
+        This provider is advisory-only and never alters PositionRiskManager state.
+        """
+        normalized = str(symbol).upper()
+        for module_name in ("shadow_main", "shadow_main_base", "__main__"):
+            module = sys.modules.get(module_name)
+            scores = getattr(module, "latest_scores", None) if module is not None else None
+            if isinstance(scores, dict):
+                strategy = scores.get(normalized)
+                if isinstance(strategy, dict):
+                    return derive_market_regime(strategy).regime
+        return "NEUTRAL"
 
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
         state = self.market.get(symbol); ema = self.market.ema100.get(symbol, 0.0)
