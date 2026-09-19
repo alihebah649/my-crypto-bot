@@ -146,6 +146,7 @@ class BrainDecisionEngine:
         exit_signal: str = "HOLD",
         age_minutes: float = 0.0,
         market_regime: str = "NEUTRAL",
+        symbol_regime: Optional[str] = None,
     ) -> BrainDecision:
         """Recommend an action without overriding the authoritative exit layer."""
         pnl_percent = float(pnl_percent)
