@@ -44,6 +44,8 @@ class BrainDecisionEngine:
         seller_failure_confirmed: bool = False,
         higher_timeframe_bearish: bool = False,
         symbol_regime: Optional[str] = None,
+        mtf_aligned_bullish: bool = False,
+        mtf_countertrend_veto: bool = False,
     ) -> BrainDecision:
         """Evaluate the strategy lane without taking execution authority.
 
@@ -105,6 +107,16 @@ class BrainDecisionEngine:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_MARKET_SWING_STRENGTH_REQUIRED")
             if higher_timeframe_bearish:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_MARKET_HIGHER_TIMEFRAME_CONFLICT")
+
+        # The Brain must not reduce a multi-timeframe structural conflict to
+        # the legacy score. For Swing, a sub-90 setup without aligned bullish
+        # MTF structure is treated as context, not authorization.
+        if mode == "SWING":
+            lane_score = swing_score if swing_score is not None else score
+            if mtf_countertrend_veto:
+                return BrainDecision("HOLD", self._clamp(lane_score), "MTF_COUNTERTREND_VETO")
+            if lane_score < 90.0 and not mtf_aligned_bullish:
+                return BrainDecision("HOLD", self._clamp(lane_score), "SWING_MTF_ALIGNMENT_MISSING")
 
         if mode == "SCALP":
             lane_score = scalp_score if scalp_score is not None else score
