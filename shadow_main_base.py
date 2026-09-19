@@ -598,23 +598,77 @@ async def _dual_mode_engine():
         "Trade Manager: Parts 1-8\nBrain: SHADOW ONLY — no execution authority\nNo real exchange orders are submitted."
     )
     _notify_closed_positions()
+
+    cycle_number = 0
     while True:
+        cycle_number += 1
         started = time.monotonic()
+        heartbeat = runtime.last_entry_diagnostics.setdefault("__paper_loop__", {})
+        heartbeat.update({
+            "cycle": cycle_number,
+            "state": "START",
+            "started_at": time.time(),
+            "finished_at": None,
+            "elapsed_seconds": None,
+            "failure": None,
+        })
+        _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=START", cycle_number)
+
         try:
+            heartbeat["state"] = "MARKET_CYCLE"
+            heartbeat["market_cycle_started_at"] = time.time()
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=MARKET_CYCLE", cycle_number)
             await asyncio.to_thread(_legacy.process_market_cycle)
+            heartbeat["market_cycle_finished_at"] = time.time()
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=MARKET_CYCLE_DONE", cycle_number)
+
+            heartbeat["state"] = "BRAIN_SHADOW"
+            heartbeat["brain_shadow_started_at"] = time.time()
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=BRAIN_SHADOW", cycle_number)
             _run_brain_shadow_cycle()
+            heartbeat["brain_shadow_finished_at"] = time.time()
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=BRAIN_SHADOW_DONE", cycle_number)
+
+            heartbeat["state"] = "EXIT_WATCHDOG"
+            heartbeat["exit_watchdog_started_at"] = time.time()
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=EXIT_WATCHDOG", cycle_number)
             watchdog = runtime.run_exit_watchdog()
+            heartbeat["exit_watchdog_finished_at"] = time.time()
             if watchdog.exit_signals or watchdog.failed:
-                _legacy.logger.info("Exit watchdog: evaluated=%d signals=%d closed=%d failed=%d", watchdog.evaluated, watchdog.exit_signals, watchdog.closed, watchdog.failed)
+                _legacy.logger.info(
+                    "Exit watchdog: evaluated=%d signals=%d closed=%d failed=%d",
+                    watchdog.evaluated, watchdog.exit_signals, watchdog.closed, watchdog.failed
+                )
+
+            heartbeat["state"] = "SANITIZE"
+            _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=SANITIZE", cycle_number)
             _sanitize_entry_diagnostics()
-        except Exception:
+            heartbeat["sanitize_finished_at"] = time.time()
+            heartbeat["state"] = "READY"
+        except Exception as exc:
+            heartbeat["state"] = "ERROR"
+            heartbeat["failure"] = f"{type(exc).__name__}: {exc}"
             _legacy.logger.exception("Dual-mode paper market cycle failed")
         finally:
             try:
+                heartbeat["state"] = "NOTIFY_CLOSED"
+                _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=NOTIFY_CLOSED", cycle_number)
                 _notify_closed_positions()
+                heartbeat["notify_closed_finished_at"] = time.time()
             except Exception:
+                heartbeat["state"] = "NOTIFY_ERROR"
+                heartbeat["failure"] = "Paper SELL notification reconciliation failed"
                 _legacy.logger.exception("Paper SELL notification reconciliation failed")
+
         elapsed = time.monotonic() - started
+        heartbeat["finished_at"] = time.time()
+        heartbeat["elapsed_seconds"] = round(elapsed, 3)
+        if heartbeat["state"] not in {"ERROR", "NOTIFY_ERROR"}:
+            heartbeat["state"] = "SLEEP"
+        _legacy.logger.info(
+            "PAPER LOOP HEARTBEAT cycle=%d state=%s elapsed=%.3fs",
+            cycle_number, heartbeat["state"], elapsed
+        )
         await asyncio.sleep(max(1.0, _legacy.LOOP_SECONDS - elapsed))
 
 
