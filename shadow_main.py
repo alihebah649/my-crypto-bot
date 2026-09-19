@@ -340,7 +340,9 @@ def _process_market_cycle_with_overlays():
         for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
                 continue
-            if runtime.controller.has_position(symbol):
+            # This exception is explicitly a SWING entry. Check only the
+            # SWING lane; a separate SCALP position must not suppress it.
+            if "SWING" in _active_trade_modes(symbol):
                 continue
             price = float(score.get("price", 0.0) or 0.0)
             atr = float(score.get("atr", 0.0) or 0.0)
