@@ -227,6 +227,16 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
     trace["dual_lane_entry"] = len(opened) > 1
     if opened:
         trace["trade_mode"] = str(opened[0].entry_metadata.get("trade_mode", "SWING")).upper()
+        # At this point at least one Paper position was actually committed.
+        # Record that authoritative result directly so an older rejection from
+        # an earlier lane/precheck cannot survive into the final trace.
+        trace["result"] = "POSITION_COMMITTED"
+        trace["execution"] = "FILLED"
+        trace["execution_outcome"] = {
+            "positions_opened": list(trace["positions_opened"]),
+            "trade_modes_opened": list(trace["trade_modes_opened"]),
+        }
+        trace["diagnostic_consistency"] = "CONSISTENT"
     return opened[0] if opened else None
 
 
