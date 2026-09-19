@@ -17,9 +17,15 @@ except Exception as exc:  # pragma: no cover - defensive runtime fallback
 
 # PAPER ONLY entrypoint: execute the preserved original entrypoint in this
 # module's namespace so all existing globals/tests keep their behavior.
+# The embedded base module has its own standalone __main__ block; suppress it
+# while embedding so shadow_main.py can finish installing all overlays first.
 _base_path = Path(__file__).with_name("shadow_main_base.py")
 _exec_source = _base_path.read_text(encoding="utf-8")
-exec(compile(_exec_source, str(_base_path), "exec"), globals(), globals())
+globals()["_SHADOW_MAIN_EMBEDDED"] = True
+try:
+    exec(compile(_exec_source, str(_base_path), "exec"), globals(), globals())
+finally:
+    globals().pop("_SHADOW_MAIN_EMBEDDED", None)
 
 from trade_manager.models import PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
