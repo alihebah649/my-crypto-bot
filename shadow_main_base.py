@@ -12,6 +12,8 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import requests
 from flask import jsonify
@@ -20,6 +22,7 @@ import shadow_main_legacy as _legacy
 from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
+from core.brain_shadow_capture_store import BrainShadowCaptureStore
 from core.brain_market_regime import derive_market_breadth
 from core.mtf_context_cache import MTFContextCache
 
@@ -202,6 +205,11 @@ app = _legacy.app
 runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 brain_shadow_runtime = BrainShadowRuntime()
+_brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
+brain_shadow_store = BrainShadowCaptureStore(
+    Path(_brain_shadow_persistence_dir or ".") / "brain_shadow" / "captures.jsonl"
+)
+runtime.brain_shadow_store = brain_shadow_store
 
 _original_dual_score_symbol = _score_symbol_with_mtf
 
@@ -484,32 +492,95 @@ def _run_brain_shadow_cycle() -> None:
         btc_crashing=bool(btc_guard.get("crashing")) if isinstance(btc_guard, dict) else False,
     )
     runtime.last_entry_diagnostics.setdefault("__brain_shadow__", {})["market_regime"] = market_view.to_dict()
-    open_symbols = {str(position.symbol).upper() for position in runtime.repository.get_open_positions() if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}}
+
+    active_modes_by_symbol: dict[str, set[str]] = {}
+    active_statuses = {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
+    for position in runtime.repository.get_open_positions():
+        if position.status.name not in active_statuses:
+            continue
+        symbol = str(position.symbol).upper()
+        mode = str(position.entry_metadata.get("trade_mode", "SWING")).upper()
+        active_modes_by_symbol.setdefault(symbol, set()).add(mode)
+
     for symbol, strategy in latest.items():
         try:
             normalized = str(symbol).upper()
-            trace = runtime.last_entry_diagnostics.get(normalized, {})
-            opened_this_cycle = bool(trace.get("positions_opened"))
-            blocked_by_existing = str(trace.get("result", "")).upper() == "REJECTED_EXISTING_POSITION"
-            # Brain entry comparison must use the pre-entry portfolio state.
-            # Newly opened positions are intentionally excluded from the
-            # post-cycle open-symbol set, otherwise every real BUY would be
-            # misclassified as EXISTING_POSITION.
-            if opened_this_cycle:
-                existing_before_entry = False
-            elif blocked_by_existing:
-                existing_before_entry = True
-            else:
-                existing_before_entry = normalized in open_symbols
-            record = brain_shadow_runtime.evaluate_entry(
-                normalized,
-                strategy,
-                existing_position=existing_before_entry,
-                market_regime=market_view.regime,
-            )
-            runtime.last_entry_diagnostics.setdefault(normalized, {})["brain_shadow"] = record.to_dict()
-            if not record.agreement:
-                _legacy.logger.info("Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s", record.symbol, record.trade_mode, record.strategy_action, record.strategy_score, record.brain_action, record.brain_confidence, record.brain_reason)
+            trace = runtime.last_entry_diagnostics.get(normalized, {}) or {}
+            opened_modes = {
+                str(mode).upper()
+                for mode in trace.get("trade_modes_opened", []) or []
+            }
+
+            scalp_buy = strategy.get("scalp_signal") == "BUY"
+            swing_buy = strategy.get("swing_signal") == "BUY"
+            candidate_modes = []
+            if scalp_buy:
+                candidate_modes.append("SCALP")
+            if swing_buy:
+                candidate_modes.append("SWING")
+            if not candidate_modes:
+                candidate_modes = [str(strategy.get("trade_mode", "NONE") or "NONE").upper()]
+
+            shadow_by_mode: dict[str, dict[str, Any]] = {}
+            for mode in candidate_modes:
+                mode_context = dict(strategy)
+                mode_context["trade_mode"] = mode
+                if mode == "SCALP":
+                    mode_context["signal"] = "BUY" if scalp_buy else str(strategy.get("scalp_signal", "HOLD")).upper()
+                    if strategy.get("scalp_score") is not None:
+                        mode_context["score"] = strategy.get("scalp_score")
+                elif mode == "SWING":
+                    mode_context["signal"] = "BUY" if swing_buy else str(strategy.get("swing_signal", "HOLD")).upper()
+                    if strategy.get("swing_score") is not None:
+                        mode_context["score"] = strategy.get("swing_score")
+
+                if mode in opened_modes:
+                    existing_before_entry = False
+                else:
+                    existing_before_entry = mode in active_modes_by_symbol.get(normalized, set())
+                    if str(trace.get("result", "")).upper() == "REJECTED_EXISTING_POSITION":
+                        existing_before_entry = True
+
+                capture_id = (
+                    trace.get("entry_v2_shadow", {}) or {}
+                ).get("capture_id")
+
+                record = brain_shadow_runtime.evaluate_entry(
+                    normalized,
+                    mode_context,
+                    existing_position=existing_before_entry,
+                    market_regime=market_view.regime,
+                    entry_v2_capture_id=capture_id,
+                )
+                shadow_by_mode[mode] = record.to_dict()
+
+                if (
+                    record.strategy_action == "BUY"
+                    and capture_id
+                ):
+                    persisted = brain_shadow_store.append(record.to_dict())
+                    if not persisted:
+                        runtime.last_entry_diagnostics.setdefault(
+                            "__brain_shadow__", {}
+                        )["persistence_error"] = brain_shadow_store.last_error
+
+                if not record.agreement:
+                    _legacy.logger.info(
+                        "Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s",
+                        record.symbol,
+                        record.trade_mode,
+                        record.strategy_action,
+                        record.strategy_score,
+                        record.brain_action,
+                        record.brain_confidence,
+                        record.brain_reason,
+                    )
+
+            if shadow_by_mode:
+                trace["brain_shadow_by_mode"] = shadow_by_mode
+                if len(shadow_by_mode) == 1:
+                    trace["brain_shadow"] = next(iter(shadow_by_mode.values()))
+                runtime.last_entry_diagnostics[normalized] = trace
         except Exception:
             _legacy.logger.exception("Brain shadow evaluation failed for %s", symbol)
 

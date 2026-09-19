@@ -18,6 +18,7 @@ from .brain_market_regime import derive_market_regime
 @dataclass(frozen=True)
 class BrainShadowEntryRecord:
     timestamp: float
+    capture_id: str | None
     context_fingerprint: str
     symbol: str
     trade_mode: str
@@ -32,6 +33,7 @@ class BrainShadowEntryRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
+            "capture_id": self.capture_id,
             "context_fingerprint": self.context_fingerprint,
             "symbol": self.symbol,
             "trade_mode": self.trade_mode,
@@ -63,6 +65,7 @@ class BrainShadowRuntime:
         risk_locked: bool = False,
         existing_position: bool = False,
         market_regime: str = "NEUTRAL",
+        entry_v2_capture_id: str | None = None,
     ) -> BrainShadowEntryRecord:
         context = dict(strategy)
         context["symbol"] = symbol
@@ -128,6 +131,7 @@ class BrainShadowRuntime:
         agreement = strategy_entry == brain_entry
         record = BrainShadowEntryRecord(
             timestamp=time.time(),
+            capture_id=str(entry_v2_capture_id) if entry_v2_capture_id else None,
             context_fingerprint=brain_context_fingerprint(context),
             symbol=symbol,
             trade_mode=mode,
