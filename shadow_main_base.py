@@ -480,8 +480,26 @@ def _run_brain_shadow_cycle() -> None:
     open_symbols = {str(position.symbol).upper() for position in runtime.repository.get_open_positions() if position.status.name in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}}
     for symbol, strategy in latest.items():
         try:
-            record = brain_shadow_runtime.evaluate_entry(str(symbol).upper(), strategy, existing_position=str(symbol).upper() in open_symbols)
-            runtime.last_entry_diagnostics.setdefault(str(symbol).upper(), {})["brain_shadow"] = record.to_dict()
+            normalized = str(symbol).upper()
+            trace = runtime.last_entry_diagnostics.get(normalized, {})
+            opened_this_cycle = bool(trace.get("positions_opened"))
+            blocked_by_existing = str(trace.get("result", "")).upper() == "REJECTED_EXISTING_POSITION"
+            # Brain entry comparison must use the pre-entry portfolio state.
+            # Newly opened positions are intentionally excluded from the
+            # post-cycle open-symbol set, otherwise every real BUY would be
+            # misclassified as EXISTING_POSITION.
+            if opened_this_cycle:
+                existing_before_entry = False
+            elif blocked_by_existing:
+                existing_before_entry = True
+            else:
+                existing_before_entry = normalized in open_symbols
+            record = brain_shadow_runtime.evaluate_entry(
+                normalized,
+                strategy,
+                existing_position=existing_before_entry,
+            )
+            runtime.last_entry_diagnostics.setdefault(normalized, {})["brain_shadow"] = record.to_dict()
             if not record.agreement:
                 _legacy.logger.info("Brain shadow disagreement: symbol=%s mode=%s strategy=%s score=%.1f brain=%s confidence=%.2f reason=%s", record.symbol, record.trade_mode, record.strategy_action, record.strategy_score, record.brain_action, record.brain_confidence, record.brain_reason)
         except Exception:
