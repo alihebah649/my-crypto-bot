@@ -120,6 +120,8 @@ class BrainShadowRuntime:
             seller_failure_confirmed=seller_failure_confirmed,
             higher_timeframe_bearish=symbol_regime_view.higher_timeframe_bearish,
             symbol_regime=symbol_regime_view.regime,
+            mtf_aligned_bullish=bool(strategy.get("mtf_aligned_bullish", False)),
+            mtf_countertrend_veto=bool(strategy.get("mtf_countertrend_veto", False)),
         )
         brain_action = str(brain_decision.action).upper()
         # OPEN/BUY are equivalent entry intents for comparison only.
