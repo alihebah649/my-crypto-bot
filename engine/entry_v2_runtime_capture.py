@@ -29,6 +29,7 @@ class EntryV2RuntimeCapture:
     btc_guard_provider: Callable[[], Mapping[str, Any]] | None = None
     mtf_candles_provider: Callable[[], Mapping[str, Mapping[str, list[dict]]]] | None = None
     capture_store: EntryV2CaptureStore | None = None
+    brain_shadow_store: Any | None = None
     max_history: int = 500
     _original_fetch_strategy_data: Callable[[], Any] | None = field(default=None, init=False)
     _original_score_symbol: Callable[..., Any] | None = field(default=None, init=False)
@@ -48,6 +49,8 @@ class EntryV2RuntimeCapture:
             if persistence_dir:
                 path = Path(persistence_dir) / "entry_v2_shadow" / "captures.jsonl"
                 self.capture_store = EntryV2CaptureStore(path)
+        if self.brain_shadow_store is None:
+            self.brain_shadow_store = getattr(self.runtime, "brain_shadow_store", None)
 
     def install(self) -> "EntryV2RuntimeCapture":
         if self._original_fetch_strategy_data is not None:
@@ -268,12 +271,22 @@ class EntryV2RuntimeCapture:
         if snapshot is None:
             return {"historical_outcomes": None, "shadow_report": None}
         captures, positions = snapshot
+        brain_records = []
+        if self.brain_shadow_store is not None:
+            try:
+                brain_records = self.brain_shadow_store.read_all()
+            except Exception:
+                brain_records = []
         try:
             outcomes = analyze_entry_v2_outcomes(captures, positions)
         except Exception as exc:
             outcomes = {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
         try:
-            shadow_report = build_entry_v2_shadow_report(captures, positions)
+            shadow_report = build_entry_v2_shadow_report(
+                captures,
+                positions,
+                brain_records=brain_records,
+            )
         except Exception as exc:
             shadow_report = {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
         return {"historical_outcomes": outcomes, "shadow_report": shadow_report}
