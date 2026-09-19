@@ -152,3 +152,49 @@ def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
     finally:
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
+
+
+def test_legacy_existing_position_gate_allows_opposite_lane(monkeypatch):
+    import shadow_main
+
+    symbol = "TESTUSDT"
+    monkeypatch.setitem(
+        shadow_main._legacy.latest_scores,
+        symbol,
+        {"scalp_signal": "BUY", "swing_signal": "HOLD"},
+    )
+    monkeypatch.setattr(
+        shadow_main,
+        "_active_trade_modes",
+        lambda requested_symbol: {"SWING"},
+    )
+
+    try:
+        assert shadow_main._lane_aware_existing_position_gate(symbol) is False
+    finally:
+        shadow_main._legacy.latest_scores.pop(symbol, None)
+
+
+def test_market_cycle_restores_original_has_position_after_lane_aware_gate(monkeypatch):
+    import shadow_main
+
+    original = shadow_main.runtime.controller.has_position
+    observed = {}
+
+    def fake_cycle():
+        observed["replacement"] = shadow_main.runtime.controller.has_position
+        assert shadow_main.runtime.controller.has_position is shadow_main._lane_aware_existing_position_gate
+        return "ok"
+
+    monkeypatch.setattr(shadow_main, "_paper_original_process_market_cycle", fake_cycle)
+    monkeypatch.setattr(
+        shadow_main._entry_v2_runtime_capture,
+        "capture_cycle",
+        lambda: {"captured": True},
+    )
+
+    result = shadow_main._process_market_cycle_with_overlays()
+
+    assert result == "ok"
+    assert observed["replacement"] is shadow_main._lane_aware_existing_position_gate
+    assert shadow_main.runtime.controller.has_position is original
