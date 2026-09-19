@@ -55,3 +55,38 @@ def test_watchdog_evaluates_active_position_without_entry_signal():
     assert result.closed == 1
     assert result.failed == 0
     assert position.status is PositionStatus.CLOSED
+
+
+class CaptureBrain:
+    def __init__(self):
+        self.last_market_regime = None
+
+    def decide_position(self, **kwargs):
+        self.last_market_regime = kwargs["market_regime"]
+        from core.brain_decision import BrainDecision
+        return BrainDecision("SELL", 80.0, "CAPTURED")
+
+
+def test_watchdog_passes_current_brain_regime_provider():
+    position = Position(
+        position_id="watchdog-regime-1",
+        symbol="TESTUSDT",
+        side=PositionSide.LONG,
+        status=PositionStatus.OPEN,
+        quantity=1.0,
+        entry_price=100.0,
+        current_price=101.0,
+        stop_loss=95.0,
+        take_profit=None,
+        entry_metadata={"trade_mode": "SCALP"},
+    )
+    brain = CaptureBrain()
+    ExitWatchdog(
+        repository=FakeRepository(position),
+        risk_manager=FakeRisk(),
+        facade=FakeFacade(position),
+        brain=brain,
+        brain_market_regime_provider=lambda symbol: "BEAR",
+    ).run()
+
+    assert brain.last_market_regime == "BEAR"

@@ -74,3 +74,31 @@ def test_shadow_runtime_risk_lock_blocks_brain_entry_but_not_strategy():
     assert result.strategy_action == "BUY"
     assert result.brain_action == "HOLD"
     assert result.agreement is False
+
+
+def test_shadow_runtime_marks_bear_regime_and_checks_countertrend_quality():
+    runtime = BrainShadowRuntime()
+    strategy = {
+        "signal": "BUY",
+        "score": 70,
+        "trade_mode": "SCALP",
+        "scalp_score": 70,
+        "scalp_confirmed_reversal": True,
+        "scalp_recovery_confirmation": True,
+        "volume_ratio_5m": 1.4,
+        "mtf_timeframe_bias": {"1h": "BEARISH", "4h": "BULLISH"},
+        "mtf_weighted_bull": 40,
+        "mtf_weighted_bear": 42,
+        "mtf_net": -2,
+        "mtf_patterns": {
+            "5m": ["FOUR_C_BEAR_TO_BULL_REVERSAL"],
+            "15m": ["5C_SELLING_PRESSURE_WEAKENING"],
+        },
+    }
+
+    result = runtime.evaluate_entry("TESTUSDT", strategy)
+
+    assert result.context["market_regime"] == "BEAR"
+    assert result.context["seller_failure_confirmed"] is True
+    assert result.brain_action == "BUY"
+    assert result.brain_reason == "BEAR_COUNTERTREND_SCALP_CONFIRMED"

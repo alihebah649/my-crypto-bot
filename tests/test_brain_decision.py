@@ -34,3 +34,85 @@ def test_stale_losing_position_is_review_not_forced_sell():
     d = BrainDecisionEngine().decide_position(-0.5, age_minutes=300)
     assert d.action == "REVIEW"
     assert d.exception == "EXTENDED_HOLD_REVIEW"
+
+
+def test_bear_swing_entry_is_blocked_but_not_all_entries():
+    d = BrainDecisionEngine().decide_entry(
+        88,
+        "BUY",
+        True,
+        market_regime="BEAR",
+        trade_mode="SWING",
+        swing_score=88,
+    )
+    assert d.action == "HOLD"
+    assert d.reason == "BEAR_SWING_DISABLED"
+
+
+def test_bear_scalp_requires_structural_reversal_quality():
+    d = BrainDecisionEngine().decide_entry(
+        70,
+        "BUY",
+        True,
+        market_regime="BEAR",
+        trade_mode="SCALP",
+        scalp_score=70,
+        volume_ratio_5m=0.82,
+        seller_failure_confirmed=True,
+    )
+    assert d.action == "HOLD"
+    assert d.reason == "BEAR_VOLUME_NOT_CONFIRMING"
+
+
+def test_bear_scalp_can_buy_only_on_confirmed_countertrend_reversal():
+    d = BrainDecisionEngine().decide_entry(
+        70,
+        "BUY",
+        True,
+        market_regime="BEAR",
+        trade_mode="SCALP",
+        scalp_score=70,
+        scalp_recovery_confirmation=True,
+        volume_ratio_5m=1.35,
+        seller_failure_confirmed=True,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "BUY"
+    assert d.reason == "BEAR_COUNTERTREND_SCALP_CONFIRMED"
+    assert d.metadata["countertrend"] is True
+
+
+def test_bear_exit_brain_can_protect_profit():
+    d = BrainDecisionEngine().decide_position(
+        1.2,
+        market_regime="BEAR",
+        age_minutes=20,
+    )
+    assert d.action == "SELL"
+    assert d.reason == "BEAR_PROFIT_PROTECTION"
+
+
+def test_bear_exit_brain_can_cut_weak_recovery():
+    d = BrainDecisionEngine().decide_position(
+        -1.8,
+        market_regime="BEAR",
+        recovery_active=True,
+        recovery_score=35,
+        age_minutes=20,
+    )
+    assert d.action == "SELL"
+    assert d.reason == "BEAR_RECOVERY_WEAK"
+
+
+def test_bear_market_can_keep_a_strong_local_bull_swing():
+    d = BrainDecisionEngine().decide_entry(
+        92,
+        "BUY",
+        True,
+        market_regime="BEAR",
+        symbol_regime="BULL",
+        trade_mode="SWING",
+        swing_score=92,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "BUY"
