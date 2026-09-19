@@ -14,12 +14,13 @@ def audit_5m_entry_freshness(
     cache_timestamp: float | None = None,
     cache_ttl_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Return diagnostic-only freshness metadata for a 5m strategy snapshot.
+    """Return freshness metadata for a 5m strategy snapshot.
 
     The active strategy always scores ``candles_5m[:-1]``. Therefore the
     penultimate raw candle is the exact candle used for the decision, even when
     the newest raw row happens to be closed. This function mirrors that runtime
-    contract exactly and never changes the trading decision itself.
+    contract exactly. The separate ``entry_execution_freshness_allowed``
+    helper uses this metadata as a narrow data-integrity guard.
     """
     now = float(captured_at if captured_at is not None else time.time())
     result: dict[str, Any] = {
@@ -93,3 +94,16 @@ def audit_5m_entry_freshness(
 
     result["available"] = result["state"] in _VALID_STATES
     return result
+
+
+def entry_execution_freshness_allowed(audit: dict[str, Any] | None, trade_mode: str) -> bool:
+    """Allow execution unless a SCALP entry explicitly uses stale 5m data.
+
+    This is a data-integrity guard, not a strategy threshold: it only blocks a
+    SCALP execution when the existing freshness audit classifies the 5m
+    decision candle as ``STALE``. SWING behavior and unknown/missing audit
+    states remain unchanged.
+    """
+    mode = str(trade_mode or "").upper()
+    state = str((audit or {}).get("state") or "").upper()
+    return not (mode == "SCALP" and state == "STALE")
