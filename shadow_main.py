@@ -46,6 +46,7 @@ from core.paper_risk_overlay import (
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 
 _paper_original_notify_closed_positions = _notify_closed_positions
+_paper_outcome_evidence_logged_ids: set[str] = set()
 
 
 def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
@@ -70,10 +71,8 @@ def _emit_paper_outcome_evidence() -> int:
         return 0
 
     for position in closed_positions:
-        metadata = getattr(position, "exit_metadata", None)
-        if not isinstance(metadata, dict):
-            continue
-        if metadata.get("paper_outcome_evidence_logged"):
+        position_id = str(getattr(position, "position_id", "") or "")
+        if not position_id or position_id in _paper_outcome_evidence_logged_ids:
             continue
 
         entry_metadata = getattr(position, "entry_metadata", {}) or {}
@@ -89,15 +88,7 @@ def _emit_paper_outcome_evidence() -> int:
             json.dumps(record, ensure_ascii=False, separators=(",", ":")),
         )
 
-        metadata["paper_outcome_evidence_logged"] = True
-        metadata["paper_outcome_evidence_logged_at"] = time.time()
-        try:
-            runtime.repository.update(position)
-        except Exception:
-            _legacy.logger.exception(
-                "Paper outcome evidence: failed to mark position logged position=%s",
-                getattr(position, "position_id", ""),
-            )
+        _paper_outcome_evidence_logged_ids.add(position_id)
         emitted += 1
     return emitted
 
