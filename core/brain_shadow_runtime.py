@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from .brain_context_fingerprint import brain_context_fingerprint
 from .brain_decision import BrainDecision, BrainDecisionEngine
+from .brain_market_regime import derive_market_regime
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,20 @@ class BrainShadowRuntime:
     ) -> BrainShadowEntryRecord:
         context = dict(strategy)
         context["symbol"] = symbol
+        regime_view = derive_market_regime(strategy)
+        if str(market_regime or "NEUTRAL").upper() != "NEUTRAL":
+            regime = str(market_regime).upper()
+            context["market_regime"] = regime
+            context["market_regime_source"] = "caller"
+        else:
+            regime = regime_view.regime
+            context["market_regime"] = regime_view.regime
+            context["market_regime_source"] = "derived"
+        context["market_regime_reason"] = regime_view.reason
+        context["market_regime_strength"] = regime_view.strength
+        context["market_regime_higher_timeframe_bearish"] = regime_view.higher_timeframe_bearish
+        context["market_regime_higher_timeframe_bullish"] = regime_view.higher_timeframe_bullish
+        context["market_regime_local_reversal"] = regime_view.local_reversal
         mode = str(strategy.get("trade_mode", "NONE")).upper()
         strategy_action = str(strategy.get("signal", "HOLD")).upper()
         score = float(strategy.get("score", 0.0) or 0.0)
@@ -80,7 +95,10 @@ class BrainShadowRuntime:
             trade_mode=mode,
             risk_locked=risk_locked,
             existing_position=existing_position,
-            market_regime=market_regime,
+            market_regime=regime,
+            volume_ratio_5m=float(strategy.get("volume_ratio_5m")) if strategy.get("volume_ratio_5m") is not None else None,
+            seller_failure_confirmed=bool(strategy.get("seller_failure_confirmed", False)),
+            higher_timeframe_bearish=regime_view.higher_timeframe_bearish,
         )
         brain_action = str(brain_decision.action).upper()
         # OPEN/BUY are equivalent entry intents for comparison only.
