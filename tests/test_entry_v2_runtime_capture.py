@@ -232,4 +232,4 @@ def test_runtime_capture_separates_dual_lane_candidates_and_position_identity():
 
     assert scalp_position.entry_metadata["entry_v2_shadow_capture_id"] == scalp["capture_id"]
     assert swing_position.entry_metadata["entry_v2_shadow_capture_id"] == swing["capture_id"]
-\n
+
