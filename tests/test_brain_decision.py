@@ -102,3 +102,17 @@ def test_bear_exit_brain_can_cut_weak_recovery():
     )
     assert d.action == "SELL"
     assert d.reason == "BEAR_RECOVERY_WEAK"
+
+
+def test_bear_market_can_keep_a_strong_local_bull_swing():
+    d = BrainDecisionEngine().decide_entry(
+        92,
+        "BUY",
+        True,
+        market_regime="BEAR",
+        symbol_regime="BULL",
+        trade_mode="SWING",
+        swing_score=92,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "BUY"
