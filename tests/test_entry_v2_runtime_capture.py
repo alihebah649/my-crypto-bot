@@ -144,3 +144,92 @@ def test_runtime_capture_calculates_real_structure_target_without_changing_legac
     assert capture["entry_scenario"]["risk"]["reward_risk"] == 1.0
     assert capture["entry_scenario"]["risk"]["target_status"] == "VALID"
     assert capture["legacy_result"]["signal"] == original["signal"]
+
+def test_runtime_capture_separates_dual_lane_candidates_and_position_identity():
+    class Legacy:
+        latest_scores = {
+            "DUALUSDT": {
+                "symbol": "DUALUSDT",
+                "signal": "BUY",
+                "trade_mode": "SWING",
+                "scalp_signal": "BUY",
+                "swing_signal": "BUY",
+                "score": 86,
+                "scalp_score": 72,
+                "swing_score": 86,
+                "price": 100.0,
+                "atr": 1.0,
+                "scalp_confirmed_reversal": True,
+                "scalp_recovery_confirmation": True,
+                "volume_ratio_5m": 1.3,
+            }
+        }
+
+        def fetch_strategy_data(self):
+            candles = {"DUALUSDT": [_candle(100 + i) for i in range(12)]}
+            return (
+                {"DUALUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
+                candles,
+                candles,
+            )
+
+        def score_symbol(self, symbol, *args, **kwargs):
+            return self.latest_scores[symbol]
+
+    class Repository:
+        def __init__(self):
+            self.positions = []
+
+        def add(self, position):
+            self.positions.append(position)
+
+    class Runtime:
+        def __init__(self):
+            self.last_entry_diagnostics = {}
+            self.repository = Repository()
+
+    legacy = Legacy()
+    runtime = Runtime()
+    bridge = install(
+        legacy=legacy,
+        runtime=runtime,
+        mtf_candles={
+            "DUALUSDT": {
+                "1h": [_candle(200 + i) for i in range(12)],
+                "4h": [_candle(300 + i) for i in range(12)],
+            }
+        },
+        trading_symbols=["DUALUSDT"],
+    )
+
+    legacy.fetch_strategy_data()
+    legacy.score_symbol("DUALUSDT", None, None)
+
+    by_mode = bridge.latest_captures_by_mode()
+    assert set(by_mode) == {"DUALUSDT|SCALP", "DUALUSDT|SWING"}
+
+    scalp = by_mode["DUALUSDT|SCALP"]
+    swing = by_mode["DUALUSDT|SWING"]
+    assert scalp["legacy_result"]["trade_mode"] == "SCALP"
+    assert scalp["legacy_result"]["score"] == 72
+    assert swing["legacy_result"]["trade_mode"] == "SWING"
+    assert swing["legacy_result"]["score"] == 86
+    assert scalp["capture_id"] != swing["capture_id"]
+
+    diagnostics = runtime.last_entry_diagnostics["DUALUSDT"]["entry_v2_shadow_by_mode"]
+    assert diagnostics["SCALP"]["capture_id"] == scalp["capture_id"]
+    assert diagnostics["SWING"]["capture_id"] == swing["capture_id"]
+
+    class Position:
+        def __init__(self, mode):
+            self.symbol = "DUALUSDT"
+            self.entry_metadata = {"trade_mode": mode}
+
+    scalp_position = Position("SCALP")
+    swing_position = Position("SWING")
+    runtime.repository.add(scalp_position)
+    runtime.repository.add(swing_position)
+
+    assert scalp_position.entry_metadata["entry_v2_shadow_capture_id"] == scalp["capture_id"]
+    assert swing_position.entry_metadata["entry_v2_shadow_capture_id"] == swing["capture_id"]
+
