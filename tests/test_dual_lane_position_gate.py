@@ -26,3 +26,10 @@ def test_single_legacy_lane_fallback_is_preserved():
     assert requested_trade_modes(strategy) == {"SCALP"}
     assert block_for_existing_position(strategy, set()) is False
     assert block_for_existing_position(strategy, {"SCALP"}) is True
+
+
+
+def test_no_requested_lane_does_not_block():
+    strategy={"signal":"HOLD","scalp_signal":"HOLD","swing_signal":"HOLD","trade_mode":"NONE"}
+    assert requested_trade_modes(strategy) == set()
+    assert block_for_existing_position(strategy, {"SCALP","SWING"}) is False
