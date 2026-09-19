@@ -30,6 +30,7 @@ finally:
 from trade_manager.models import PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
+from core.dual_lane_position_gate import block_for_existing_position
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -41,6 +42,20 @@ from core.paper_risk_overlay import (
 )
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
+
+def _lane_aware_existing_position_gate(symbol: str) -> bool:
+    """Preserve one position per lane, not one position per symbol."""
+    strategy = (
+        _legacy.latest_scores.get(symbol, {})
+        or _legacy.market_state.get(symbol, {})
+        or {}
+    )
+    if not isinstance(strategy, dict):
+        strategy = {}
+    active_modes = _active_trade_modes(symbol)
+    return block_for_existing_position(strategy, active_modes)
+
+
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
 _paper_original_facade_execute_decision = runtime.facade.execute_decision
@@ -300,7 +315,12 @@ runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 
 
 def _process_market_cycle_with_overlays():
-    result = _paper_original_process_market_cycle()
+    original_has_position = runtime.controller.has_position
+    runtime.controller.has_position = _lane_aware_existing_position_gate
+    try:
+        result = _paper_original_process_market_cycle()
+    finally:
+        runtime.controller.has_position = original_has_position
     try:
         shadow_summary = _entry_v2_runtime_capture.capture_cycle()
         runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["summary"] = shadow_summary
