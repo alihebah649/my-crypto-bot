@@ -39,3 +39,15 @@ def test_mixed_higher_timeframes_use_weighted_balance():
     assert view.regime == "BULL"
     assert view.higher_timeframe_bearish is False
     assert view.higher_timeframe_bullish is False
+
+
+def test_derives_bear_from_universe_breadth():
+    from core.brain_market_regime import derive_market_breadth
+
+    view = derive_market_breadth({
+        "A": {"mtf_bias": "BEARISH", "mtf_weighted_bull": 2, "mtf_weighted_bear": 8},
+        "B": {"mtf_bias": "BEARISH", "mtf_weighted_bull": 3, "mtf_weighted_bear": 7},
+        "C": {"mtf_bias": "BULLISH", "mtf_weighted_bull": 4, "mtf_weighted_bear": 2},
+    })
+    assert view.regime == "BEAR"
+    assert view.reason == "BREADTH_WEIGHTED_MTF"
