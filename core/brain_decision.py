@@ -43,6 +43,7 @@ class BrainDecisionEngine:
         volume_ratio_5m: Optional[float] = None,
         seller_failure_confirmed: bool = False,
         higher_timeframe_bearish: bool = False,
+        symbol_regime: Optional[str] = None,
     ) -> BrainDecision:
         """Evaluate the strategy lane without taking execution authority.
 
@@ -53,6 +54,7 @@ class BrainDecisionEngine:
         score = self._clamp(score)
         signal = str(signal or "HOLD").upper()
         regime = str(market_regime or "NEUTRAL").upper()
+        local_regime = str(symbol_regime or market_regime or "NEUTRAL").upper()
         mode = str(trade_mode or "NONE").upper()
         lane_score = score
 
@@ -68,12 +70,10 @@ class BrainDecisionEngine:
         if signal != "BUY":
             return BrainDecision("HOLD", 90.0, "SIGNAL_NOT_BUY")
 
-        # A bear market is not treated as an automatic shutdown of every
-        # scalp. The Brain may recognize a short-lived counter-trend rebound,
-        # but only when the existing strategy facts show a real reversal,
-        # seller failure, participation, and no confirmed higher-timeframe
-        # bear continuation. Swing buys remain disabled in a bear regime.
-        if regime == "BEAR":
+        # A true downtrend (broad Bear + local Bear) does not authorize normal
+        # long entries. The Brain can recognize only a short-lived counter-trend
+        # scalp when structural reversal quality is confirmed.
+        if regime == "BEAR" and local_regime == "BEAR":
             if mode != "SCALP":
                 return BrainDecision("HOLD", 95.0, "BEAR_SWING_DISABLED")
             lane_score = scalp_score if scalp_score is not None else score
@@ -98,6 +98,13 @@ class BrainDecisionEngine:
                     "scalp_recovery_confirmation": bool(scalp_recovery_confirmation),
                 },
             )
+
+        if regime == "BEAR" and local_regime == "BULL" and mode == "SWING":
+            lane_score = swing_score if swing_score is not None else score
+            if lane_score < 90.0:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_MARKET_SWING_STRENGTH_REQUIRED")
+            if higher_timeframe_bearish:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_MARKET_HIGHER_TIMEFRAME_CONFLICT")
 
         if mode == "SCALP":
             lane_score = scalp_score if scalp_score is not None else score
@@ -145,6 +152,7 @@ class BrainDecisionEngine:
         recovery_score = self._clamp(recovery_score)
         exit_signal = str(exit_signal or "HOLD").upper()
         regime = str(market_regime or "NEUTRAL").upper()
+        local_regime = str(symbol_regime or market_regime or "NEUTRAL").upper()
 
         if hard_stop_triggered:
             return BrainDecision("SELL", 100.0, "HARD_STOP", metadata={"authoritative": True})
@@ -159,7 +167,7 @@ class BrainDecisionEngine:
         # early; losing positions are sold only when recovery is weak or the loss
         # has remained unresolved long enough to represent a deteriorating thesis.
         if regime == "BEAR":
-            if pnl_percent > 0:
+            if pnl_percent > 0 and local_regime != "BULL":
                 return BrainDecision("SELL", 80.0, "BEAR_PROFIT_PROTECTION")
             if recovery_active and recovery_score < 50.0:
                 return BrainDecision("SELL", 80.0, "BEAR_RECOVERY_WEAK")
