@@ -66,7 +66,8 @@ class BrainShadowRuntime:
     ) -> BrainShadowEntryRecord:
         context = dict(strategy)
         context["symbol"] = symbol
-        regime_view = derive_market_regime(strategy)
+        symbol_regime_view = derive_market_regime(strategy)
+        regime_view = symbol_regime_view
         if str(market_regime or "NEUTRAL").upper() != "NEUTRAL":
             regime = str(market_regime).upper()
             context["market_regime"] = regime
@@ -75,6 +76,8 @@ class BrainShadowRuntime:
             regime = regime_view.regime
             context["market_regime"] = regime_view.regime
             context["market_regime_source"] = "derived"
+        context["symbol_regime"] = symbol_regime_view.regime
+        context["symbol_regime_reason"] = symbol_regime_view.reason
         context["market_regime_reason"] = regime_view.reason
         context["market_regime_strength"] = regime_view.strength
         context["market_regime_higher_timeframe_bearish"] = regime_view.higher_timeframe_bearish
@@ -98,7 +101,8 @@ class BrainShadowRuntime:
             market_regime=regime,
             volume_ratio_5m=float(strategy.get("volume_ratio_5m")) if strategy.get("volume_ratio_5m") is not None else None,
             seller_failure_confirmed=bool(strategy.get("seller_failure_confirmed", False)),
-            higher_timeframe_bearish=regime_view.higher_timeframe_bearish,
+            higher_timeframe_bearish=symbol_regime_view.higher_timeframe_bearish,
+            symbol_regime=symbol_regime_view.regime,
         )
         brain_action = str(brain_decision.action).upper()
         # OPEN/BUY are equivalent entry intents for comparison only.
