@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
 from core.paper_execution_adapter import PaperExecutionAdapter
-from core.brain_market_regime import derive_market_regime
+from core.brain_market_regime import derive_market_breadth
 
 from .calculator import PositionCalculator
 from .controller import PositionController
@@ -350,17 +350,18 @@ class ShadowTradeManagerRuntime:
         return result
 
     def _brain_market_regime(self, symbol: str) -> str:
-        """Read the current strategy snapshot and derive a Brain-only regime.
+        """Read the current universe snapshot and derive the broad Brain regime.
         This provider is advisory-only and never alters PositionRiskManager state.
         """
-        normalized = str(symbol).upper()
         for module_name in ("shadow_main", "shadow_main_base", "__main__"):
             module = sys.modules.get(module_name)
             scores = getattr(module, "latest_scores", None) if module is not None else None
             if isinstance(scores, dict):
-                strategy = scores.get(normalized)
-                if isinstance(strategy, dict):
-                    return derive_market_regime(strategy).regime
+                btc_guard = getattr(module, "_last_btc_guard", {})
+                return derive_market_breadth(
+                    scores,
+                    btc_crashing=bool(btc_guard.get("crashing")) if isinstance(btc_guard, dict) else False,
+                ).regime
         return "NEUTRAL"
 
     def _position_market_context(self, symbol: str) -> Dict[str, Any]:
