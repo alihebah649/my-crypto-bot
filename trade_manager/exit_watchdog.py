@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from core.brain_context import BrainContextBuilder
 from core.brain_decision import BrainDecisionEngine
@@ -35,11 +35,13 @@ class ExitWatchdog:
 
     def __init__(self, *, repository, risk_manager: PositionRiskManager,
                  facade: PositionManagementFacade,
-                 brain: BrainDecisionEngine | None = None) -> None:
+                 brain: BrainDecisionEngine | None = None,
+                 brain_market_regime_provider: Callable[[str], str] | None = None) -> None:
         self.repository = repository
         self.risk_manager = risk_manager
         self.facade = facade
         self.brain = brain or BrainDecisionEngine()
+        self.brain_market_regime_provider = brain_market_regime_provider
         self.metrics = BrainMetrics()
         self.last_diagnostics: List[Dict[str, Any]] = []
 
@@ -182,6 +184,15 @@ class ExitWatchdog:
                     },
                     risk={"exit_authority": "PositionRiskManager"},
                 )
+                brain_market_regime = self._market_regime(position)
+                if self.brain_market_regime_provider is not None:
+                    try:
+                        supplied_regime = self.brain_market_regime_provider(position.symbol)
+                        if supplied_regime:
+                            brain_market_regime = str(supplied_regime).upper()
+                    except Exception:
+                        pass
+                trace["brain_market_regime"] = brain_market_regime
                 brain_decision = self.brain.decide_position(
                     pnl_percent=context.pnl_percent,
                     hard_stop_triggered=decision.reason.name == "STOP_LOSS",
@@ -190,6 +201,7 @@ class ExitWatchdog:
                     recovery_score=float(context.recovery.get("score", 0.0)),
                     exit_signal="SELL" if decision.should_exit else "HOLD",
                     age_minutes=context.age_minutes,
+                    market_regime=brain_market_regime,
                 )
                 self.metrics.record(
                     brain_action=brain_decision.action,
