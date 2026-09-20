@@ -35,7 +35,9 @@ _BINANCE_METRICS_PATH_WEIGHT_DELTA: dict[str, int] = {}
 _BINANCE_METRICS_LAST_WEIGHT_1M: int | None = None
 _BINANCE_METRICS_LAST_WEIGHT_AT: float | None = None
 _BINANCE_METRICS_WEIGHT_DELTA_SUM = 0
-_BINANCE_METRICS_EVENTS = deque(maxlen=200)
+_BINANCE_METRICS_EVENTS = deque(maxlen=1000)
+_BINANCE_REQUEST_WEIGHT_LIMIT_1M = 6000
+_BINANCE_KNOWN_ENDPOINT_WEIGHTS = {"/api/v3/ticker/24hr": 2, "/api/v3/klines": 2}
 _BINANCE_METRICS_LAST_SUMMARY_AT = 0.0
 
 
@@ -153,10 +155,43 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
         print(f"[BINANCE-METRICS] summary {summary}", flush=True)
 
 
+def _rolling_binance_request_diagnostics(now: float | None = None) -> dict:
+    """Compare this process's recent outbound requests with Binance's IP-wide header."""
+    current = time.time() if now is None else float(now)
+    cutoff = current - 60.0
+    with _BINANCE_METRICS_LOCK:
+        recent = [
+            event for event in _BINANCE_METRICS_EVENTS
+            if not bool(event.get("synthetic")) and float(event.get("at", 0.0)) >= cutoff
+        ]
+        path_counts: dict[str, int] = {}
+        estimated_known_weight = 0
+        for event in recent:
+            path = str(event.get("path") or "")
+            path_counts[path] = path_counts.get(path, 0) + 1
+            base_weight = _BINANCE_KNOWN_ENDPOINT_WEIGHTS.get(path)
+            if base_weight is not None:
+                estimated_known_weight += int(base_weight)
+        last_header = _BINANCE_METRICS_LAST_WEIGHT_1M
+    return {
+        "window_seconds": 60,
+        "own_real_requests": len(recent),
+        "own_requests_by_path": path_counts,
+        "own_estimated_known_weight": estimated_known_weight,
+        "binance_ip_weight_limit_1m": _BINANCE_REQUEST_WEIGHT_LIMIT_1M,
+        "last_observed_ip_weight_1m": last_header,
+        "ip_weight_over_limit": bool(
+            last_header is not None and int(last_header) >= _BINANCE_REQUEST_WEIGHT_LIMIT_1M
+        ),
+    }
+
+
+def binance_metrics_snapshot() -> dict:
+    """Return a JSON-safe in-process snapshot for diagnostics."""
 def binance_metrics_snapshot() -> dict:
     """Return a JSON-safe in-process snapshot for diagnostics."""
     with _BINANCE_METRICS_LOCK:
-        return {
+        snapshot = {
             "started_at": _BINANCE_METRICS_STARTED_AT,
             "uptime_seconds": round(max(0.0, time.time() - _BINANCE_METRICS_STARTED_AT), 1),
             "total_requests_seen": _BINANCE_METRICS_TOTAL,
@@ -170,6 +205,8 @@ def binance_metrics_snapshot() -> dict:
             "last_weight_timestamp": _BINANCE_METRICS_LAST_WEIGHT_AT,
             "recent_events": list(_BINANCE_METRICS_EVENTS),
         }
+    snapshot["rolling_60s"] = _rolling_binance_request_diagnostics()
+    return snapshot
 
 
 if requests is not None:
