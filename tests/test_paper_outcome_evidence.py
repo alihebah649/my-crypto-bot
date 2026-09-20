@@ -83,3 +83,48 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["strategy"]["scalp_score"] == 87
     assert record["regime"]["market"] == "BULL"
     assert record["freshness_5m"]["state"] == "FRESH"
+
+
+def test_paper_outcome_contains_scalp_forensics():
+    position = SimpleNamespace(
+        position_id="POS-FORENSIC",
+        symbol="TESTUSDT",
+        opened_at=100.0,
+        closed_at=130.0,
+        quantity=1.0,
+        entry_price=100.0,
+        current_price=98.5,
+        stop_loss=98.5,
+        take_profit=None,
+        gross_pnl=-0.9,
+        realized_pnl=-1.0,
+        total_fees=0.1,
+        close_reason=SimpleNamespace(name="STOP_LOSS"),
+        entry_metadata={"trade_mode": "SCALP"},
+        exit_metadata={"exit_price": 98.5},
+        entry_context={
+            "strategy_score": {
+                "rsi5m": 49.0,
+                "pattern": "BULLISH_BREAKOUT",
+                "scalp_recovery_confirmation": True,
+                "scalp_recovery_trigger_count": 3,
+                "scalp_recovery_trigger_reasons": [
+                    "5M_RSI_RISING", "5M_PRICE_RECOVERY", "5M_BULLISH_BODY"
+                ],
+                "volume_ratio_5m": 1.5,
+                "mtf_bias": "BEARISH",
+                "mtf_net": -10,
+                "entry_freshness_5m": {
+                    "state": "RECENT",
+                    "decision_candle_age_seconds": 150.0,
+                },
+            }
+        },
+    )
+
+    record = build_paper_outcome_evidence(position)
+    assert record["entry_forensics"]["scalp_rsi_phase"] == "LATE_RECOVERY"
+    assert record["entry_forensics"]["pattern_family"] == "BREAKOUT"
+    assert record["entry_forensics"]["combined_signature"] == "LATE_RECOVERY__BREAKOUT"
+    assert record["entry_forensics"]["recovery_trigger_count"] == 3
+    assert record["entry_forensics"]["stop_distance_percent"] == 1.5
