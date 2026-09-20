@@ -40,7 +40,15 @@ FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.001"))
 PAPER_STATE_DIR = os.getenv("PAPER_STATE_DIR", "data/paper")
 LOOP_SECONDS = float(os.getenv("PAPER_LOOP_SECONDS", "30"))
 REPORT_TIMEZONE = ZoneInfo(os.getenv("PAPER_REPORT_TIMEZONE", "Asia/Aden"))
+# Public market-data traffic is deliberately separated from the exchange
+# trading endpoint. Binance recommends data-api.binance.vision for public
+# market data; keeping this independent also avoids tying Paper market-data
+# health to the shared outbound IP used by Render services.
 BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
+BINANCE_MARKET_DATA_REST = os.getenv(
+    "BINANCE_MARKET_DATA_REST_URL",
+    "https://data-api.binance.vision",
+)
 
 TRADING_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT",
@@ -109,7 +117,7 @@ def send_telegram_message(message: str) -> bool:
 
 def _binance_get(path: str, params: Optional[dict] = None, timeout: float = 12.0):
     response = requests.get(
-        f"{BINANCE_REST}{path}",
+        f"{BINANCE_MARKET_DATA_REST}{path}",
         params=params,
         headers={"User-Agent": "ShadowTradingBot/Paper"},
         timeout=timeout,
