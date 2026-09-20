@@ -34,6 +34,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
             "entry_v2_shadow_reward_risk": 1.5,
         },
         entry_context={
+            "strategy_snapshot_source": "CANDIDATE_CAPTURE",
+            "strategy_snapshot_captured_at": 1234.5,
             "strategy_score": {
                 "score": 87,
                 "scalp_score": 87,
@@ -55,7 +57,6 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
                 "lower_band": 695.0,
                 "middle_band": 700.0,
                 "upper_band": 705.0,
-                "strategy_snapshot_source": "CANDIDATE_CAPTURE",
                 "market_regime": "BULL",
                 "symbol_regime": "BULL",
                 "mtf_bias": "BULLISH",
@@ -91,6 +92,7 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["entry_forensics"]["entry_vs_ema100_percent"] < 0
     assert record["entry_forensics"]["atr_percent_of_entry"] == 0.5
     assert record["entry_forensics"]["strategy_snapshot_source"] == "CANDIDATE_CAPTURE"
+    assert record["entry_forensics"]["strategy_snapshot_captured_at"] == 1234.5
     assert record["regime"]["market"] == "BULL"
     assert record["freshness_5m"]["state"] == "FRESH"
 
