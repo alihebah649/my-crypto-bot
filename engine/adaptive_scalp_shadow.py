@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-RULE_VERSION = 1
+RULE_VERSION = 2
 SCALP_SCORE_THRESHOLD = 65.0
 SCALP_MIN_VOLUME_RATIO = 0.75
 STRONG_BEAR_NET_GAP = 25.0
@@ -33,6 +33,36 @@ def _norm(value: Any) -> str:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def derive_scalp_timing_profile(legacy_result: Mapping[str, Any]) -> dict[str, str]:
+    """Describe SCALP timing/pattern features without making a trading decision."""
+    legacy = _mapping(legacy_result)
+    rsi = _float(legacy.get("rsi5m"))
+
+    if rsi < 35.0:
+        rsi_phase = "EARLY_DEEP_RECOVERY"
+    elif rsi < 45.0:
+        rsi_phase = "MID_RECOVERY"
+    elif rsi < 55.0:
+        rsi_phase = "LATE_RECOVERY"
+    else:
+        rsi_phase = "AT_OR_ABOVE_SCALP_RSI_LIMIT"
+
+    pattern = _norm(legacy.get("pattern"))
+    pattern_family = {
+        "BULLISH_BREAKOUT": "BREAKOUT",
+        "BULLISH_ENGULFING": "ENGULFING",
+        "BULLISH_OUTSIDE": "OUTSIDE",
+        "MORNING_STAR": "MORNING_STAR",
+    }.get(pattern, "OTHER" if pattern not in {"", "NEUTRAL"} else "NONE")
+
+    combined_signature = f"{rsi_phase}__{pattern_family}"
+    return {
+        "rsi_phase": rsi_phase,
+        "pattern_family": pattern_family,
+        "combined_signature": combined_signature,
+    }
 
 
 def _regime(legacy: Mapping[str, Any]) -> tuple[str, bool, bool]:
@@ -73,6 +103,8 @@ def classify_adaptive_scalp(
     scenario_map = _mapping(scenario)
     mode = _norm(legacy.get("trade_mode") or scenario_map.get("trade_mode"))
 
+    timing_profile = derive_scalp_timing_profile(legacy)
+
     base: dict[str, Any] = {
         "rule_version": RULE_VERSION,
         "trade_mode": mode or "UNKNOWN",
@@ -84,6 +116,7 @@ def classify_adaptive_scalp(
         "classification": "NOT_APPLICABLE",
         "advisory_action": "NO_ACTION",
         "reasons": [],
+        "timing_profile": timing_profile,
     }
 
     if mode != "SCALP":
@@ -194,4 +227,4 @@ def classify_adaptive_scalp(
     return base
 
 
-__all__ = ["RULE_VERSION", "classify_adaptive_scalp"]
+__all__ = ["RULE_VERSION", "classify_adaptive_scalp", "derive_scalp_timing_profile"]

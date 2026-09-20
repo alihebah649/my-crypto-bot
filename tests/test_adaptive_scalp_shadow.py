@@ -107,3 +107,25 @@ def test_strong_bear_requires_5m_strength_for_strong_recovery():
 def test_swing_is_not_reclassified_as_scalp():
     result = classify_adaptive_scalp(_legacy(trade_mode="SWING"))
     assert result["classification"] == "NOT_APPLICABLE"
+
+
+def test_timing_profile_distinguishes_deep_mid_and_late_recovery():
+    from engine.adaptive_scalp_shadow import derive_scalp_timing_profile
+
+    assert derive_scalp_timing_profile({"rsi5m": 28, "pattern": "BULLISH_ENGULFING"}) == {
+        "rsi_phase": "EARLY_DEEP_RECOVERY",
+        "pattern_family": "ENGULFING",
+        "combined_signature": "EARLY_DEEP_RECOVERY__ENGULFING",
+    }
+    assert derive_scalp_timing_profile({"rsi5m": 40, "pattern": "BULLISH_ENGULFING"})["rsi_phase"] == "MID_RECOVERY"
+    assert derive_scalp_timing_profile({"rsi5m": 49, "pattern": "BULLISH_BREAKOUT"}) == {
+        "rsi_phase": "LATE_RECOVERY",
+        "pattern_family": "BREAKOUT",
+        "combined_signature": "LATE_RECOVERY__BREAKOUT",
+    }
+
+
+def test_timing_profile_is_descriptive_only():
+    result = classify_adaptive_scalp(_legacy(rsi5m=49, pattern="BULLISH_BREAKOUT"))
+    assert result["timing_profile"]["combined_signature"] == "LATE_RECOVERY__BREAKOUT"
+    assert result["advisory_action"] in {"PASSIVE_SHADOW", "CAUTION_SHADOW", "HOLD_SHADOW"}

@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from engine.adaptive_scalp_shadow import derive_scalp_timing_profile
+
 
 def _safe(value: Any) -> Any:
     if isinstance(value, Mapping):
@@ -43,6 +45,15 @@ def build_paper_outcome_evidence(
         if isinstance(entry_context, Mapping)
         else {}
     ) or {}
+    stop_distance_percent = 0.0
+    try:
+        entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+        stop_price = float(getattr(position, "stop_loss", 0.0) or 0.0)
+        if entry_price > 0 and stop_price > 0:
+            stop_distance_percent = max(0.0, (entry_price - stop_price) / entry_price * 100.0)
+    except (TypeError, ValueError):
+        stop_distance_percent = 0.0
+    timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
 
     opened_at = getattr(position, "opened_at", None)
@@ -138,6 +149,19 @@ def build_paper_outcome_evidence(
             "seller_failure_confirmed": strategy.get("seller_failure_confirmed"),
         },
         "freshness_5m": _safe(strategy.get("entry_freshness_5m")),
+        "entry_forensics": {
+            "scalp_rsi_phase": timing_profile["rsi_phase"],
+            "pattern_family": timing_profile["pattern_family"],
+            "combined_signature": timing_profile["combined_signature"],
+            "recovery_confirmation": strategy.get("scalp_recovery_confirmation"),
+            "recovery_trigger_count": strategy.get("scalp_recovery_trigger_count"),
+            "recovery_trigger_reasons": list(strategy.get("scalp_recovery_trigger_reasons", []) or []),
+            "volume_ratio_5m": strategy.get("volume_ratio_5m"),
+            "mtf_bias": strategy.get("mtf_bias"),
+            "mtf_net": strategy.get("mtf_net"),
+            "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
+            "stop_distance_percent": round(stop_distance_percent, 6),
+        },
         "entry_context_available": bool(entry_context),
     }
     return _safe(record)
