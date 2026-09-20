@@ -56,11 +56,11 @@ def build_paper_outcome_evidence(
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
 
-    def _pct_delta(value: Any, base: float) -> float | None:
+    def _relative_to_entry(value: Any, entry: float) -> float | None:
         try:
             numeric = float(value)
-            if base > 0:
-                return round((numeric - base) / base * 100.0, 6)
+            if entry > 0:
+                return round((entry - numeric) / numeric * 100.0, 6) if numeric > 0 else None
         except (TypeError, ValueError):
             pass
         return None
@@ -178,7 +178,7 @@ def build_paper_outcome_evidence(
             "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
             "stop_distance_percent": round(stop_distance_percent, 6),
             "ema100": strategy.get("ema100"),
-            "price_vs_ema100_percent": _pct_delta(strategy.get("ema100"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("ema100") is not None else None,
+            "entry_vs_ema100_percent": _relative_to_entry(strategy.get("ema100"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("ema100") is not None else None,
             "atr": strategy.get("atr"),
             "atr_percent_of_entry": (
                 round(float(strategy.get("atr")) / float(getattr(position, "entry_price", 0.0) or 1.0) * 100.0, 6)
@@ -188,7 +188,7 @@ def build_paper_outcome_evidence(
             "lower_band_15m": strategy.get("lower_band"),
             "middle_band_15m": strategy.get("middle_band"),
             "upper_band_15m": strategy.get("upper_band"),
-            "price_vs_lower_band_percent": _pct_delta(strategy.get("lower_band"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("lower_band") is not None else None,
+            "entry_vs_lower_band_percent": _relative_to_entry(strategy.get("lower_band"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("lower_band") is not None else None,
             "strategy_snapshot_source": entry_context.get("strategy_snapshot_source"),
             "strategy_snapshot_captured_at": entry_context.get("strategy_snapshot_captured_at"),
         },
