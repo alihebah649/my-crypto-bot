@@ -95,7 +95,14 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     # fields. Older integration tests/callers may only supply a top-level
     # signal/score; do not invent a Brain judgment from missing context.
     context_complete = (
-        (lane == "SWING" and lane_score.get("score") is not None)
+        (
+            lane == "SWING"
+            and lane_score.get("score") is not None
+            and (
+                "swing_signal" in score
+                or str(score.get("trade_mode", "")).upper() == "SWING"
+            )
+        )
         or (
             lane == "SCALP"
             and lane_score.get("score") is not None
