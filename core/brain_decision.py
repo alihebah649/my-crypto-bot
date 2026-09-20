@@ -1,7 +1,8 @@
-"""Brain decision layer for Shadow Trading Bot.
+"""Brain decision core for Shadow Trading Bot.
 
-The Brain is deliberately advisory: it can rank and explain a decision, but it
-cannot bypass RiskEngine, Exit Policy, or Execution validation.
+The decision core itself does not execute or bypass safety controls. The
+Paper-only GuardedBrainAuthority may use this core as a pre-Risk entry gate;
+Risk, Trade Manager, and Execution remain mandatory downstream authorities.
 """
 
 from dataclasses import dataclass, field
