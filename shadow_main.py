@@ -139,6 +139,19 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     return bool(record.allowed)
 
 
+def _find_brain_authority_record_for_capture(capture_id: str | None) -> dict | None:
+    if not capture_id:
+        return None
+    try:
+        records = _brain_authority_store.read_all()
+    except Exception:
+        records = []
+    for record in reversed(records):
+        if str(record.get("capture_id") or "") == str(capture_id):
+            return dict(record)
+    return None
+
+
 def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
     if not capture_id:
         return None
@@ -168,11 +181,14 @@ def _emit_paper_outcome_evidence() -> int:
         entry_metadata = getattr(position, "entry_metadata", {}) or {}
         capture_id = entry_metadata.get("entry_v2_shadow_capture_id")
         brain_record = _find_brain_record_for_capture(capture_id)
+        brain_authority_record = _find_brain_authority_record_for_capture(capture_id)
 
         record = build_paper_outcome_evidence(
             position,
             brain_record=brain_record,
         )
+        if brain_authority_record is not None:
+            record["brain_authority"] = brain_authority_record
         _legacy.logger.info(
             "PAPER OUTCOME EVIDENCE %s",
             json.dumps(record, ensure_ascii=False, separators=(",", ":")),
@@ -459,6 +475,17 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
 def _brain_authority_diagnostics():
     records = _brain_authority_store.read_all()
     recent = records[-100:]
+    blocked_by_reason: dict[str, int] = {}
+    allowed = blocked = 0
+    for record in records:
+        if str(record.get("stage", "")) != "ENTRY_GATE":
+            continue
+        if bool(record.get("allowed")):
+            allowed += 1
+        else:
+            blocked += 1
+            reason = str(record.get("brain_reason") or "UNKNOWN")
+            blocked_by_reason[reason] = blocked_by_reason.get(reason, 0) + 1
     return jsonify({
         "version": GuardedBrainAuthority.VERSION,
         "mode": "PAPER",
@@ -468,6 +495,11 @@ def _brain_authority_diagnostics():
         "execution_authority_preserved": True,
         "in_memory": brain_authority.snapshot(),
         "persistent": _brain_authority_store.summary(),
+        "persistent_entry_decisions": {
+            "allowed": allowed,
+            "blocked": blocked,
+            "blocked_by_reason": dict(sorted(blocked_by_reason.items(), key=lambda item: (-item[1], item[0]))),
+        },
         "recent": recent,
     }), 200
 
