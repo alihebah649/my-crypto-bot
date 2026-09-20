@@ -188,8 +188,6 @@ def _rolling_binance_request_diagnostics(now: float | None = None) -> dict:
 
 def binance_metrics_snapshot() -> dict:
     """Return a JSON-safe in-process snapshot for diagnostics."""
-def binance_metrics_snapshot() -> dict:
-    """Return a JSON-safe in-process snapshot for diagnostics."""
     with _BINANCE_METRICS_LOCK:
         snapshot = {
             "started_at": _BINANCE_METRICS_STARTED_AT,
