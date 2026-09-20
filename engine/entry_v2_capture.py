@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from .entry_engine import EntryDecision, EntryEngineV2
 from .entry_v2_adapter import EntryV2MarketFacts, build_entry_scenario
+from .adaptive_scalp_shadow import classify_adaptive_scalp
 
 SCHEMA_VERSION = 2
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
@@ -55,6 +56,7 @@ class EntryV2ShadowCapture:
     legacy_result: Mapping[str, Any]
     entry_scenario: Mapping[str, Any]
     v2_decision: Mapping[str, Any]
+    adaptive_scalp_shadow: Mapping[str, Any]
     closed_candle_windows: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +85,7 @@ def capture_entry_v2(
     """Build an immutable audit record from one already-observed market state."""
     scenario = build_entry_scenario(facts)
     decision = EntryEngineV2().evaluate(scenario)
+    adaptive_scalp = classify_adaptive_scalp(facts.legacy_result, scenario)
     timestamp = captured_at or datetime.now(timezone.utc).isoformat()
 
     return EntryV2ShadowCapture(
@@ -93,6 +96,7 @@ def capture_entry_v2(
         legacy_result=deepcopy(_json_safe(facts.legacy_result)),
         entry_scenario=deepcopy(_json_safe(scenario)),
         v2_decision=_decision_to_dict(decision),
+        adaptive_scalp_shadow=deepcopy(_json_safe(adaptive_scalp)),
         closed_candle_windows={
             "5m": _last_closed_window(facts.candles_5m),
             "15m": _last_closed_window(facts.candles_15m),
@@ -128,6 +132,7 @@ def capture_summary(capture: EntryV2ShadowCapture) -> dict[str, Any]:
         "v2_setup_type": decision.get("setup_type"),
         "v2_failed_gate": decision.get("failed_gate"),
         "v2_approved": decision.get("approved", False),
+        "adaptive_scalp_shadow": deepcopy(_json_safe(capture.adaptive_scalp_shadow)),
         "target_price": risk.get("target_price"),
         "target_source": risk.get("target_source"),
         "target_status": risk.get("target_status"),
