@@ -150,3 +150,26 @@ def test_binance_metrics_exposes_own_traffic_separately_from_ip_wide_weight():
             sitecustomize._BINANCE_METRICS_EVENTS.clear()
             sitecustomize._BINANCE_METRICS_EVENTS.extend(old_events)
             sitecustomize._BINANCE_METRICS_LAST_WEIGHT_1M = old_last_weight
+
+
+def test_paper_market_data_uses_dedicated_public_market_data_endpoint(monkeypatch):
+    import shadow_main_legacy
+
+    captured = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured.update({"url": url, "params": params, "headers": headers, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr(shadow_main_legacy.requests, "get", fake_get)
+    shadow_main_legacy.BINANCE_MARKET_DATA_REST = "https://data-api.binance.vision"
+    assert shadow_main_legacy._binance_get("/api/v3/klines", {"symbol": "BTCUSDT"}) == {"ok": True}
+    assert captured["url"] == "https://data-api.binance.vision/api/v3/klines"
+    assert captured["url"] != "https://api.binance.com/api/v3/klines"
