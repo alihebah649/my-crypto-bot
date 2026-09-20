@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from .entry_v2_outcome_analysis import analyze_entry_v2_outcomes
 from core.brain_shadow_outcome_analysis import analyze_brain_shadow_outcomes
+from .adaptive_scalp_shadow import classify_adaptive_scalp
 
 
 _ACTIVE_STATUSES = {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}
