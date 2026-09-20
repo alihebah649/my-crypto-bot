@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
-from copy import deepcopy
 import time
+from copy import deepcopy
 from pathlib import Path
 
 # Explicitly load the existing process-wide Binance instrumentation before the
@@ -253,14 +254,27 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     _current_trade_mode["value"] = mode
-    position = _original_runtime_open_position(
-        symbol,
-        entry_price,
-        stop_loss,
-        trade_mode=mode,
-        strategy_snapshot=candidate_strategy_snapshot,
-        strategy_snapshot_captured_at=candidate_snapshot_captured_at,
-    )
+    # Keep older test/integration callables compatible while the real runtime
+    # receives the frozen candidate snapshot explicitly.
+    try:
+        params = inspect.signature(_original_runtime_open_position).parameters
+        accepts_snapshot = (
+            "strategy_snapshot" in params
+            or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        )
+    except (TypeError, ValueError):
+        accepts_snapshot = True
+    if accepts_snapshot:
+        position = _original_runtime_open_position(
+            symbol,
+            entry_price,
+            stop_loss,
+            trade_mode=mode,
+            strategy_snapshot=candidate_strategy_snapshot,
+            strategy_snapshot_captured_at=candidate_snapshot_captured_at,
+        )
+    else:
+        position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
     if position is not None:
         position.entry_metadata["trade_mode"] = mode
         position.metadata["trade_mode"] = mode
