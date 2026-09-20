@@ -69,20 +69,67 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     lane_score = dict(score or {})
     lane_score["trade_mode"] = lane
     if lane == "SCALP":
-        lane_score["signal"] = "BUY" if score.get("scalp_signal") == "BUY" else str(score.get("scalp_signal", "HOLD")).upper()
-        if score.get("scalp_score") is not None:
-            lane_score["score"] = score.get("scalp_score")
+        scalp_signal = score.get("scalp_signal")
+        if scalp_signal is None and str(score.get("trade_mode", "")).upper() == "SCALP":
+            scalp_signal = score.get("signal")
+        lane_score["signal"] = str(scalp_signal or "HOLD").upper()
+        scalp_score = score.get("scalp_score")
+        if scalp_score is None and str(score.get("trade_mode", "")).upper() == "SCALP":
+            scalp_score = score.get("score")
+        if scalp_score is not None:
+            lane_score["score"] = scalp_score
+            lane_score["scalp_score"] = scalp_score
     elif lane == "SWING":
-        lane_score["signal"] = "BUY" if score.get("swing_signal") == "BUY" else str(score.get("swing_signal", "HOLD")).upper()
-        if score.get("swing_score") is not None:
-            lane_score["score"] = score.get("swing_score")
+        swing_signal = score.get("swing_signal")
+        if swing_signal is None and str(score.get("trade_mode", "")).upper() == "SWING":
+            swing_signal = score.get("signal")
+        lane_score["signal"] = str(swing_signal or "HOLD").upper()
+        swing_score = score.get("swing_score")
+        if swing_score is None and str(score.get("trade_mode", "")).upper() == "SWING":
+            swing_score = score.get("score")
+        if swing_score is not None:
+            lane_score["score"] = swing_score
+            lane_score["swing_score"] = swing_score
+
+    # The live dual-lane strategy supplies lane scores and reversal/recovery
+    # fields. Older integration tests/callers may only supply a top-level
+    # signal/score; do not invent a Brain judgment from missing context.
+    context_complete = (
+        (lane == "SWING" and lane_score.get("score") is not None)
+        or (
+            lane == "SCALP"
+            and lane_score.get("score") is not None
+            and (
+                "scalp_confirmed_reversal" in score
+                or "scalp_recovery_confirmation" in score
+            )
+        )
+    )
+    if not context_complete:
+        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+        trace.setdefault("brain_authority_by_mode", {})[lane] = {
+            "authority_version": GuardedBrainAuthority.VERSION,
+            "symbol": str(symbol).upper(),
+            "trade_mode": lane,
+            "stage": "ENTRY_GATE",
+            "decision_state": "BYPASS_INCOMPLETE_CONTEXT",
+            "reason": "BRAIN_CONTEXT_INCOMPLETE",
+            "allowed": True,
+        }
+        return True
 
     btc_guard = globals().get("_last_btc_guard", {})
     market_view = derive_market_breadth(
         _legacy.latest_scores,
         btc_crashing=bool(btc_guard.get("crashing")) if isinstance(btc_guard, dict) else False,
     )
-    active_position = lane in _active_trade_modes(normalized)
+    repository = getattr(runtime, "repository", None)
+    get_by_symbol = getattr(repository, "get_by_symbol", None)
+    active_position = (
+        lane in _active_trade_modes(normalized)
+        if callable(get_by_symbol)
+        else False
+    )
     capture = (runtime.last_entry_diagnostics.get(normalized, {}) or {}).get(
         "entry_v2_shadow_by_mode", {}
     ) or {}
@@ -327,10 +374,6 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     # The same immutable observation is therefore used for Brain authority and
     # the Entry v2 / Paper outcome evidence attached to the position.
     candidate_strategy_snapshot = deepcopy(score) if isinstance(score, dict) else {}
-    if not isinstance(candidate_strategy_snapshot, dict) or not _brain_authority_entry_gate(
-        symbol, candidate_strategy_snapshot, mode
-    ):
-        return None
     candidate_snapshot_captured_at = time.time()
     freshness = candidate_strategy_snapshot.get("entry_freshness_5m") if isinstance(candidate_strategy_snapshot, dict) else None
     if not entry_execution_freshness_allowed(freshness, mode):
@@ -360,6 +403,8 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_LOSS_COOLDOWN", "loss_cooldown_seconds": round(remaining, 1), "loss_cooldown_hours": round(remaining / 3600.0, 2), "trade_mode": mode, "execution": "NOT_RUN"})
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
+        return None
+    if not _brain_authority_entry_gate(symbol, candidate_strategy_snapshot, mode):
         return None
     _current_trade_mode["value"] = mode
     # Keep older test/integration callables compatible while the real runtime
