@@ -109,3 +109,44 @@ def test_kline_cache_avoids_second_exchange_request_when_healthy():
 
     assert first == second == [{"close": 1.0}]
     assert calls == [("ADAUSDT", "5m", 60)]
+
+
+def test_binance_metrics_exposes_own_traffic_separately_from_ip_wide_weight():
+    import sitecustomize
+
+    now = 10_000.0
+    with sitecustomize._BINANCE_METRICS_LOCK:
+        old_events = list(sitecustomize._BINANCE_METRICS_EVENTS)
+        old_last_weight = sitecustomize._BINANCE_METRICS_LAST_WEIGHT_1M
+        sitecustomize._BINANCE_METRICS_EVENTS.clear()
+        sitecustomize._BINANCE_METRICS_EVENTS.append({
+            "at": now - 10.0,
+            "path": "/api/v3/ticker/24hr",
+            "synthetic": False,
+        })
+        sitecustomize._BINANCE_METRICS_EVENTS.append({
+            "at": now - 5.0,
+            "path": "/api/v3/klines",
+            "synthetic": False,
+        })
+        sitecustomize._BINANCE_METRICS_EVENTS.append({
+            "at": now - 4.0,
+            "path": "/api/v3/ticker/24hr",
+            "synthetic": True,
+        })
+        sitecustomize._BINANCE_METRICS_LAST_WEIGHT_1M = 6120
+    try:
+        rolling = sitecustomize._rolling_binance_request_diagnostics(now)
+        assert rolling["own_real_requests"] == 2
+        assert rolling["own_requests_by_path"] == {
+            "/api/v3/ticker/24hr": 1,
+            "/api/v3/klines": 1,
+        }
+        assert rolling["own_estimated_known_weight"] == 4
+        assert rolling["last_observed_ip_weight_1m"] == 6120
+        assert rolling["ip_weight_over_limit"] is True
+    finally:
+        with sitecustomize._BINANCE_METRICS_LOCK:
+            sitecustomize._BINANCE_METRICS_EVENTS.clear()
+            sitecustomize._BINANCE_METRICS_EVENTS.extend(old_events)
+            sitecustomize._BINANCE_METRICS_LAST_WEIGHT_1M = old_last_weight
