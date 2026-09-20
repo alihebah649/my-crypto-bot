@@ -323,12 +323,14 @@ def _loss_cooldown(symbol: str) -> float:
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
-    if not isinstance(score, dict) or not _brain_authority_entry_gate(symbol, score, mode):
-        return None
-    # Freeze the exact candidate snapshot before any downstream execution work.
-    # This prevents a concurrent scoring cycle from replacing the RSI/volume/
-    # location evidence that later gets attached to the closed position.
+    # Freeze the exact candidate snapshot before Brain and all downstream work.
+    # The same immutable observation is therefore used for Brain authority and
+    # the Entry v2 / Paper outcome evidence attached to the position.
     candidate_strategy_snapshot = deepcopy(score) if isinstance(score, dict) else {}
+    if not isinstance(candidate_strategy_snapshot, dict) or not _brain_authority_entry_gate(
+        symbol, candidate_strategy_snapshot, mode
+    ):
+        return None
     candidate_snapshot_captured_at = time.time()
     freshness = candidate_strategy_snapshot.get("entry_freshness_5m") if isinstance(candidate_strategy_snapshot, dict) else None
     if not entry_execution_freshness_allowed(freshness, mode):
