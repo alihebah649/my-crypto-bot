@@ -152,6 +152,9 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
         flush=True,
     )
     if summary is not None:
+        # Emit the rolling local-vs-IP-weight view with each periodic summary.
+        # This is diagnostic only and does not throttle or alter execution.
+        summary["rolling_60s"] = _rolling_binance_request_diagnostics()
         print(f"[BINANCE-METRICS] summary {summary}", flush=True)
 
 
