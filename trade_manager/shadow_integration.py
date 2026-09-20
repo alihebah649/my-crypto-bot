@@ -12,6 +12,7 @@ import os
 import sys
 import threading
 import time
+from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
@@ -139,8 +140,18 @@ def _current_strategy_score(symbol: str) -> Optional[dict]:
 
 
 def _build_entry_context(*, symbol: str, trade_mode: str, requested_entry_price: float,
-                         filled_entry_price: float, stop_loss: float) -> dict:
-    strategy_score = _current_strategy_score(symbol)
+                         filled_entry_price: float, stop_loss: float,
+                         strategy_score: Optional[dict] = None,
+                         strategy_snapshot_captured_at: Optional[float] = None) -> dict:
+    # Prefer the immutable candidate snapshot supplied by the caller. Falling
+    # back to latest_scores is retained only for older/direct callers; the live
+    # paper entry path now binds the exact snapshot that triggered execution.
+    strategy_snapshot_bound = isinstance(strategy_score, dict) and bool(strategy_score)
+    if strategy_snapshot_bound:
+        strategy_score = deepcopy(strategy_score)
+    else:
+        strategy_score = _current_strategy_score(symbol)
+        strategy_snapshot_bound = False
     context = {
         "schema_version": 1,
         "captured_at": time.time(),
@@ -154,6 +165,8 @@ def _build_entry_context(*, symbol: str, trade_mode: str, requested_entry_price:
             if filled_entry_price > 0 else 0.0
         ),
         "strategy_context_available": strategy_score is not None,
+        "strategy_snapshot_source": "CANDIDATE_CAPTURE" if strategy_snapshot_bound else "LATEST_SCORE_FALLBACK",
+        "strategy_snapshot_captured_at": strategy_snapshot_captured_at,
         "strategy_score": strategy_score,
     }
     if strategy_score is not None:
@@ -268,7 +281,9 @@ class ShadowTradeManagerRuntime:
         if hasattr(self.execution_adapter, "set_market_price"): self.execution_adapter.set_market_price(symbol, kwargs["price"])
         self.controller.update_market_price(symbol, kwargs["price"]); self.loss_ledger.sync(self.repository.get_closed_positions())
 
-    def open_position(self, symbol: str, entry_price: float, stop_loss: float, trade_mode: str = "SWING") -> Optional[Position]:
+    def open_position(self, symbol: str, entry_price: float, stop_loss: float, trade_mode: str = "SWING",
+                      *, strategy_snapshot: Optional[dict] = None,
+                      strategy_snapshot_captured_at: Optional[float] = None) -> Optional[Position]:
         mode = str(trade_mode or "SWING").upper()
         if mode not in {"SCALP", "SWING"}:
             mode = "SWING"
@@ -314,6 +329,8 @@ class ShadowTradeManagerRuntime:
                 requested_entry_price=entry_price,
                 filled_entry_price=position.entry_price,
                 stop_loss=position.stop_loss,
+                strategy_score=strategy_snapshot,
+                strategy_snapshot_captured_at=strategy_snapshot_captured_at,
             )
             position.entry_context = dict(entry_context)
             position.entry_metadata["entry_context"] = dict(entry_context)

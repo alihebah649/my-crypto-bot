@@ -161,3 +161,36 @@ def test_filled_position_captures_strategy_entry_context_and_history_persists_it
             sys.modules.pop("shadow_main", None)
         else:
             sys.modules["shadow_main"] = previous
+
+
+def test_filled_position_uses_supplied_candidate_snapshot_not_later_latest_score():
+    fake_entrypoint = SimpleNamespace(latest_scores={"OPUSDT": _strategy_score()})
+    previous = sys.modules.get("shadow_main")
+    sys.modules["shadow_main"] = fake_entrypoint
+    try:
+        runtime = _runtime_for_capture()
+        later_score = _strategy_score()
+        later_score["score"] = 93
+        later_score["scalp_score"] = 93
+        later_score["rsi5m"] = 28.5
+        later_score["volume_ratio_5m"] = 2.75
+        position = runtime.open_position(
+            "OPUSDT",
+            101.0,
+            99.5,
+            "SCALP",
+            strategy_snapshot=later_score,
+            strategy_snapshot_captured_at=1234.5,
+        )
+
+        context = position.entry_metadata["entry_context"]
+        assert context["strategy_snapshot_source"] == "CANDIDATE_CAPTURE"
+        assert context["strategy_snapshot_captured_at"] == 1234.5
+        assert context["score"] == 93
+        assert context["rsi5m"] == 28.5
+        assert context["volume_ratio_5m"] == 2.75
+    finally:
+        if previous is None:
+            sys.modules.pop("shadow_main", None)
+        else:
+            sys.modules["shadow_main"] = previous

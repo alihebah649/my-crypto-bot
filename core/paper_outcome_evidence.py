@@ -56,6 +56,15 @@ def build_paper_outcome_evidence(
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
 
+    def _relative_to_entry(value: Any, entry: float) -> float | None:
+        try:
+            numeric = float(value)
+            if entry > 0:
+                return round((entry - numeric) / numeric * 100.0, 6) if numeric > 0 else None
+        except (TypeError, ValueError):
+            pass
+        return None
+
     opened_at = getattr(position, "opened_at", None)
     closed_at = getattr(position, "closed_at", None)
     holding_seconds = None
@@ -138,6 +147,13 @@ def build_paper_outcome_evidence(
             "pattern_confirmed": strategy.get("pattern_confirmed"),
             "rsi5m": strategy.get("rsi5m"),
             "volume_ratio_5m": strategy.get("volume_ratio_5m"),
+            "ema100": strategy.get("ema100"),
+            "atr": strategy.get("atr"),
+            "lower_band": strategy.get("lower_band"),
+            "middle_band": strategy.get("middle_band"),
+            "upper_band": strategy.get("upper_band"),
+            "strategy_snapshot_source": entry_context.get("strategy_snapshot_source"),
+            "strategy_snapshot_captured_at": entry_context.get("strategy_snapshot_captured_at"),
         },
         "regime": {
             "market": strategy.get("market_regime"),
@@ -161,6 +177,20 @@ def build_paper_outcome_evidence(
             "mtf_net": strategy.get("mtf_net"),
             "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
             "stop_distance_percent": round(stop_distance_percent, 6),
+            "ema100": strategy.get("ema100"),
+            "entry_vs_ema100_percent": _relative_to_entry(strategy.get("ema100"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("ema100") is not None else None,
+            "atr": strategy.get("atr"),
+            "atr_percent_of_entry": (
+                round(float(strategy.get("atr")) / float(getattr(position, "entry_price", 0.0) or 1.0) * 100.0, 6)
+                if strategy.get("atr") is not None and float(getattr(position, "entry_price", 0.0) or 0.0) > 0
+                else None
+            ),
+            "lower_band_15m": strategy.get("lower_band"),
+            "middle_band_15m": strategy.get("middle_band"),
+            "upper_band_15m": strategy.get("upper_band"),
+            "entry_vs_lower_band_percent": _relative_to_entry(strategy.get("lower_band"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("lower_band") is not None else None,
+            "strategy_snapshot_source": entry_context.get("strategy_snapshot_source"),
+            "strategy_snapshot_captured_at": entry_context.get("strategy_snapshot_captured_at"),
         },
         "entry_context_available": bool(entry_context),
     }

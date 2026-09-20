@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 
 # Explicitly load the existing process-wide Binance instrumentation before the
@@ -217,7 +219,12 @@ def _loss_cooldown(symbol: str) -> float:
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
-    freshness = score.get("entry_freshness_5m") if isinstance(score, dict) else None
+    # Freeze the exact candidate snapshot before any downstream execution work.
+    # This prevents a concurrent scoring cycle from replacing the RSI/volume/
+    # location evidence that later gets attached to the closed position.
+    candidate_strategy_snapshot = deepcopy(score) if isinstance(score, dict) else {}
+    candidate_snapshot_captured_at = time.time()
+    freshness = candidate_strategy_snapshot.get("entry_freshness_5m") if isinstance(candidate_strategy_snapshot, dict) else None
     if not entry_execution_freshness_allowed(freshness, mode):
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({
@@ -247,7 +254,27 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     _current_trade_mode["value"] = mode
-    position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
+    # Keep older test/integration callables compatible while the real runtime
+    # receives the frozen candidate snapshot explicitly.
+    try:
+        params = inspect.signature(_original_runtime_open_position).parameters
+        accepts_snapshot = (
+            "strategy_snapshot" in params
+            or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        )
+    except (TypeError, ValueError):
+        accepts_snapshot = True
+    if accepts_snapshot:
+        position = _original_runtime_open_position(
+            symbol,
+            entry_price,
+            stop_loss,
+            trade_mode=mode,
+            strategy_snapshot=candidate_strategy_snapshot,
+            strategy_snapshot_captured_at=candidate_snapshot_captured_at,
+        )
+    else:
+        position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
     if position is not None:
         position.entry_metadata["trade_mode"] = mode
         position.metadata["trade_mode"] = mode

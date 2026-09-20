@@ -34,6 +34,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
             "entry_v2_shadow_reward_risk": 1.5,
         },
         entry_context={
+            "strategy_snapshot_source": "CANDIDATE_CAPTURE",
+            "strategy_snapshot_captured_at": 1234.5,
             "strategy_score": {
                 "score": 87,
                 "scalp_score": 87,
@@ -50,6 +52,11 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
                 "pattern_confirmed": True,
                 "rsi5m": 39.8,
                 "volume_ratio_5m": 1.9,
+                "ema100": 704.0,
+                "atr": 3.5,
+                "lower_band": 695.0,
+                "middle_band": 700.0,
+                "upper_band": 705.0,
                 "market_regime": "BULL",
                 "symbol_regime": "BULL",
                 "mtf_bias": "BULLISH",
@@ -81,6 +88,11 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["brain"]["capture_id"] == "cap-1"
     assert record["brain"]["action"] == "BUY"
     assert record["strategy"]["scalp_score"] == 87
+    assert record["strategy"]["ema100"] == 704.0
+    assert record["entry_forensics"]["entry_vs_ema100_percent"] < 0
+    assert record["entry_forensics"]["atr_percent_of_entry"] == 0.5
+    assert record["entry_forensics"]["strategy_snapshot_source"] == "CANDIDATE_CAPTURE"
+    assert record["entry_forensics"]["strategy_snapshot_captured_at"] == 1234.5
     assert record["regime"]["market"] == "BULL"
     assert record["freshness_5m"]["state"] == "FRESH"
 
