@@ -35,6 +35,7 @@ from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.dual_lane_position_gate import block_for_existing_position
+from core.brain_authority import GuardedBrainAuthority
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -49,6 +50,93 @@ _paper_original_process_market_cycle = _legacy.process_market_cycle
 
 _paper_original_notify_closed_positions = _notify_closed_positions
 _paper_outcome_evidence_logged_ids: set[str] = set()
+
+
+# Guarded Brain authority: this is a Paper-only decision gate. A BUY from the
+# Brain is only a pre-Risk approval; Risk, Trade Manager and Execution remain
+# mandatory downstream authorities.
+brain_authority = GuardedBrainAuthority()
+_brain_authority_store = BrainShadowCaptureStore(
+    Path(getattr(runtime, "persistence_dir", None) or ".") / "brain_shadow" / "authority_captures.jsonl"
+)
+runtime.brain_authority = brain_authority
+runtime.brain_authority_store = _brain_authority_store
+
+
+def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
+    normalized = str(symbol).upper()
+    lane = str(mode or "NONE").upper()
+    lane_score = dict(score or {})
+    lane_score["trade_mode"] = lane
+    if lane == "SCALP":
+        lane_score["signal"] = "BUY" if score.get("scalp_signal") == "BUY" else str(score.get("scalp_signal", "HOLD")).upper()
+        if score.get("scalp_score") is not None:
+            lane_score["score"] = score.get("scalp_score")
+    elif lane == "SWING":
+        lane_score["signal"] = "BUY" if score.get("swing_signal") == "BUY" else str(score.get("swing_signal", "HOLD")).upper()
+        if score.get("swing_score") is not None:
+            lane_score["score"] = score.get("swing_score")
+
+    btc_guard = globals().get("_last_btc_guard", {})
+    market_view = derive_market_breadth(
+        _legacy.latest_scores,
+        btc_crashing=bool(btc_guard.get("crashing")) if isinstance(btc_guard, dict) else False,
+    )
+    active_position = lane in _active_trade_modes(normalized)
+    capture = (runtime.last_entry_diagnostics.get(normalized, {}) or {}).get(
+        "entry_v2_shadow_by_mode", {}
+    ) or {}
+    lane_capture = capture.get(lane, {}) or {}
+    capture_id = lane_capture.get("capture_id")
+
+    record = brain_authority.evaluate_entry(
+        normalized,
+        lane_score,
+        trade_mode=lane,
+        market_regime=market_view.regime,
+        existing_position=active_position,
+        capture_id=capture_id,
+    )
+    record_dict = record.to_dict()
+    trace = runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})
+    by_mode = trace.setdefault("brain_authority_by_mode", {})
+    by_mode[lane] = record_dict
+    trace["brain_authority"] = record_dict if len(by_mode) == 1 else by_mode
+    trace["brain_authority_version"] = GuardedBrainAuthority.VERSION
+    trace["brain_authority_market_regime"] = market_view.to_dict()
+
+    try:
+        if not _brain_authority_store.append(record_dict):
+            runtime.last_entry_diagnostics.setdefault("__brain_authority__", {})[
+                "persistence_error"
+            ] = _brain_authority_store.last_error
+    except Exception as exc:
+        runtime.last_entry_diagnostics.setdefault("__brain_authority__", {})[
+            "persistence_error"
+        ] = f"{type(exc).__name__}: {exc}"
+
+    if not record.allowed:
+        trace["result"] = "REJECTED_BRAIN_AUTHORITY"
+        trace["execution"] = "NOT_RUN"
+        trace["brain_authority_rejection_reason"] = record.brain_reason
+        _legacy.logger.info(
+            "BRAIN AUTHORITY BLOCK %s mode=%s score=%.1f regime=%s reason=%s",
+            normalized,
+            lane,
+            record.strategy_score,
+            market_view.regime,
+            record.brain_reason,
+        )
+    else:
+        _legacy.logger.info(
+            "BRAIN AUTHORITY PASS %s mode=%s score=%.1f regime=%s reason=%s; downstream Risk/TM/Execution required",
+            normalized,
+            lane,
+            record.strategy_score,
+            market_view.regime,
+            record.brain_reason,
+        )
+    return bool(record.allowed)
 
 
 def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
@@ -219,6 +307,8 @@ def _loss_cooldown(symbol: str) -> float:
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
+    if not isinstance(score, dict) or not _brain_authority_entry_gate(symbol, score, mode):
+        return None
     # Freeze the exact candidate snapshot before any downstream execution work.
     # This prevents a concurrent scoring cycle from replacing the RSI/volume/
     # location evidence that later gets attached to the closed position.
@@ -362,6 +452,24 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
         runtime.repository.update(result)
     return result
 
+
+
+
+@app.get("/paper/brain-authority")
+def _brain_authority_diagnostics():
+    records = _brain_authority_store.read_all()
+    recent = records[-100:]
+    return jsonify({
+        "version": GuardedBrainAuthority.VERSION,
+        "mode": "PAPER",
+        "execution_gate_active": True,
+        "risk_authority_preserved": True,
+        "trade_manager_authority_preserved": True,
+        "execution_authority_preserved": True,
+        "in_memory": brain_authority.snapshot(),
+        "persistent": _brain_authority_store.summary(),
+        "recent": recent,
+    }), 200
 
 runtime.facade.execute_decision = _paper_stop_fill_wrapper
 
