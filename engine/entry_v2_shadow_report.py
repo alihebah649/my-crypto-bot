@@ -57,6 +57,16 @@ def _risk(capture: Mapping[str, Any]) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _adaptive_scalp(capture: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = capture.get("adaptive_scalp_shadow")
+    if isinstance(value, Mapping):
+        return value
+    return classify_adaptive_scalp(
+        capture.get("legacy_result", {}) or {},
+        capture.get("entry_scenario", {}) or {},
+    )
+
+
 def _position_row(position: Any, capture: Mapping[str, Any]) -> dict[str, Any]:
     decision = _decision(capture)
     risk = _risk(capture)
@@ -77,6 +87,7 @@ def _position_row(position: Any, capture: Mapping[str, Any]) -> dict[str, Any]:
         "reward_risk": risk.get("reward_risk"),
         "realized_pnl": _float(_value(position, "realized_pnl", 0.0)),
         "fees": _float(_value(position, "total_fees", 0.0)),
+        "adaptive_scalp_shadow": dict(_adaptive_scalp(capture)),
     }
 
 
@@ -104,6 +115,8 @@ def build_entry_v2_shadow_report(
     }
 
     rejected_execution_rows: list[dict[str, Any]] = []
+    approved_execution_rows: list[dict[str, Any]] = []
+    adaptive_rows: list[dict[str, Any]] = []
 
     for position in position_list:
         metadata = _position_metadata(position)
@@ -114,15 +127,43 @@ def build_entry_v2_shadow_report(
         row = _position_row(position, capture)
         if row["v2_approved"] is False:
             rejected_execution_rows.append(row)
+        elif row["v2_approved"] is True:
+            approved_execution_rows.append(row)
+        if str(row["trade_mode"]).upper() == "SCALP":
+            adaptive_rows.append(row)
 
     rejected_execution_rows.sort(key=lambda row: (row["captured_at"], row["capture_id"], row["position_id"]))
+    approved_execution_rows.sort(key=lambda row: (row["captured_at"], row["capture_id"], row["position_id"]))
+    adaptive_rows.sort(key=lambda row: (row["captured_at"], row["capture_id"], row["position_id"]))
 
     closed_rejected = [row for row in rejected_execution_rows if row["status"] == "CLOSED"]
+    closed_adaptive = [row for row in adaptive_rows if row["status"] == "CLOSED"]
     rejected_realized_pnl = sum(row["realized_pnl"] for row in closed_rejected)
     rejected_fees = sum(row["fees"] for row in closed_rejected)
     rejected_losses = sum(1 for row in closed_rejected if row["realized_pnl"] < 0)
     rejected_wins = sum(1 for row in closed_rejected if row["realized_pnl"] > 0)
     rejected_open = sum(1 for row in rejected_execution_rows if row["status"] in _ACTIVE_STATUSES)
+
+    by_adaptive_class: dict[str, dict[str, Any]] = {}
+    for row in closed_adaptive:
+        classification = str((row["adaptive_scalp_shadow"] or {}).get("classification") or "UNAVAILABLE")
+        bucket = by_adaptive_class.setdefault(classification, {
+            "positions": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "realized_pnl": 0.0,
+            "fees": 0.0,
+        })
+        bucket["positions"] += 1
+        bucket["realized_pnl"] += row["realized_pnl"]
+        bucket["fees"] += row["fees"]
+        if row["realized_pnl"] > 0:
+            bucket["wins"] += 1
+        elif row["realized_pnl"] < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
 
     return {
         "schema_version": 1,
@@ -149,6 +190,11 @@ def build_entry_v2_shadow_report(
         "by_decision": outcome["by_decision"],
         "by_lane": outcome["by_lane"],
         "by_failed_gate": outcome["by_failed_gate"],
+        "v2_approved_executions": approved_execution_rows[:max_rejected_execution_rows],
+        "adaptive_scalp_shadow": {
+            "closed_positions": len(closed_adaptive),
+            "by_classification": by_adaptive_class,
+        },
         "brain_shadow": analyze_brain_shadow_outcomes(
             brain_record_list,
             position_list,
