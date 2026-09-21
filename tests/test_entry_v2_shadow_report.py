@@ -79,3 +79,69 @@ def test_shadow_report_accepts_generators_and_caps_rejected_execution_rows():
     assert report["legacy_executed_v2_rejected_outcomes"]["open_positions"] == 3
     assert len(report["rejected_executions"]) == 2
     assert [row["position_id"] for row in report["rejected_executions"]] == ["POS-0", "POS-1"]
+
+
+
+def test_shadow_report_exposes_maturity_experiment_outcomes():
+    captures = [
+        dict(_capture("CAP-MATURE", "ADAUSDT", "2026-09-21T05:01:00Z", False, gate="STRUCTURAL_RECLAIM_NOT_CONFIRMED"), adaptive_scalp_shadow={
+            "classification": "NORMAL_SCALP",
+            "maturity_experiment": {
+                "rule_version": 1,
+                "shadow_only": True,
+                "gate_pass": True,
+                "would_be_action": "WOULD_ALLOW",
+                "reasons": ["RECOVERY_TRIGGER_COUNT_3_PLUS"],
+            },
+        }),
+        dict(_capture("CAP-IMMATURE", "SOLUSDT", "2026-09-21T05:02:00Z", False, gate="STRUCTURAL_RECLAIM_NOT_CONFIRMED"), adaptive_scalp_shadow={
+            "classification": "NORMAL_SCALP",
+            "maturity_experiment": {
+                "rule_version": 1,
+                "shadow_only": True,
+                "gate_pass": False,
+                "would_be_action": "WOULD_BLOCK",
+                "reasons": ["RECOVERY_TRIGGER_COUNT_BELOW_3"],
+            },
+        }),
+    ]
+    positions = [
+        {
+            "position_id": "POS-MATURE",
+            "symbol": "ADAUSDT",
+            "status": "CLOSED",
+            "entry_metadata": {"entry_v2_shadow_capture_id": "CAP-MATURE", "trade_mode": "SCALP"},
+            "realized_pnl": 1.25,
+            "total_fees": 0.1,
+        },
+        {
+            "position_id": "POS-IMMATURE",
+            "symbol": "SOLUSDT",
+            "status": "CLOSED",
+            "entry_metadata": {"entry_v2_shadow_capture_id": "CAP-IMMATURE", "trade_mode": "SCALP"},
+            "realized_pnl": -0.75,
+            "total_fees": 0.1,
+        },
+    ]
+
+    report = build_entry_v2_shadow_report(captures, positions)
+    maturity = report["adaptive_scalp_shadow"]["maturity_experiment"]
+
+    assert maturity["rule_version"] == 1
+    assert maturity["shadow_only"] is True
+    assert maturity["by_action"]["WOULD_ALLOW"] == {
+        "positions": 1,
+        "wins": 1,
+        "losses": 0,
+        "flat": 0,
+        "realized_pnl": 1.25,
+        "fees": 0.1,
+    }
+    assert maturity["by_action"]["WOULD_BLOCK"] == {
+        "positions": 1,
+        "wins": 0,
+        "losses": 1,
+        "flat": 0,
+        "realized_pnl": -0.75,
+        "fees": 0.1,
+    }
