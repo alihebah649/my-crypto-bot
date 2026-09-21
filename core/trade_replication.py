@@ -36,6 +36,7 @@ class MasterTradeIntent:
     trade_mode: str = ""
     stop_loss_price: float | None = None
     strategy_snapshot_id: str = ""
+    master_position_id: str | None = None
     metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -70,6 +71,7 @@ class MasterTradeIntent:
         trade_mode: str = "",
         stop_loss_price: float | None = None,
         strategy_snapshot_id: str = "",
+        master_position_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         intent_id: str | None = None,
     ) -> "MasterTradeIntent":
@@ -84,6 +86,7 @@ class MasterTradeIntent:
             trade_mode=str(trade_mode or "").upper(),
             stop_loss_price=stop_loss_price,
             strategy_snapshot_id=str(strategy_snapshot_id or ""),
+            master_position_id=str(master_position_id) if master_position_id else None,
             metadata=dict(metadata or {}),
         )
 
@@ -97,6 +100,7 @@ class MasterTradeIntent:
         close_fraction: float = 1.0,
         trade_mode: str = "",
         strategy_snapshot_id: str = "",
+        master_position_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         intent_id: str | None = None,
     ) -> "MasterTradeIntent":
@@ -109,6 +113,7 @@ class MasterTradeIntent:
             close_fraction=close_fraction,
             trade_mode=str(trade_mode or "").upper(),
             strategy_snapshot_id=str(strategy_snapshot_id or ""),
+            master_position_id=str(master_position_id) if master_position_id else None,
             metadata=dict(metadata or {}),
         )
 
@@ -143,6 +148,7 @@ class ReplicaInstruction:
     close_fraction: float = 0.0
     trade_mode: str = ""
     strategy_snapshot_id: str = ""
+    master_position_id: str | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -183,6 +189,7 @@ class TradeReplicationPlanner:
                         stop_loss_price=intent.stop_loss_price,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
+                        master_position_id=intent.master_position_id or intent.intent_id,
                         metadata=metadata,
                     )
                 )
@@ -197,6 +204,7 @@ class TradeReplicationPlanner:
                         close_fraction=intent.close_fraction,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
+                        master_position_id=intent.master_position_id or intent.intent_id,
                         metadata=metadata,
                     )
                 )
