@@ -54,7 +54,7 @@ def test_dispatcher_rejects_one_user_without_blocking_other_users():
 
     provider = StaticAccountStateProvider({
         "user-20": AccountExecutionSnapshot(350.0, 350.0),
-        "user-21": AccountExecutionSnapshot(20.0, 5.0),
+        "user-21": AccountExecutionSnapshot(20.0, 0.5),
     })
     dispatcher = TradeReplicationDispatcher(
         registry,
@@ -85,7 +85,7 @@ def test_dispatcher_rejects_when_user_authorized_capital_is_below_replica_value(
     )
 
     calls = []
-    result = dispatcher.dispatch(_intent(50.0), lambda instruction: calls.append(instruction) or True)
+    result = dispatcher.dispatch(_intent(1100.0), lambda instruction: calls.append(instruction) or True)
 
     assert result.risk_rejected == 1
     assert result.dispatched == 0
