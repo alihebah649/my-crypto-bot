@@ -173,3 +173,63 @@ def test_paper_market_data_uses_dedicated_public_market_data_endpoint(monkeypatc
     assert shadow_main_legacy._binance_get("/api/v3/klines", {"symbol": "BTCUSDT"}) == {"ok": True}
     assert captured["url"] == "https://data-api.binance.vision/api/v3/klines"
     assert captured["url"] != "https://api.binance.com/api/v3/klines"
+
+
+def test_market_health_treats_expired_rate_limit_as_up_when_data_is_available(monkeypatch):
+    shadow_main._MARKET_HEALTH_STATE = "UNKNOWN"
+    shadow_main._MARKET_HEALTH_LAST_ALERT_AT = 0.0
+    sent = []
+
+    monkeypatch.setattr(
+        shadow_main,
+        "_market_data_guard_snapshot",
+        lambda: {
+            "status_code": 429,
+            "blocked": False,
+            "last_path": "/api/v3/ticker/24hr",
+            "blocked_for_seconds": 0.0,
+            "kline_cache_entries": 89,
+        },
+    )
+    monkeypatch.setattr(shadow_main._legacy, "latest_scores", {f"S{i}": {} for i in range(22)})
+    monkeypatch.setattr(
+        shadow_main._legacy,
+        "send_telegram_message",
+        lambda message: sent.append(message) or True,
+    )
+
+    shadow_main._observe_market_health()
+
+    assert len(sent) == 1
+    assert "State: MARKET DATA UP" in sent[0]
+    assert "BINANCE RATE LIMIT 429" not in sent[0]
+
+
+def test_market_health_reports_429_only_while_guard_is_active(monkeypatch):
+    shadow_main._MARKET_HEALTH_STATE = "UNKNOWN"
+    shadow_main._MARKET_HEALTH_LAST_ALERT_AT = 0.0
+    sent = []
+
+    monkeypatch.setattr(
+        shadow_main,
+        "_market_data_guard_snapshot",
+        lambda: {
+            "status_code": 429,
+            "blocked": True,
+            "last_path": "/api/v3/ticker/24hr",
+            "blocked_for_seconds": 17.0,
+            "kline_cache_entries": 89,
+        },
+    )
+    monkeypatch.setattr(shadow_main._legacy, "latest_scores", {f"S{i}": {} for i in range(22)})
+    monkeypatch.setattr(
+        shadow_main._legacy,
+        "send_telegram_message",
+        lambda message: sent.append(message) or True,
+    )
+
+    shadow_main._observe_market_health()
+
+    assert len(sent) == 1
+    assert "State: BINANCE RATE LIMIT 429" in sent[0]
+    assert "Retry in: 17s" in sent[0]
