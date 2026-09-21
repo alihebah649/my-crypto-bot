@@ -166,6 +166,23 @@ class ReplicaPositionStateStore:
                     return position
         return None
 
+    def close_applied_for_master_position(
+        self,
+        *,
+        connection_id: str,
+        master_position_id: str,
+        close_intent_id: str,
+    ) -> bool:
+        close_id = str(close_intent_id).strip()
+        master = str(master_position_id).strip()
+        with self._lock:
+            return any(
+                position.connection_id == connection_id
+                and position.master_position_id == master
+                and position.close_intent_id == close_id
+                for position in self._positions.values()
+            )
+
     def active_for_master_position(
         self,
         *,
