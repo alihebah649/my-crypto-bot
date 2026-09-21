@@ -22,6 +22,10 @@ from core.execution_models import (
 )
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.trade_replication import ReplicaInstruction, ReplicationAction
+from core.replica_position import ReplicaPosition
+from core.replica_position_repository import ReplicaPositionRepository
+from trade_manager.models import PositionStatus
+import time
 
 
 @dataclass(slots=True)
@@ -36,8 +40,10 @@ class PaperReplicaExecutor:
     def __init__(
         self,
         adapters: Mapping[str, PaperExecutionAdapter],
+        position_repository: ReplicaPositionRepository | None = None,
     ) -> None:
         self._adapters = dict(adapters)
+        self.position_repository = position_repository or ReplicaPositionRepository()
         self.executions: list[PaperReplicaExecution] = []
 
     def execute(self, instruction: ReplicaInstruction) -> bool:
@@ -45,10 +51,8 @@ class PaperReplicaExecutor:
         if adapter is None:
             return False
 
-        if instruction.action is not ReplicationAction.OPEN:
-            # Close execution will be added after the account-position state
-            # contract carries a shared execution price/fill policy.
-            return False
+        if instruction.action is ReplicationAction.CLOSE:
+            return self._execute_close(instruction, adapter)
 
         price = instruction.reference_entry_price
         if price is None or price <= 0.0 or instruction.target_quote_value <= 0.0:
@@ -84,6 +88,20 @@ class PaperReplicaExecutor:
             adapter.connect()
 
         result = adapter.execute(request)
+        if result.is_success:
+            position = ReplicaPosition.from_open(
+                account_id=instruction.connection_id,
+                master_intent_id=instruction.intent_id,
+                master_position_id=instruction.master_position_id or instruction.intent_id,
+                symbol=instruction.symbol,
+                quantity=result.executed_quantity,
+                entry_price=result.average_price or result.executed_price,
+                stop_loss=instruction.stop_loss_price,
+                client_order_id=result.client_order_id,
+                exchange_order_id=result.exchange_order_id,
+                metadata={"trade_mode": instruction.trade_mode},
+            )
+            self.position_repository.upsert(position)
         self.executions.append(
             PaperReplicaExecution(
                 connection_id=instruction.connection_id,
