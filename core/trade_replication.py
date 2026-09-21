@@ -32,6 +32,8 @@ class MasterTradeIntent:
     reference_capital: float
     target_position_value: float = 0.0
     reference_entry_price: float | None = None
+    reference_exit_price: float | None = None
+    source_open_intent_id: str = ""
     close_fraction: float = 1.0
     trade_mode: str = ""
     stop_loss_price: float | None = None
@@ -95,6 +97,8 @@ class MasterTradeIntent:
         side: OrderSide = OrderSide.SELL,
         reference_capital: float = 1.0,
         close_fraction: float = 1.0,
+        reference_exit_price: float | None = None,
+        source_open_intent_id: str = "",
         trade_mode: str = "",
         strategy_snapshot_id: str = "",
         metadata: dict[str, Any] | None = None,
@@ -106,6 +110,8 @@ class MasterTradeIntent:
             side=side,
             action=ReplicationAction.CLOSE,
             reference_capital=reference_capital,
+            reference_exit_price=reference_exit_price,
+            source_open_intent_id=str(source_open_intent_id or ""),
             close_fraction=close_fraction,
             trade_mode=str(trade_mode or "").upper(),
             strategy_snapshot_id=str(strategy_snapshot_id or ""),
@@ -139,7 +145,9 @@ class ReplicaInstruction:
     action: ReplicationAction
     target_quote_value: float = 0.0
     reference_entry_price: float | None = None
+    reference_exit_price: float | None = None
     stop_loss_price: float | None = None
+    source_open_intent_id: str = ""
     close_fraction: float = 0.0
     trade_mode: str = ""
     strategy_snapshot_id: str = ""
@@ -181,6 +189,8 @@ class TradeReplicationPlanner:
                         target_quote_value=target_quote_value,
                         reference_entry_price=intent.reference_entry_price,
                         stop_loss_price=intent.stop_loss_price,
+                        reference_exit_price=intent.reference_exit_price,
+                        source_open_intent_id=intent.source_open_intent_id,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
                         metadata=metadata,
@@ -194,6 +204,8 @@ class TradeReplicationPlanner:
                         symbol=intent.symbol,
                         side=intent.side,
                         action=ReplicationAction.CLOSE,
+                        reference_exit_price=intent.reference_exit_price,
+                        source_open_intent_id=intent.source_open_intent_id,
                         close_fraction=intent.close_fraction,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
