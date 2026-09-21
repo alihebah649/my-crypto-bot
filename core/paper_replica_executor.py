@@ -137,6 +137,13 @@ class PaperReplicaExecutor:
         adapter: PaperExecutionAdapter,
     ) -> bool:
         master_position_id = instruction.master_position_id or instruction.intent_id
+        if self.position_store.close_applied_for_master_position(
+            connection_id=instruction.connection_id,
+            master_position_id=master_position_id,
+            close_intent_id=instruction.intent_id,
+        ):
+            return True
+
         position = self.position_store.active_for_master_position(
             connection_id=instruction.connection_id,
             master_position_id=master_position_id,
