@@ -99,3 +99,120 @@ def test_repeat_of_same_master_intent_does_not_duplicate_paper_orders():
     assert second.skipped_duplicates == 1
     assert len(adapter.orders) == 1
     assert adapter.balance.assets["BTCUSDT"] == 0.175
+
+
+
+def test_same_open_intent_is_idempotent_after_process_restart(tmp_path):
+    registry = AccountRegistry()
+    registry.register(_user("user-20", 350.0))
+
+    adapter_path = tmp_path / "paper-account.json"
+    position_path = tmp_path / "replica-state.json"
+
+    adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    first_store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    first_executor = PaperReplicaExecutor(
+        {"user-20": adapter},
+        position_store=first_store,
+    )
+    dispatcher = TradeReplicationDispatcher(registry)
+
+    intent = MasterTradeIntent.open(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        reference_capital=1000.0,
+        target_position_value=50.0,
+        reference_entry_price=100.0,
+        master_position_id="MASTER-RESTART-1",
+        intent_id="INTENT-RESTART-1",
+    )
+
+    first = dispatcher.dispatch(intent, first_executor.execute)
+    assert first.dispatched == 1
+    assert adapter.balance.assets["BTCUSDT"] == 0.175
+
+    restored_adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    restored_store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    restored_executor = PaperReplicaExecutor(
+        {"user-20": restored_adapter},
+        position_store=restored_store,
+    )
+
+    retry = restored_executor.execute(first.instructions[0])
+    assert retry is True
+    # Orders are intentionally not restored by PaperExecutionAdapter; the
+    # persisted account balance proves the original execution survived restart,
+    # while the replica state makes the retry a safe no-op.
+    assert len(restored_adapter.orders) == 0
+    assert restored_adapter.balance.assets["BTCUSDT"] == 0.175
+
+
+
+def test_same_close_intent_is_idempotent_after_process_restart(tmp_path):
+    registry = AccountRegistry()
+    registry.register(_user("user-20", 350.0))
+
+    adapter_path = tmp_path / "paper-account.json"
+    position_path = tmp_path / "replica-state.json"
+
+    adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    executor = PaperReplicaExecutor({"user-20": adapter}, position_store=store)
+    dispatcher = TradeReplicationDispatcher(registry)
+
+    open_intent = MasterTradeIntent.open(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        reference_capital=1000.0,
+        target_position_value=50.0,
+        reference_entry_price=100.0,
+        master_position_id="MASTER-CLOSE-RESTART",
+        intent_id="INTENT-CLOSE-RESTART-OPEN",
+    )
+    assert dispatcher.dispatch(open_intent, executor.execute).dispatched == 1
+
+    close_intent = MasterTradeIntent.close(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        reference_close_price=105.0,
+        master_position_id="MASTER-CLOSE-RESTART",
+        close_fraction=1.0,
+        intent_id="INTENT-CLOSE-RESTART",
+    )
+    first_close = dispatcher.dispatch(close_intent, executor.execute)
+    assert first_close.dispatched == 1
+
+    restored_adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    restored_store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    restored_executor = PaperReplicaExecutor(
+        {"user-20": restored_adapter},
+        position_store=restored_store,
+    )
+
+    retry = restored_executor.execute(first_close.instructions[0])
+    assert retry is True
+    assert restored_adapter.balance.assets.get("BTCUSDT", 0.0) == 0.0

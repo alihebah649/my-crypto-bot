@@ -159,3 +159,36 @@ def test_trade_manager_position_status_is_the_authoritative_lifecycle():
     position = _position(status=PositionStatus.HOLD)
     assert position.status is PositionStatus.HOLD
     assert ReplicaPositionStatus is PositionStatus
+
+
+
+def test_restores_v1_replica_state_with_legacy_enum(tmp_path):
+    path = tmp_path / "replica-v1.json"
+    path.write_text(
+        '{"version":1,"positions":[{"position_id":"RP-LEGACY","connection_id":"user-20",'
+        '"source_intent_id":"INTENT-OPEN-1","symbol":"BTCUSDT","quantity":0.175,'
+        '"remaining_quantity":0.175,"entry_price":100.0,"stop_loss_price":98.0,'
+        '"status":{"__enum__":"ReplicaPositionStatus:OPEN"}}]}',
+        encoding="utf-8",
+    )
+
+    store = ReplicaPositionStateStore(str(path))
+    position = store.get("RP-LEGACY")
+
+    assert position is not None
+    assert position.status is ReplicaPositionStatus.OPEN
+    assert position.master_position_id == "RP-LEGACY"
+    assert position.user_position_id == "RP-LEGACY"
+
+
+def test_idempotency_lookup_survives_restart(tmp_path):
+    path = tmp_path / "replica-state.json"
+    key = "INTENT-OPEN-1:user-20:OPEN"
+    store = ReplicaPositionStateStore(str(path))
+    store.register(_position(idempotency_key=key))
+
+    restored = ReplicaPositionStateStore(str(path))
+    position = restored.get_by_idempotency_key(key)
+
+    assert position is not None
+    assert position.position_id == "RP-1"
