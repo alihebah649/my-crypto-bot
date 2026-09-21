@@ -80,6 +80,30 @@ _paper_outcome_store = (
 runtime.brain_authority = brain_authority
 runtime.brain_authority_store = _brain_authority_store
 
+
+def _probe_paper_evidence_store() -> None:
+    if _paper_outcome_store is None:
+        return
+    try:
+        summary = _paper_outcome_store.summary()
+        _legacy.logger.warning(
+            "PAPER EVIDENCE STORAGE PROBE backend=%s status=READY records=%s",
+            summary.get("backend"),
+            summary.get("record_count"),
+        )
+    except Exception as exc:
+        _legacy.logger.error(
+            "PAPER EVIDENCE STORAGE PROBE backend=POSTGRES status=FAILED error=%s",
+            f"{type(exc).__name__}: {exc}",
+        )
+
+
+threading.Thread(
+    target=_probe_paper_evidence_store,
+    daemon=True,
+    name="paper-evidence-store-probe",
+).start()
+
 _legacy.logger.info(
     "PAPER EVIDENCE STORAGE backend=%s paper_outcome=%s brain_authority=%s brain_shadow=%s",
     "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
