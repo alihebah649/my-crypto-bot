@@ -11,8 +11,9 @@ each approved ReplicaInstruction.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from core.account_execution_context import AccountExecutionContext
 from core.account_registry import AccountRegistry
 from core.account_risk_gate import (
     AccountExecutionSnapshotProvider,
@@ -43,6 +44,7 @@ class DispatchResult:
     failed: int
     instructions: tuple[ReplicaInstruction, ...]
     risk_rejected: int = 0
+    settlement_rejected: int = 0
 
 
 ReplicaExecutor = Callable[[ReplicaInstruction], bool]
@@ -83,20 +85,40 @@ class TradeReplicationDispatcher:
         skipped_duplicates = 0
         failed = 0
         risk_rejected = 0
+        settlement_rejected = 0
         executable: list[ReplicaInstruction] = []
 
         for instruction in planned:
-            if self.risk_gate is not None:
-                account = self.registry.get(instruction.connection_id)
-                if account is None:
+            account = self.registry.get(instruction.connection_id)
+            if account is None:
+                if self.risk_gate is not None:
                     risk_rejected += 1
-                    continue
+                else:
+                    # The planner normally guarantees that an instruction
+                    # references a registered follower. Keep the dispatcher
+                    # fail-closed if that invariant is ever broken.
+                    failed += 1
+                continue
 
+            account_context = AccountExecutionContext.from_account(account)
+            if not account_context.allows_replication_action(instruction.action):
+                settlement_rejected += 1
+                continue
+
+            instruction_for_execution = replace(
+                instruction,
+                metadata={
+                    **dict(instruction.metadata or {}),
+                    "account_execution_context": account_context.metadata(),
+                },
+            )
+
+            if self.risk_gate is not None:
                 assert self.account_state_provider is not None
                 snapshot = self.account_state_provider.snapshot(account)
                 risk_result = self.risk_gate.evaluate(
                     account=account,
-                    instruction=instruction,
+                    instruction=instruction_for_execution,
                     snapshot=snapshot,
                 )
                 if risk_result.decision is AccountRiskDecision.REJECTED:
@@ -104,9 +126,9 @@ class TradeReplicationDispatcher:
                     continue
 
             record = self.ledger.register_new(
-                intent_id=instruction.intent_id,
-                connection_id=instruction.connection_id,
-                action=instruction.action.value,
+                intent_id=instruction_for_execution.intent_id,
+                connection_id=instruction_for_execution.connection_id,
+                action=instruction_for_execution.action.value,
             )
 
             # COMPLETED and DISPATCHED deliveries are not replayed
@@ -122,7 +144,7 @@ class TradeReplicationDispatcher:
                 skipped_duplicates += 1
                 continue
 
-            executable.append(instruction)
+            executable.append(instruction_for_execution)
 
             self.ledger.transition(
                 record.delivery_key,
@@ -130,7 +152,7 @@ class TradeReplicationDispatcher:
             )
 
             try:
-                success = bool(executor(instruction))
+                success = bool(executor(instruction_for_execution))
             except Exception:
                 self.ledger.transition(
                     record.delivery_key,
@@ -160,6 +182,7 @@ class TradeReplicationDispatcher:
             failed=failed,
             instructions=tuple(executable),
             risk_rejected=risk_rejected,
+            settlement_rejected=settlement_rejected,
         )
 
 
