@@ -62,11 +62,22 @@ class PaperReplicaExecutor:
             return False
 
         master_position_id = instruction.master_position_id or instruction.intent_id
+        idempotency_key = ReplicaPositionRecord.make_idempotency_key(
+            instruction.intent_id,
+            instruction.connection_id,
+            "OPEN",
+        )
+        prior = self.position_store.get_by_idempotency_key(idempotency_key)
+        if prior is not None:
+            return True
+
         existing = self.position_store.by_master_position(
             master_position_id,
             instruction.connection_id,
         )
-        if any(position.is_active for position in existing):
+        if existing:
+            # A reused master_position_id with a different open intent is a
+            # lifecycle identity conflict, not a safe retry.
             return False
 
         quantity = instruction.target_quote_value / price
@@ -113,11 +124,7 @@ class PaperReplicaExecutor:
                 stop_loss_price=instruction.stop_loss_price,
                 master_position_id=master_position_id,
                 user_position_id=position_id,
-                idempotency_key=ReplicaPositionRecord.make_idempotency_key(
-                    instruction.intent_id,
-                    instruction.connection_id,
-                    "OPEN",
-                ),
+                idempotency_key=idempotency_key,
                 client_order_id=result.client_order_id,
                 exchange_order_id=result.exchange_order_id,
             )
