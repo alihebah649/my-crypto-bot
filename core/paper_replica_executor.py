@@ -67,6 +67,25 @@ class PaperReplicaExecutor:
             return False
 
         quantity = instruction.target_quote_value / price
+        position_id = (
+            f"RPOS-{instruction.intent_id}-"
+            f"{instruction.connection_id}"
+        )
+
+        # If the deterministic position already exists, the OPEN was already
+        # accounted for and must not be submitted again.
+        if self.position_store is not None:
+            existing = self.position_store.get(position_id)
+            if existing is not None:
+                if (
+                    existing.connection_id == instruction.connection_id
+                    and existing.source_intent_id == instruction.intent_id
+                    and existing.symbol.upper() == instruction.symbol.upper()
+                    and abs(existing.quantity - quantity) <= 1e-12
+                ):
+                    return True
+                return False
+
         client_order_id = (
             f"REPL-{instruction.intent_id[:12]}-"
             f"{instruction.connection_id[:12]}"
@@ -98,31 +117,18 @@ class PaperReplicaExecutor:
             return False
 
         if self.position_store is not None:
-            position_id = (
-                f"RPOS-{instruction.intent_id}-"
-                f"{instruction.connection_id}"
-            )
-            existing = self.position_store.get(position_id)
-            if existing is None:
-                self.position_store.register(
-                    ReplicaPositionRecord(
-                        position_id=position_id,
-                        connection_id=instruction.connection_id,
-                        source_intent_id=instruction.intent_id,
-                        symbol=instruction.symbol,
-                        quantity=result.executed_quantity,
-                        remaining_quantity=result.executed_quantity,
-                        entry_price=result.average_price,
-                        stop_loss_price=instruction.stop_loss_price,
-                    )
+            self.position_store.register(
+                ReplicaPositionRecord(
+                    position_id=position_id,
+                    connection_id=instruction.connection_id,
+                    source_intent_id=instruction.intent_id,
+                    symbol=instruction.symbol,
+                    quantity=result.executed_quantity,
+                    remaining_quantity=result.executed_quantity,
+                    entry_price=result.average_price,
+                    stop_loss_price=instruction.stop_loss_price,
                 )
-            elif (
-                existing.connection_id != instruction.connection_id
-                or existing.source_intent_id != instruction.intent_id
-                or existing.symbol.upper() != instruction.symbol.upper()
-                or abs(existing.quantity - result.executed_quantity) > 1e-12
-            ):
-                return False
+            )
         return True
 
     def _execute_close(
