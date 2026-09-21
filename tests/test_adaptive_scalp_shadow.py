@@ -129,3 +129,31 @@ def test_timing_profile_is_descriptive_only():
     result = classify_adaptive_scalp(_legacy(rsi5m=49, pattern="BULLISH_BREAKOUT"))
     assert result["timing_profile"]["combined_signature"] == "LATE_RECOVERY__BREAKOUT"
     assert result["advisory_action"] in {"PASSIVE_SHADOW", "CAUTION_SHADOW", "HOLD_SHADOW"}
+
+
+
+def test_maturity_experiment_passes_only_with_three_or_more_recovery_triggers():
+    mature = classify_adaptive_scalp(_legacy(scalp_recovery_trigger_count=3))
+    immature = classify_adaptive_scalp(_legacy(scalp_recovery_trigger_count=2))
+
+    assert mature["maturity_experiment"] == {
+        "rule_version": 1,
+        "shadow_only": True,
+        "gate_pass": True,
+        "would_be_action": "WOULD_ALLOW",
+        "reasons": ["RECOVERY_TRIGGER_COUNT_3_PLUS"],
+    }
+    assert immature["maturity_experiment"] == {
+        "rule_version": 1,
+        "shadow_only": True,
+        "gate_pass": False,
+        "would_be_action": "WOULD_BLOCK",
+        "reasons": ["RECOVERY_TRIGGER_COUNT_BELOW_3"],
+    }
+
+
+def test_maturity_experiment_does_not_change_execution_facing_classification():
+    result = classify_adaptive_scalp(_legacy(scalp_recovery_trigger_count=2))
+    assert result["classification"] == "NORMAL_SCALP"
+    assert result["advisory_action"] == "PASSIVE_SHADOW"
+    assert result["maturity_experiment"]["shadow_only"] is True
