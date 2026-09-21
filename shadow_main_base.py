@@ -23,6 +23,7 @@ from shadow_main_legacy import *
 from dual_mode_strategy import score_symbol, SCALP_SCORE_THRESHOLD, SWING_SCORE_THRESHOLD, BUY_SCORE_THRESHOLD
 from core.brain_shadow_runtime import BrainShadowRuntime
 from core.brain_shadow_capture_store import BrainShadowCaptureStore
+from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.brain_market_regime import derive_market_breadth
 from core.mtf_context_cache import MTFContextCache
 
@@ -248,9 +249,17 @@ runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
-brain_shadow_store = BrainShadowCaptureStore(
-    Path(_brain_shadow_persistence_dir or ".") / "brain_shadow" / "captures.jsonl"
-)
+_brain_shadow_database_url = database_url_from_env()
+if _brain_shadow_database_url:
+    brain_shadow_store = PostgresEvidenceStore(
+        _brain_shadow_database_url,
+        evidence_type="BRAIN_SHADOW",
+        max_records=50_000,
+    )
+else:
+    brain_shadow_store = BrainShadowCaptureStore(
+        Path(_brain_shadow_persistence_dir or ".") / "brain_shadow" / "captures.jsonl"
+    )
 runtime.brain_shadow_store = brain_shadow_store
 
 _original_dual_score_symbol = _score_symbol_with_mtf
