@@ -15,6 +15,7 @@ import time
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+from core.account_connection import AccountConnection
 from core.execution_adapter import ExecutionAdapter
 from core.execution_profile import ExecutionProfile
 from core.execution_models import ExecutionSource
@@ -228,6 +229,19 @@ class ShadowTradeManagerRuntime:
                  execution_profile: Optional[ExecutionProfile] = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
         self.execution_profile = execution_profile or ExecutionProfile.paper()
+        self.account_connection = (
+            AccountConnection.paper_default()
+            if self.execution_profile.is_paper
+            else AccountConnection(
+                connection_id=self.execution_profile.profile_id,
+                profile=self.execution_profile,
+                credential=None,
+            )
+        )
+        if not self.execution_profile.is_paper:
+            # A real non-Paper runtime must be constructed by the application
+            # layer with an explicit AccountConnection and credential provider.
+            raise ValueError("Non-Paper runtime requires an explicit account connection")
         if execution_adapter is None and not self.execution_profile.is_paper:
             raise ValueError("A non-Paper execution profile requires an explicit execution adapter")
         self.last_entry_diagnostics: Dict[str, dict] = {}
