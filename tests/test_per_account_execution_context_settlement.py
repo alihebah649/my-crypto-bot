@@ -4,6 +4,7 @@ from core.account_registry import AccountRegistry, AccountRole, RegisteredAccoun
 from core.execution_models import OrderSide
 from core.execution_profile import AccountScope, ExecutionProfile
 from core.settlement_trading_policy import SettlementState, SettlementTradingPolicy
+from core.replication_dispatcher import TradeReplicationDispatcher
 from core.trade_replication import MasterTradeIntent
 
 
@@ -60,10 +61,7 @@ def test_settlement_required_blocks_only_new_replication_entries():
     )
 
     calls = []
-    dispatcher = __import__(
-        "core.replication_dispatcher",
-        fromlist=["TradeReplicationDispatcher"],
-    ).TradeReplicationDispatcher(registry)
+    dispatcher = TradeReplicationDispatcher(registry)
 
     result = dispatcher.dispatch(
         _open_intent(),
@@ -82,8 +80,6 @@ def test_settled_account_allows_new_replication_entry_with_context_metadata():
     registry.register(_user("user-current", 350.0, SettlementState.CURRENT))
 
     received = []
-    from core.replication_dispatcher import TradeReplicationDispatcher
-
     result = TradeReplicationDispatcher(registry).dispatch(
         _open_intent(),
         lambda instruction: received.append(instruction) or True,
