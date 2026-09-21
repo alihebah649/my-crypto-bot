@@ -93,7 +93,7 @@ def test_open_idempotency_is_preserved_by_delivery_and_position_identity():
     assert executor.execute(instruction) is True
     assert executor.execute(instruction) is False
     assert len(repo.all()) == 1
-    assert len(adapters["u1"].orders) == 2
+    assert len(adapters["u1"].orders) == 1
 
 
 def test_master_close_closes_all_linked_user_positions():
@@ -144,3 +144,24 @@ def test_one_failed_user_does_not_block_other_users():
     assert result.failed == 1
     assert result.dispatched == 1
     assert calls == ["u1", "u2"]
+
+
+
+def test_duplicate_master_close_does_not_repeat_user_close():
+    adapters = {"u1": PaperExecutionAdapter(1000.0)}
+    repo = ReplicaPositionRepository()
+    executor = PaperReplicaExecutor(adapters, repo)
+    follower = _account("u1", 350.0).as_follower()
+    open_plan = TradeReplicationPlanner.plan(_open_intent(), [follower])[0]
+    assert executor.execute(open_plan) is True
+
+    close = MasterTradeIntent.close(
+        symbol="BTCUSDT",
+        master_position_id="MASTER-POS-1",
+        reference_close_price=105.0,
+        intent_id="CLOSE-1",
+    )
+    close_plan = TradeReplicationPlanner.plan(close, [follower])[0]
+    assert executor.execute(close_plan) is True
+    assert executor.execute(close_plan) is False
+    assert len(repo.get_by_master_position("MASTER-POS-1", "u1")) == 1
