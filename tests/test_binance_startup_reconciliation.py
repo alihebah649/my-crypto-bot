@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.binance_reconciliation import LocalPositionView
+from core.binance_reconciliation import AccountLocalPositionView, LocalPositionView
 from core.binance_startup_reconciliation import BinanceStartupReconciliation
 
 
@@ -125,3 +125,51 @@ def test_locked_balance_counts_as_owned_quantity():
     snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile([position()])
     assert snapshot.result.safe_to_resume is True
     assert snapshot.exchange_assets[0].quantity == 10.0
+
+
+
+def test_account_replica_startup_reconciliation_is_account_and_position_scoped():
+    client = FakeClient(
+        [{"asset": "ADA", "free": "10", "locked": "0"}],
+        {"ADAUSDT": [protection_order()]},
+    )
+    local = [
+        AccountLocalPositionView(
+            account_id="acct-1",
+            position_id="pos-1",
+            master_position_id="master-1",
+            user_position_id="user-pos-1",
+            symbol="ADAUSDT",
+            quantity=10.0,
+            stop_price=0.2161,
+        )
+    ]
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile_account_replica(
+        "acct-1", local
+    )
+    assert snapshot.result.safe_to_resume is True
+    assert snapshot.active_protection_by_position_id == {"user-pos-1": True}
+    assert client.calls == ["account", ("orders", "ADAUSDT")]
+
+
+def test_account_replica_startup_scope_mismatch_blocks_resume():
+    client = FakeClient(
+        [{"asset": "ADA", "free": "10", "locked": "0"}],
+        {"ADAUSDT": [protection_order()]},
+    )
+    local = [
+        AccountLocalPositionView(
+            account_id="acct-2",
+            position_id="pos-1",
+            master_position_id="master-1",
+            user_position_id="user-pos-1",
+            symbol="ADAUSDT",
+            quantity=10.0,
+            stop_price=0.2161,
+        )
+    ]
+    snapshot = BinanceStartupReconciliation(client, ["ADAUSDT"]).reconcile_account_replica(
+        "acct-1", local
+    )
+    assert snapshot.result.safe_to_resume is False
+    assert any(i.code == "ACCOUNT_SCOPE_MISMATCH" for i in snapshot.result.issues)
