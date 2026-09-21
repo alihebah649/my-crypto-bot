@@ -8,7 +8,6 @@ decision and never vetoes, sizes, or executes trades.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping
