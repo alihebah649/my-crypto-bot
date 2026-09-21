@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from core.postgres_evidence_store import PostgresEvidenceStore
 
 
@@ -39,7 +41,7 @@ class _FakeConnection:
             key = (evidence_type, identity_key)
             if key in self.db.rows:
                 return _FakeResult(rowcount=0)
-            self.db.rows[key] = payload
+            self.db.rows[key] = json.loads(payload)
             return _FakeResult(rowcount=1)
         if normalized.startswith("SELECT COUNT(*)"):
             evidence_type = params[0]
