@@ -22,6 +22,10 @@ from core.execution_models import (
 )
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.trade_replication import ReplicaInstruction, ReplicationAction
+from core.replica_position import ReplicaPosition
+from core.replica_position_repository import ReplicaPositionRepository
+from trade_manager.models import PositionStatus
+import time
 
 
 @dataclass(slots=True)
@@ -36,8 +40,10 @@ class PaperReplicaExecutor:
     def __init__(
         self,
         adapters: Mapping[str, PaperExecutionAdapter],
+        position_repository: ReplicaPositionRepository | None = None,
     ) -> None:
         self._adapters = dict(adapters)
+        self.position_repository = position_repository or ReplicaPositionRepository()
         self.executions: list[PaperReplicaExecution] = []
 
     def execute(self, instruction: ReplicaInstruction) -> bool:
@@ -45,9 +51,12 @@ class PaperReplicaExecutor:
         if adapter is None:
             return False
 
-        if instruction.action is not ReplicationAction.OPEN:
-            # Close execution will be added after the account-position state
-            # contract carries a shared execution price/fill policy.
+        if instruction.action is ReplicationAction.CLOSE:
+            return self._execute_close(instruction, adapter)
+
+        master_position_id = instruction.master_position_id or instruction.intent_id
+        existing = self.position_repository.get_by_master_position(master_position_id, instruction.connection_id)
+        if any(p.status is not PositionStatus.CLOSED for p in existing):
             return False
 
         price = instruction.reference_entry_price
@@ -84,6 +93,83 @@ class PaperReplicaExecutor:
             adapter.connect()
 
         result = adapter.execute(request)
+        if result.is_success:
+            position = ReplicaPosition.from_open(
+                account_id=instruction.connection_id,
+                master_intent_id=instruction.intent_id,
+                master_position_id=instruction.master_position_id or instruction.intent_id,
+                symbol=instruction.symbol,
+                quantity=result.executed_quantity,
+                entry_price=result.average_price or result.executed_price,
+                stop_loss=instruction.stop_loss_price,
+                client_order_id=result.client_order_id,
+                exchange_order_id=result.exchange_order_id,
+                metadata={"trade_mode": instruction.trade_mode},
+            )
+            self.position_repository.upsert(position)
+        self.executions.append(
+            PaperReplicaExecution(
+                connection_id=instruction.connection_id,
+                result=result,
+            )
+        )
+        return result.is_success
+
+
+    def _execute_close(self, instruction: ReplicaInstruction, adapter: PaperExecutionAdapter) -> bool:
+        master_position_id = instruction.master_position_id or instruction.intent_id
+        positions = self.position_repository.get_by_master_position(
+            master_position_id, instruction.connection_id
+        )
+        active = [p for p in positions if p.status is not PositionStatus.CLOSED]
+        if not active or instruction.reference_close_price is None or instruction.reference_close_price <= 0.0:
+            return False
+
+        position = active[0]
+        quantity = position.quantity * instruction.close_fraction
+        if quantity <= 0.0:
+            return False
+
+        request = ExecutionRequest(
+            symbol=instruction.symbol,
+            side=instruction.side,
+            order_type=OrderType.MARKET,
+            price=instruction.reference_close_price,
+            quantity=quantity,
+            reduce_only=True,
+            client_order_id=(
+                f"REPL-CLOSE-{instruction.intent_id[:12]}-"
+                f"{instruction.connection_id[:12]}"
+            ),
+            context=ExecutionContext(
+                exchange_name=adapter.exchange_name,
+                source=ExecutionSource.PAPER,
+                metadata={
+                    **dict(instruction.metadata or {}),
+                    "replication_connection_id": instruction.connection_id,
+                    "replication_intent_id": instruction.intent_id,
+                    "replication_action": instruction.action.value,
+                    "master_position_id": master_position_id,
+                },
+            ),
+        )
+
+        if not adapter.is_connected():
+            adapter.connect()
+        result = adapter.execute(request)
+
+        if result.is_success:
+            if instruction.close_fraction >= 1.0 - 1e-12:
+                position.mark_closed(
+                    close_intent_id=instruction.intent_id,
+                    exchange_order_id=result.exchange_order_id,
+                )
+            else:
+                position.quantity = max(0.0, position.quantity - result.executed_quantity)
+                position.status = PositionStatus.PARTIALLY_CLOSED
+                position.updated_at = time.time()
+            self.position_repository.upsert(position)
+
         self.executions.append(
             PaperReplicaExecution(
                 connection_id=instruction.connection_id,
