@@ -1,28 +1,29 @@
-"""Per-account replica-position state contract.
+"""Single account-scoped replica-position state contract.
 
-One master OPEN can create independent follower positions. This module records
-the mapping needed later for safe CLOSE replication without re-evaluating
-strategy or fetching market data per follower.
-
-It is intentionally a state contract only: it does not execute orders,
-calculate risk, or decide when a position should close.
+This module stores replica linkage and persistence while reusing the canonical
+Trade Manager PositionStatus lifecycle. It does not decide strategy, risk, or
+when a position should close.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
+import json
+import os
+import tempfile
 import threading
+import time
+from typing import Optional
 
+from trade_manager.models import PositionStatus
 
-class ReplicaPositionStatus(str, Enum):
-    OPEN = "OPEN"
-    PARTIALLY_CLOSED = "PARTIALLY_CLOSED"
-    CLOSED = "CLOSED"
+# Compatibility name for existing callers/tests; lifecycle authority remains TM.
+ReplicaPositionStatus = PositionStatus
 
 
 @dataclass(frozen=True, slots=True)
 class ReplicaPositionRecord:
-    """Account-local position created from one shared master intent."""
+    """Account-local position derived from one shared master OPEN intent."""
 
     position_id: str
     connection_id: str
@@ -32,17 +33,22 @@ class ReplicaPositionRecord:
     remaining_quantity: float
     entry_price: float
     stop_loss_price: float | None = None
-    status: ReplicaPositionStatus = ReplicaPositionStatus.OPEN
+    status: PositionStatus = PositionStatus.OPEN
+    master_position_id: str = ""
+    user_position_id: str = ""
+    idempotency_key: str = ""
+    opened_at: float = 0.0
+    updated_at: float = 0.0
+    closed_at: Optional[float] = None
+    close_intent_id: Optional[str] = None
+    master_close_position_id: Optional[str] = None
+    client_order_id: Optional[str] = None
+    exchange_order_id: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not str(self.position_id).strip():
-            raise ValueError("position_id must not be empty")
-        if not str(self.connection_id).strip():
-            raise ValueError("connection_id must not be empty")
-        if not str(self.source_intent_id).strip():
-            raise ValueError("source_intent_id must not be empty")
-        if not str(self.symbol).strip():
-            raise ValueError("symbol must not be empty")
+        for name in ("position_id", "connection_id", "source_intent_id", "symbol"):
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"{name} must not be empty")
         if self.quantity <= 0.0:
             raise ValueError("quantity must be positive")
         if self.remaining_quantity < 0.0 or self.remaining_quantity > self.quantity + 1e-12:
@@ -50,14 +56,41 @@ class ReplicaPositionRecord:
         if self.entry_price <= 0.0:
             raise ValueError("entry_price must be positive")
 
-        if self.remaining_quantity <= 1e-12 and self.status is not ReplicaPositionStatus.CLOSED:
-            object.__setattr__(self, "status", ReplicaPositionStatus.CLOSED)
-        elif self.remaining_quantity < self.quantity - 1e-12 and self.status is ReplicaPositionStatus.OPEN:
-            object.__setattr__(self, "status", ReplicaPositionStatus.PARTIALLY_CLOSED)
+        now = time.time()
+        master_position_id = self.master_position_id.strip() or self.position_id
+        user_position_id = self.user_position_id.strip() or self.position_id
+        idempotency_key = (
+            self.idempotency_key.strip()
+            or self.make_idempotency_key(self.source_intent_id, self.connection_id, "OPEN")
+        )
+        opened_at = self.opened_at or now
+        updated_at = self.updated_at or opened_at
+
+        object.__setattr__(self, "master_position_id", master_position_id)
+        object.__setattr__(self, "user_position_id", user_position_id)
+        object.__setattr__(self, "idempotency_key", idempotency_key)
+        object.__setattr__(self, "opened_at", opened_at)
+        object.__setattr__(self, "updated_at", updated_at)
+
+        if self.remaining_quantity <= 1e-12:
+            object.__setattr__(self, "status", PositionStatus.CLOSED)
+        elif self.remaining_quantity < self.quantity - 1e-12 and self.status is PositionStatus.OPEN:
+            object.__setattr__(self, "status", PositionStatus.PARTIALLY_CLOSED)
+
+    @staticmethod
+    def make_idempotency_key(intent_id: str, account_id: str, action: str) -> str:
+        return f"{intent_id.strip()}:{account_id.strip()}:{action.strip().upper()}"
 
     @property
     def is_active(self) -> bool:
-        return self.remaining_quantity > 1e-12 and self.status is not ReplicaPositionStatus.CLOSED
+        return (
+            self.remaining_quantity > 1e-12
+            and self.status not in {
+                PositionStatus.CLOSED,
+                PositionStatus.CANCELLED,
+                PositionStatus.FAILED,
+            }
+        )
 
     def close_quantity(self, close_fraction: float) -> float:
         fraction = float(close_fraction)
@@ -69,17 +102,21 @@ class ReplicaPositionRecord:
 
 
 class ReplicaPositionStateStore:
-    """Thread-safe in-memory state boundary for account-local replica positions."""
+    """Thread-safe state boundary with optional atomic restart persistence."""
 
-    def __init__(self) -> None:
+    def __init__(self, persistence_path: str | None = None) -> None:
+        self.persistence_path = persistence_path
         self._positions: dict[str, ReplicaPositionRecord] = {}
         self._lock = threading.RLock()
+        if persistence_path:
+            self._load()
 
     def register(self, position: ReplicaPositionRecord) -> None:
         with self._lock:
             if position.position_id in self._positions:
                 raise ValueError(f"replica position already exists: {position.position_id}")
             self._positions[position.position_id] = position
+            self._persist_locked()
 
     def get(self, position_id: str) -> ReplicaPositionRecord | None:
         with self._lock:
@@ -88,9 +125,19 @@ class ReplicaPositionStateStore:
     def by_source_intent(self, source_intent_id: str) -> tuple[ReplicaPositionRecord, ...]:
         source = str(source_intent_id).strip()
         with self._lock:
+            return tuple(p for p in self._positions.values() if p.source_intent_id == source)
+
+    def by_master_position(
+        self,
+        master_position_id: str,
+        connection_id: str | None = None,
+    ) -> tuple[ReplicaPositionRecord, ...]:
+        master = str(master_position_id).strip()
+        with self._lock:
             return tuple(
                 p for p in self._positions.values()
-                if p.source_intent_id == source
+                if p.master_position_id == master
+                and (connection_id is None or p.connection_id == connection_id)
             )
 
     def active_for_account(
@@ -103,7 +150,23 @@ class ReplicaPositionStateStore:
             for position in self._positions.values():
                 if (
                     position.connection_id == connection_id
-                    and position.source_intent_id == source_intent_id
+                    and position.source_intent_id == str(source_intent_id).strip()
+                    and position.is_active
+                ):
+                    return position
+        return None
+
+    def active_for_master_position(
+        self,
+        *,
+        connection_id: str,
+        master_position_id: str,
+    ) -> ReplicaPositionRecord | None:
+        with self._lock:
+            for position in self._positions.values():
+                if (
+                    position.connection_id == connection_id
+                    and position.master_position_id == str(master_position_id).strip()
                     and position.is_active
                 ):
                     return position
@@ -114,6 +177,9 @@ class ReplicaPositionStateStore:
         *,
         position_id: str,
         executed_quantity: float,
+        close_intent_id: str | None = None,
+        master_close_position_id: str | None = None,
+        exchange_order_id: str | None = None,
     ) -> ReplicaPositionRecord:
         quantity = float(executed_quantity)
         if quantity <= 0.0:
@@ -128,10 +194,11 @@ class ReplicaPositionStateStore:
 
             remaining = max(0.0, current.remaining_quantity - quantity)
             status = (
-                ReplicaPositionStatus.CLOSED
+                PositionStatus.CLOSED
                 if remaining <= 1e-12
-                else ReplicaPositionStatus.PARTIALLY_CLOSED
+                else PositionStatus.PARTIALLY_CLOSED
             )
+            now = time.time()
             updated = ReplicaPositionRecord(
                 position_id=current.position_id,
                 connection_id=current.connection_id,
@@ -142,13 +209,96 @@ class ReplicaPositionStateStore:
                 entry_price=current.entry_price,
                 stop_loss_price=current.stop_loss_price,
                 status=status,
+                master_position_id=current.master_position_id,
+                user_position_id=current.user_position_id,
+                idempotency_key=current.idempotency_key,
+                opened_at=current.opened_at,
+                updated_at=now,
+                closed_at=now if status is PositionStatus.CLOSED else None,
+                close_intent_id=close_intent_id or current.close_intent_id,
+                master_close_position_id=master_close_position_id or (
+                    current.master_close_position_id if status is PositionStatus.CLOSED else None
+                ),
+                client_order_id=current.client_order_id,
+                exchange_order_id=exchange_order_id or current.exchange_order_id,
             )
             self._positions[position_id] = updated
+            self._persist_locked()
             return updated
 
     def all(self) -> tuple[ReplicaPositionRecord, ...]:
         with self._lock:
             return tuple(self._positions.values())
+
+    @staticmethod
+    def _encode(value):
+        if isinstance(value, Enum):
+            return {"__enum__": f"{type(value).__name__}:{value.name}"}
+        if isinstance(value, dict):
+            return {str(k): ReplicaPositionStateStore._encode(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [ReplicaPositionStateStore._encode(v) for v in value]
+        return value
+
+    @staticmethod
+    def _decode(value):
+        if isinstance(value, dict):
+            marker = value.get("__enum__")
+            if marker:
+                enum_type, member = marker.split(":", 1)
+                if enum_type == "PositionStatus":
+                    return PositionStatus[member]
+            return {k: ReplicaPositionStateStore._decode(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [ReplicaPositionStateStore._decode(v) for v in value]
+        return value
+
+    def _persist_locked(self) -> None:
+        if not self.persistence_path:
+            return
+        directory = os.path.dirname(os.path.abspath(self.persistence_path))
+        os.makedirs(directory, exist_ok=True)
+        payload = {
+            "version": 2,
+            "positions": [
+                self._encode(asdict(position))
+                for position in self._positions.values()
+            ],
+        }
+        fd, temp_path = tempfile.mkstemp(
+            prefix="replica-position-state-",
+            suffix=".tmp",
+            dir=directory,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.persistence_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def _load(self) -> None:
+        if not os.path.exists(self.persistence_path):
+            return
+        try:
+            with open(self.persistence_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if payload.get("version") not in {1, 2}:
+                raise ValueError("unsupported replica position state version")
+            restored: dict[str, ReplicaPositionRecord] = {}
+            for raw in payload.get("positions", []):
+                data = self._decode(raw)
+                if payload.get("version") == 1:
+                    data.setdefault("master_position_id", data.get("position_id", ""))
+                    data.setdefault("user_position_id", data.get("position_id", ""))
+                position = ReplicaPositionRecord(**data)
+                restored[position.position_id] = position
+            self._positions = restored
+        except Exception as exc:
+            raise RuntimeError(f"Unable to restore ReplicaPositionStateStore: {exc}") from exc
 
 
 __all__ = [

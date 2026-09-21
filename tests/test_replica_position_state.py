@@ -97,3 +97,65 @@ def test_position_state_does_not_depend_on_payment_or_market_data():
     position = _position()
     assert not hasattr(position, "settlement_state")
     assert not hasattr(position, "market_price")
+
+
+
+def test_master_position_and_user_position_linkage_are_deterministic():
+    position = _position(
+        master_position_id="MASTER-POS-1",
+        user_position_id="USER-POS-20-MASTER-POS-1",
+        idempotency_key="INTENT-OPEN-1:user-20:OPEN",
+    )
+
+    assert position.master_position_id == "MASTER-POS-1"
+    assert position.user_position_id == "USER-POS-20-MASTER-POS-1"
+    assert position.idempotency_key == "INTENT-OPEN-1:user-20:OPEN"
+
+
+def test_state_store_persists_and_restores_positions(tmp_path):
+    path = tmp_path / "replica-state.json"
+    store = ReplicaPositionStateStore(str(path))
+    store.register(_position(master_position_id="MASTER-POS-1"))
+
+    restored = ReplicaPositionStateStore(str(path))
+
+    position = restored.get("RP-1")
+    assert position is not None
+    assert position.master_position_id == "MASTER-POS-1"
+    assert position.user_position_id == "RP-1"
+    assert position.status is ReplicaPositionStatus.OPEN
+
+
+def test_close_records_close_linkage_and_survives_restart(tmp_path):
+    path = tmp_path / "replica-state.json"
+    store = ReplicaPositionStateStore(str(path))
+    store.register(_position(master_position_id="MASTER-POS-1"))
+
+    closed = store.apply_close(
+        position_id="RP-1",
+        executed_quantity=0.175,
+        close_intent_id="INTENT-CLOSE-1",
+        master_close_position_id="MASTER-POS-1",
+        exchange_order_id="PAPER-CLOSE-1",
+    )
+
+    assert closed.status is ReplicaPositionStatus.CLOSED
+    assert closed.close_intent_id == "INTENT-CLOSE-1"
+    assert closed.master_close_position_id == "MASTER-POS-1"
+    assert closed.closed_at is not None
+    assert closed.exchange_order_id == "PAPER-CLOSE-1"
+
+    restored = ReplicaPositionStateStore(str(path))
+    restored_position = restored.get("RP-1")
+    assert restored_position is not None
+    assert restored_position.status is ReplicaPositionStatus.CLOSED
+    assert restored_position.close_intent_id == "INTENT-CLOSE-1"
+    assert restored_position.exchange_order_id == "PAPER-CLOSE-1"
+
+
+def test_trade_manager_position_status_is_the_authoritative_lifecycle():
+    from trade_manager.models import PositionStatus
+
+    position = _position(status=PositionStatus.HOLD)
+    assert position.status is PositionStatus.HOLD
+    assert ReplicaPositionStatus is PositionStatus

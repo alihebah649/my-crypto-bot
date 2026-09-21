@@ -1,11 +1,8 @@
 """Paper-only executor for account-scoped replica instructions.
 
-This integration harness proves that one shared trade intent can be executed
-against multiple independent PaperExecutionAdapter accounts using the price
-already captured in the shared instruction. It performs no market-data fetches
-and makes no network calls.
-
-It is intentionally not a Live execution implementation.
+Uses the single replica position state contract and the shared market price
+captured in the instruction. No per-user market-data polling or live exchange
+calls are performed.
 """
 from __future__ import annotations
 
@@ -17,15 +14,11 @@ from core.execution_models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionSource,
-    OrderSide,
     OrderType,
 )
 from core.paper_execution_adapter import PaperExecutionAdapter
+from core.replica_position_state import ReplicaPositionRecord, ReplicaPositionStateStore
 from core.trade_replication import ReplicaInstruction, ReplicationAction
-from core.replica_position import ReplicaPosition
-from core.replica_position_repository import ReplicaPositionRepository
-from trade_manager.models import PositionStatus
-import time
 
 
 @dataclass(slots=True)
@@ -35,15 +28,15 @@ class PaperReplicaExecution:
 
 
 class PaperReplicaExecutor:
-    """Execute OPEN replica instructions against independent Paper accounts."""
+    """Execute replica instructions against independent Paper accounts."""
 
     def __init__(
         self,
         adapters: Mapping[str, PaperExecutionAdapter],
-        position_repository: ReplicaPositionRepository | None = None,
+        position_store: ReplicaPositionStateStore | None = None,
     ) -> None:
         self._adapters = dict(adapters)
-        self.position_repository = position_repository or ReplicaPositionRepository()
+        self.position_store = position_store or ReplicaPositionStateStore()
         self.executions: list[PaperReplicaExecution] = []
 
     def execute(self, instruction: ReplicaInstruction) -> bool:
@@ -51,16 +44,29 @@ class PaperReplicaExecutor:
         if adapter is None:
             return False
 
+        if instruction.action is ReplicationAction.OPEN:
+            return self._execute_open(instruction, adapter)
+
         if instruction.action is ReplicationAction.CLOSE:
             return self._execute_close(instruction, adapter)
 
-        master_position_id = instruction.master_position_id or instruction.intent_id
-        existing = self.position_repository.get_by_master_position(master_position_id, instruction.connection_id)
-        if any(p.status is not PositionStatus.CLOSED for p in existing):
-            return False
+        return False
 
+    def _execute_open(
+        self,
+        instruction: ReplicaInstruction,
+        adapter: PaperExecutionAdapter,
+    ) -> bool:
         price = instruction.reference_entry_price
         if price is None or price <= 0.0 or instruction.target_quote_value <= 0.0:
+            return False
+
+        master_position_id = instruction.master_position_id or instruction.intent_id
+        existing = self.position_store.by_master_position(
+            master_position_id,
+            instruction.connection_id,
+        )
+        if any(position.is_active for position in existing):
             return False
 
         quantity = instruction.target_quote_value / price
@@ -83,58 +89,64 @@ class PaperReplicaExecutor:
                     "replication_connection_id": instruction.connection_id,
                     "replication_intent_id": instruction.intent_id,
                     "replication_action": instruction.action.value,
+                    "master_position_id": master_position_id,
                     "trade_mode": instruction.trade_mode,
                     "stop_loss_price": instruction.stop_loss_price,
                 },
             ),
         )
 
-        if not adapter.is_connected():
-            adapter.connect()
-
-        result = adapter.execute(request)
-        if result.is_success:
-            position = ReplicaPosition.from_open(
-                account_id=instruction.connection_id,
-                master_intent_id=instruction.intent_id,
-                master_position_id=instruction.master_position_id or instruction.intent_id,
-                symbol=instruction.symbol,
-                quantity=result.executed_quantity,
-                entry_price=result.average_price or result.executed_price,
-                stop_loss=instruction.stop_loss_price,
-                client_order_id=result.client_order_id,
-                exchange_order_id=result.exchange_order_id,
-                metadata={"trade_mode": instruction.trade_mode},
-            )
-            self.position_repository.upsert(position)
-        self.executions.append(
-            PaperReplicaExecution(
-                connection_id=instruction.connection_id,
-                result=result,
-            )
-        )
-        return result.is_success
-
-
-    def _execute_close(self, instruction: ReplicaInstruction, adapter: PaperExecutionAdapter) -> bool:
-        master_position_id = instruction.master_position_id or instruction.intent_id
-        positions = self.position_repository.get_by_master_position(
-            master_position_id, instruction.connection_id
-        )
-        active = [p for p in positions if p.status is not PositionStatus.CLOSED]
-        if not active or instruction.reference_close_price is None or instruction.reference_close_price <= 0.0:
+        result = self._execute_request(instruction.connection_id, adapter, result_request=request)
+        if not result.is_success:
             return False
 
-        position = active[0]
-        quantity = position.quantity * instruction.close_fraction
+        position_id = f"RPOS-{master_position_id}-{instruction.connection_id}"
+        self.position_store.register(
+            ReplicaPositionRecord(
+                position_id=position_id,
+                connection_id=instruction.connection_id,
+                source_intent_id=instruction.intent_id,
+                symbol=instruction.symbol,
+                quantity=result.executed_quantity,
+                remaining_quantity=result.executed_quantity,
+                entry_price=result.average_price or result.executed_price,
+                stop_loss_price=instruction.stop_loss_price,
+                master_position_id=master_position_id,
+                user_position_id=position_id,
+                idempotency_key=ReplicaPositionRecord.make_idempotency_key(
+                    instruction.intent_id,
+                    instruction.connection_id,
+                    "OPEN",
+                ),
+                client_order_id=result.client_order_id,
+                exchange_order_id=result.exchange_order_id,
+            )
+        )
+        return True
+
+    def _execute_close(
+        self,
+        instruction: ReplicaInstruction,
+        adapter: PaperExecutionAdapter,
+    ) -> bool:
+        master_position_id = instruction.master_position_id or instruction.intent_id
+        position = self.position_store.active_for_master_position(
+            connection_id=instruction.connection_id,
+            master_position_id=master_position_id,
+        )
+        price = instruction.reference_close_price
+        if position is None or price is None or price <= 0.0:
+            return False
+
+        quantity = position.close_quantity(instruction.close_fraction)
         if quantity <= 0.0:
             return False
 
         request = ExecutionRequest(
-            symbol=instruction.symbol,
+            symbol=position.symbol,
             side=instruction.side,
             order_type=OrderType.MARKET,
-            price=instruction.reference_close_price,
+            price=price,
             quantity=quantity,
             reduce_only=True,
             client_order_id=(
@@ -150,33 +162,42 @@ class PaperReplicaExecutor:
                     "replication_intent_id": instruction.intent_id,
                     "replication_action": instruction.action.value,
                     "master_position_id": master_position_id,
+                    "replica_position_id": position.user_position_id,
                 },
             ),
         )
 
+        result = self._execute_request(instruction.connection_id, adapter, result_request=request)
+        if not result.is_success:
+            return False
+
+        self.position_store.apply_close(
+            position_id=position.position_id,
+            executed_quantity=result.executed_quantity,
+            close_intent_id=instruction.intent_id,
+            master_close_position_id=master_position_id,
+            exchange_order_id=result.exchange_order_id,
+        )
+        return True
+
+    def _execute_request(
+        self,
+        connection_id: str,
+        adapter: PaperExecutionAdapter,
+        *,
+        result_request: ExecutionRequest,
+    ) -> ExecutionResult:
         if not adapter.is_connected():
             adapter.connect()
-        result = adapter.execute(request)
 
-        if result.is_success:
-            if instruction.close_fraction >= 1.0 - 1e-12:
-                position.mark_closed(
-                    close_intent_id=instruction.intent_id,
-                    exchange_order_id=result.exchange_order_id,
-                )
-            else:
-                position.quantity = max(0.0, position.quantity - result.executed_quantity)
-                position.status = PositionStatus.PARTIALLY_CLOSED
-                position.updated_at = time.time()
-            self.position_repository.upsert(position)
-
+        result = adapter.execute(result_request)
         self.executions.append(
             PaperReplicaExecution(
-                connection_id=instruction.connection_id,
+                connection_id=connection_id,
                 result=result,
             )
         )
-        return result.is_success
+        return result
 
 
 __all__ = [
