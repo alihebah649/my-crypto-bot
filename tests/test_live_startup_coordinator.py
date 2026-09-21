@@ -130,3 +130,84 @@ def test_live_startup_does_not_resume_when_binance_order_read_fails(error):
     with pytest.raises(type(error), match=re.escape(str(error))):
         LiveStartupCoordinator(adapter, ["ADAUSDT"]).start([position()])
     assert adapter.calls == ["connect", "account", ("orders", "ADAUSDT")]
+
+
+
+def test_live_startup_account_replica_uses_remaining_quantity_from_canonical_state(tmp_path):
+    from core.replica_position_state import ReplicaPositionRecord, ReplicaPositionStateStore
+
+    adapter = adapter_with_position()
+    store = ReplicaPositionStateStore(str(tmp_path / "replica-state.json"))
+    store.register(
+        ReplicaPositionRecord(
+            position_id="RPOS-master-1-acct-1",
+            connection_id="acct-1",
+            source_intent_id="intent-1",
+            symbol="ADAUSDT",
+            quantity=10.0,
+            remaining_quantity=5.0,
+            entry_price=0.20,
+            stop_loss_price=0.2161,
+            master_position_id="master-1",
+            user_position_id="user-pos-1",
+        )
+    )
+    result = LiveStartupCoordinator(adapter, ["ADAUSDT"]).start_account_replica(
+        "acct-1", store
+    )
+    assert result.decision.allowed is False
+    assert any(i.code == "EXCHANGE_QUANTITY_MISMATCH" for i in result.reconciliation.issues)
+
+
+def test_live_startup_account_replica_ignores_closed_state(tmp_path):
+    from core.replica_position_state import ReplicaPositionRecord, ReplicaPositionStateStore
+    from trade_manager.models import PositionStatus
+
+    adapter = FakeAdapter([], {})
+    store = ReplicaPositionStateStore(str(tmp_path / "replica-state.json"))
+    store.register(
+        ReplicaPositionRecord(
+            position_id="RPOS-master-closed-acct-1",
+            connection_id="acct-1",
+            source_intent_id="intent-closed",
+            symbol="ADAUSDT",
+            quantity=10.0,
+            remaining_quantity=0.0,
+            entry_price=0.20,
+            stop_loss_price=0.2161,
+            status=PositionStatus.CLOSED,
+            master_position_id="master-closed",
+            user_position_id="user-pos-closed",
+        )
+    )
+    result = LiveStartupCoordinator(adapter, ["ADAUSDT"]).start_account_replica(
+        "acct-1", store
+    )
+    assert result.decision.allowed is True
+    assert result.reconciliation.issues == ()
+
+
+def test_live_startup_account_replica_scopes_other_account_positions(tmp_path):
+    from core.replica_position_state import ReplicaPositionRecord, ReplicaPositionStateStore
+
+    adapter = adapter_with_position()
+    store = ReplicaPositionStateStore(str(tmp_path / "replica-state.json"))
+    store.register(
+        ReplicaPositionRecord(
+            position_id="RPOS-master-other-acct-2",
+            connection_id="acct-2",
+            source_intent_id="intent-other",
+            symbol="ADAUSDT",
+            quantity=10.0,
+            remaining_quantity=10.0,
+            entry_price=0.20,
+            stop_loss_price=0.2161,
+            master_position_id="master-other",
+            user_position_id="user-pos-other",
+        )
+    )
+    result = LiveStartupCoordinator(adapter, ["ADAUSDT"]).start_account_replica(
+        "acct-1", store
+    )
+    assert result.decision.allowed is False
+    assert any(i.code == "ORPHAN_POSITION" for i in result.reconciliation.issues)

@@ -150,6 +150,15 @@ class ReplicaPositionStateStore:
                 and (connection_id is None or p.connection_id == connection_id)
             )
 
+    def active_for_connection(self, connection_id: str) -> tuple[ReplicaPositionRecord, ...]:
+        """Return every active replica position owned by one account."""
+        account = str(connection_id).strip()
+        with self._lock:
+            return tuple(
+                p for p in self._positions.values()
+                if p.connection_id == account and p.is_active
+            )
+
     def active_for_account(
         self,
         *,
