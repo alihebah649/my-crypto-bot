@@ -8,6 +8,7 @@ decision and never vetoes, sizes, or executes trades.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping
@@ -17,6 +18,7 @@ from .entry_v2_adapter import EntryV2MarketFacts
 from .entry_v2_capture import EntryV2ShadowCapture, capture_entry_v2, capture_summary
 from .entry_v2_capture_store import EntryV2CaptureStore
 from .entry_v2_outcome_analysis import analyze_entry_v2_outcomes
+from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from .entry_v2_shadow_report import build_entry_v2_shadow_report
 
 
@@ -48,10 +50,18 @@ class EntryV2RuntimeCapture:
 
     def __post_init__(self) -> None:
         if self.capture_store is None:
-            persistence_dir = getattr(self.runtime, "persistence_dir", None)
-            if persistence_dir:
-                path = Path(persistence_dir) / "entry_v2_shadow" / "captures.jsonl"
-                self.capture_store = EntryV2CaptureStore(path)
+            database_url = database_url_from_env()
+            if database_url:
+                self.capture_store = PostgresEvidenceStore(
+                    database_url,
+                    evidence_type="ENTRY_V2_CAPTURE",
+                    max_records=10_000,
+                )
+            else:
+                persistence_dir = getattr(self.runtime, "persistence_dir", None)
+                if persistence_dir:
+                    path = Path(persistence_dir) / "entry_v2_shadow" / "captures.jsonl"
+                    self.capture_store = EntryV2CaptureStore(path)
         if self.brain_shadow_store is None:
             self.brain_shadow_store = getattr(self.runtime, "brain_shadow_store", None)
 
