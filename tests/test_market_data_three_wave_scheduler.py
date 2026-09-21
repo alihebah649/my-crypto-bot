@@ -24,9 +24,9 @@ def test_kline_waves_split_universe_deterministically(tmp_path):
     groups = manager.kline_wave_groups()
 
     assert [len(group) for group in groups] == [8, 7, 7]
-    assert groups[0][:3] == ["BTCUSDT", "ARBUSDT", "AVAXUSDT"]
-    assert groups[1][:3] == ["ETHUSDT", "OPUSDT", "ALGOUSDT"]
-    assert groups[2][:3] == ["SOLUSDT", "BNBUSDT", "ATOMUSDT"]
+    assert groups[0][:3] == ["BTCUSDT", "LINKUSDT", "NEARUSDT"]
+    assert groups[1][:3] == ["ETHUSDT", "ADAUSDT", "ARBUSDT"]
+    assert groups[2][:3] == ["SOLUSDT", "DOTUSDT", "OPUSDT"]
     assert sorted(symbol for group in groups for symbol in group) == sorted(manager.symbols)
 
 
