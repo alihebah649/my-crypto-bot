@@ -134,6 +134,18 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
             return cached[1]
     if _binance_guard_active():
         return []
+
+    # The market-data manager assigns one of three deterministic waves to each
+    # symbol per refresh slot. Fresh cache entries remain immediately usable;
+    # stale/missing entries outside the current wave are returned from bounded
+    # cache only, preventing a simultaneous REST burst. Entry freshness is
+    # still enforced separately before any paper order.
+    manager = getattr(_legacy, "market_data_manager", None)
+    allowed_symbols = getattr(_legacy, "_market_data_kline_refresh_symbols", None)
+    if manager is not None and isinstance(allowed_symbols, set):
+        if str(symbol).upper() not in allowed_symbols:
+            return cached[1] if cached is not None else []
+
     try:
         data = _original_fetch_klines(symbol, interval, limit)
         with _kline_cache_lock:
@@ -158,6 +170,18 @@ def _market_data_guard_snapshot() -> dict:
     snapshot["blocked"] = remaining > 0
     with _kline_cache_lock:
         snapshot["kline_cache_entries"] = len(_kline_cache)
+    manager = getattr(_legacy, "market_data_manager", None)
+    if manager is not None and callable(getattr(manager, "kline_wave_snapshot", None)):
+        try:
+            snapshot["kline_wave_scheduler"] = manager.kline_wave_snapshot()
+        except Exception:
+            snapshot["kline_wave_scheduler"] = {"error": "UNAVAILABLE"}
+    else:
+        snapshot["kline_wave_scheduler"] = {
+            "state": "BOOTSTRAP",
+            "wave_count": 3,
+            "wave_interval_seconds": 30.0,
+        }
     return snapshot
 
 
@@ -188,6 +212,24 @@ def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
 
 def _fetch_strategy_data_with_mtf():
     global _mtf_candles
+
+    # One scheduler claim covers the whole market cycle. The same symbol wave
+    # is reused for 5m/15m/1h/4h requests in this cycle, keeping REST traffic
+    # distributed without changing the strategy's data semantics.
+    manager = getattr(_legacy, "market_data_manager", None)
+    if manager is not None and callable(getattr(manager, "claim_kline_refresh_wave", None)):
+        wave = manager.claim_kline_refresh_wave()
+        _legacy._market_data_kline_refresh_symbols = set(wave.get("symbols", []) or [])
+        _legacy._market_data_kline_wave = dict(wave)
+    else:
+        # Preserve the pre-manager behavior only during bootstrap.
+        _legacy._market_data_kline_refresh_symbols = None
+        _legacy._market_data_kline_wave = {
+            "wave_index": None,
+            "symbols": [],
+            "claimed": False,
+        }
+
     base = _original_fetch_strategy_data()
     _mtf_candles = _fetch_mtf_context()
     return base

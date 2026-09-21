@@ -97,6 +97,8 @@ class MarketDataManager:
         ticker_symbols: Iterable[str],
         ticker_batch_size: int = 11,
         ticker_group_interval_seconds: float = 65.0,
+        kline_wave_count: int = 3,
+        kline_wave_interval_seconds: float = 30.0,
         policies: Mapping[str, CachePolicy] | None = None,
     ):
         symbols = [str(symbol).upper() for symbol in ticker_symbols]
@@ -108,6 +110,12 @@ class MarketDataManager:
         self.symbols = symbols
         self.ticker_batch_size = int(ticker_batch_size)
         self.ticker_group_interval_seconds = float(ticker_group_interval_seconds)
+        self.kline_wave_count = min(int(kline_wave_count), len(symbols)) if symbols else int(kline_wave_count)
+        self.kline_wave_interval_seconds = float(kline_wave_interval_seconds)
+        if self.kline_wave_count <= 0:
+            raise ValueError("kline_wave_count must be positive")
+        if self.kline_wave_interval_seconds <= 0:
+            raise ValueError("kline_wave_interval_seconds must be positive")
         self.policies = dict(policies or {
             "ticker": CachePolicy(fresh_ttl_seconds=75.0, stale_max_age_seconds=300.0),
             "5m": CachePolicy(fresh_ttl_seconds=310.0, stale_max_age_seconds=900.0),
@@ -118,6 +126,14 @@ class MarketDataManager:
         self._lock = threading.RLock()
         self._next_ticker_group = 0
         self._next_ticker_refresh_at = 0.0
+        self._next_kline_wave = 0
+        self._next_kline_wave_at = 0.0
+        self._last_kline_wave: dict[str, Any] = {
+            "wave_index": None,
+            "symbols": [],
+            "claimed_at": None,
+            "next_wave_at": None,
+        }
 
     def ticker_groups(self) -> list[list[str]]:
         """Return deterministic ticker groups (22 -> 11 + 11)."""
@@ -125,6 +141,64 @@ class MarketDataManager:
             self.symbols[start : start + self.ticker_batch_size]
             for start in range(0, len(self.symbols), self.ticker_batch_size)
         ]
+
+    def kline_wave_groups(self) -> list[list[str]]:
+        """Return deterministic round-robin symbol waves for staggered kline refreshes."""
+        groups = [[] for _ in range(self.kline_wave_count)]
+        for index, symbol in enumerate(self.symbols):
+            groups[index % self.kline_wave_count].append(symbol)
+        return [group for group in groups if group]
+
+    def claim_kline_refresh_wave(self, *, now: float | None = None) -> dict[str, Any]:
+        """Claim at most one kline refresh wave for the current scheduler slot.
+
+        Only symbols in the claimed wave may make a network refresh for stale or
+        missing klines during the current market cycle. Other symbols may still
+        use bounded-stale cache data for analysis; entry freshness remains a
+        separate safety gate.
+        """
+        current = time.time() if now is None else float(now)
+        with self._lock:
+            if current < self._next_kline_wave_at:
+                return dict(self._last_kline_wave, claimed=False)
+
+            groups = self.kline_wave_groups()
+            if not groups:
+                result = {
+                    "wave_index": None,
+                    "symbols": [],
+                    "claimed_at": current,
+                    "next_wave_at": current + self.kline_wave_interval_seconds,
+                    "claimed": False,
+                }
+                self._last_kline_wave = dict(result)
+                return result
+
+            wave_index = self._next_kline_wave % len(groups)
+            symbols = list(groups[wave_index])
+            next_wave_at = current + self.kline_wave_interval_seconds
+            result = {
+                "wave_index": wave_index,
+                "symbols": symbols,
+                "claimed_at": current,
+                "next_wave_at": next_wave_at,
+                "claimed": True,
+            }
+            self._next_kline_wave = (wave_index + 1) % len(groups)
+            self._next_kline_wave_at = next_wave_at
+            self._last_kline_wave = dict(result)
+            return result
+
+    def kline_wave_snapshot(self) -> dict[str, Any]:
+        """Return scheduler state for runtime diagnostics."""
+        with self._lock:
+            result = dict(self._last_kline_wave)
+            result["wave_count"] = self.kline_wave_count
+            result["wave_interval_seconds"] = self.kline_wave_interval_seconds
+            result["groups"] = self.kline_wave_groups()
+            result["next_wave_at"] = self._next_kline_wave_at
+            result["next_wave_in_seconds"] = max(0.0, self._next_kline_wave_at - time.time())
+            return result
 
     def should_refresh(self, dataset: str, key: str, *, now: float | None = None) -> bool:
         policy = self.policies[dataset]
