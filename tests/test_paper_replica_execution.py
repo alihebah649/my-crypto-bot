@@ -99,3 +99,58 @@ def test_repeat_of_same_master_intent_does_not_duplicate_paper_orders():
     assert second.skipped_duplicates == 1
     assert len(adapter.orders) == 1
     assert adapter.balance.assets["BTCUSDT"] == 0.175
+
+
+
+def test_same_open_intent_is_idempotent_after_process_restart(tmp_path):
+    registry = AccountRegistry()
+    registry.register(_user("user-20", 350.0))
+
+    adapter_path = tmp_path / "paper-account.json"
+    position_path = tmp_path / "replica-state.json"
+
+    adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    first_store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    first_executor = PaperReplicaExecutor(
+        {"user-20": adapter},
+        position_store=first_store,
+    )
+    dispatcher = TradeReplicationDispatcher(registry)
+
+    intent = MasterTradeIntent.open(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        reference_capital=1000.0,
+        target_position_value=50.0,
+        reference_entry_price=100.0,
+        master_position_id="MASTER-RESTART-1",
+        intent_id="INTENT-RESTART-1",
+    )
+
+    first = dispatcher.dispatch(intent, first_executor.execute)
+    assert first.dispatched == 1
+    assert adapter.balance.assets["BTCUSDT"] == 0.175
+
+    restored_adapter = PaperExecutionAdapter(
+        initial_cash=350.0,
+        fee_rate=0.001,
+        state_path=str(adapter_path),
+    )
+    restored_store = __import__("core.replica_position_state", fromlist=["ReplicaPositionStateStore"]).ReplicaPositionStateStore(
+        str(position_path)
+    )
+    restored_executor = PaperReplicaExecutor(
+        {"user-20": restored_adapter},
+        position_store=restored_store,
+    )
+
+    retry = restored_executor.execute(first.instructions[0])
+    assert retry is True
+    assert len(restored_adapter.orders) == 1
+    assert restored_adapter.balance.assets["BTCUSDT"] == 0.175
