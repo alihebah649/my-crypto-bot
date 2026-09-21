@@ -172,3 +172,21 @@ def test_close_is_fail_closed_without_tracked_position():
 
     assert result.dispatched == 0
     assert result.failed == 1
+
+
+def test_existing_deterministic_replica_position_prevents_duplicate_open():
+    registry = AccountRegistry()
+    registry.register(_user("user-20", 350.0, SettlementState.CURRENT))
+
+    adapter = PaperExecutionAdapter(initial_cash=350.0, fee_rate=0.001)
+    positions = ReplicaPositionStateStore()
+    executor = PaperReplicaExecutor({"user-20": adapter}, position_store=positions)
+    dispatcher = TradeReplicationDispatcher(registry)
+
+    first = dispatcher.dispatch(_open_intent(), executor.execute)
+    second = dispatcher.dispatch(_open_intent(), executor.execute)
+
+    assert first.dispatched == 1
+    assert second.skipped_duplicates == 1
+    assert len(adapter.orders) == 1
+    assert len(positions.by_source_intent("INTENT-OPEN-LIFECYCLE")) == 1
