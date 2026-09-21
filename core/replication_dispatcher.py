@@ -10,7 +10,7 @@ a future application explicitly supplies a live executor.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.account_registry import AccountRegistry
@@ -76,7 +76,16 @@ class TradeReplicationDispatcher:
                 action=instruction.action.value,
             )
 
-            if record.state is not DeliveryState.NEW:
+            # COMPLETED and DISPATCHED deliveries are not replayed
+            # automatically. A DISPATCHED record may represent an in-flight
+            # exchange operation after a crash, so replaying it could duplicate
+            # an order. FAILED deliveries are explicitly retryable.
+            if record.state is DeliveryState.FAILED:
+                record = self.ledger.transition(
+                    record.delivery_key,
+                    DeliveryState.NEW,
+                )
+            elif record.state is not DeliveryState.NEW:
                 skipped_duplicates += 1
                 continue
 
