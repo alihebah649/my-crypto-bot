@@ -13,6 +13,7 @@ def test_open_intent_scales_by_follower_capital():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
         trade_mode="SCALP",
         intent_id="INTENT-1",
     )
@@ -34,6 +35,7 @@ def test_disabled_follower_is_not_planned():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
     )
 
     plans = TradeReplicationPlanner.plan(
@@ -74,9 +76,13 @@ def test_planner_does_not_need_market_data_or_exchange_adapter():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
     )
 
-    plans = TradeReplicationPlanner.plan(intent, [FollowerAccount("user-1", 350.0)])
+    plans = TradeReplicationPlanner.plan(
+        intent, [FollowerAccount("user-1", 350.0)]
+    )
 
     assert len(plans) == 1
     assert plans[0].symbol == "BNBUSDT"
+    assert plans[0].reference_entry_price == 100.0

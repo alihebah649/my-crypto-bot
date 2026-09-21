@@ -31,6 +31,7 @@ class MasterTradeIntent:
     action: ReplicationAction
     reference_capital: float
     target_position_value: float = 0.0
+    reference_entry_price: float | None = None
     close_fraction: float = 1.0
     trade_mode: str = ""
     stop_loss_price: float | None = None
@@ -44,8 +45,11 @@ class MasterTradeIntent:
             raise ValueError("symbol must not be empty")
         if self.reference_capital <= 0.0:
             raise ValueError("reference_capital must be positive")
-        if self.action is ReplicationAction.OPEN and self.target_position_value <= 0.0:
-            raise ValueError("OPEN intent requires a positive target_position_value")
+        if self.action is ReplicationAction.OPEN:
+            if self.target_position_value <= 0.0:
+                raise ValueError("OPEN intent requires a positive target_position_value")
+            if self.reference_entry_price is None or self.reference_entry_price <= 0.0:
+                raise ValueError("OPEN intent requires a positive reference_entry_price")
         if self.action is ReplicationAction.CLOSE and not 0.0 < self.close_fraction <= 1.0:
             raise ValueError("CLOSE intent close_fraction must be in (0, 1]")
 
@@ -62,6 +66,7 @@ class MasterTradeIntent:
         side: OrderSide,
         reference_capital: float,
         target_position_value: float,
+        reference_entry_price: float,
         trade_mode: str = "",
         stop_loss_price: float | None = None,
         strategy_snapshot_id: str = "",
@@ -75,6 +80,7 @@ class MasterTradeIntent:
             action=ReplicationAction.OPEN,
             reference_capital=reference_capital,
             target_position_value=target_position_value,
+            reference_entry_price=reference_entry_price,
             trade_mode=str(trade_mode or "").upper(),
             stop_loss_price=stop_loss_price,
             strategy_snapshot_id=str(strategy_snapshot_id or ""),
@@ -132,6 +138,8 @@ class ReplicaInstruction:
     side: OrderSide
     action: ReplicationAction
     target_quote_value: float = 0.0
+    reference_entry_price: float | None = None
+    stop_loss_price: float | None = None
     close_fraction: float = 0.0
     trade_mode: str = ""
     strategy_snapshot_id: str = ""
@@ -162,9 +170,7 @@ class TradeReplicationPlanner:
             }
 
             if intent.action is ReplicationAction.OPEN:
-                target_quote_value = (
-                    follower.capital_basis * intent.target_allocation_percent
-                )
+                target_quote_value = follower.capital_basis * intent.target_allocation_percent
                 instructions.append(
                     ReplicaInstruction(
                         intent_id=intent.intent_id,
@@ -173,6 +179,8 @@ class TradeReplicationPlanner:
                         side=intent.side,
                         action=ReplicationAction.OPEN,
                         target_quote_value=target_quote_value,
+                        reference_entry_price=intent.reference_entry_price,
+                        stop_loss_price=intent.stop_loss_price,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
                         metadata=metadata,

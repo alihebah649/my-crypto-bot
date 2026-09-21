@@ -31,6 +31,8 @@ def _intent():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
+        stop_loss_price=98.0,
         trade_mode="SCALP",
         intent_id="INTENT-100",
     )
@@ -54,6 +56,8 @@ def test_dispatches_one_instruction_per_eligible_account():
     assert result.failed == 0
     assert result.skipped_duplicates == 0
     assert [x.target_quote_value for x in received] == [17.5, 35.0]
+    assert [x.reference_entry_price for x in received] == [100.0, 100.0]
+    assert [x.stop_loss_price for x in received] == [98.0, 98.0]
 
 
 def test_same_intent_is_not_dispatched_twice_after_completion():
