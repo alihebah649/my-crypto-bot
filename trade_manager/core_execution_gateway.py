@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.execution_adapter import ExecutionAdapter
+from core.execution_profile import ExecutionProfile
 from core.execution_models import (
     ExecutionContext,
     ExecutionRequest as CoreExecutionRequest,
@@ -32,9 +33,11 @@ from .integration_contracts import (
 class CoreExecutionGateway(ExecutionGateway):
     """Adapter from Trade Manager execution requests to the core adapter."""
 
-    def __init__(self, adapter: ExecutionAdapter, *, source: ExecutionSource | None = None) -> None:
+    def __init__(self, adapter: ExecutionAdapter, *, source: ExecutionSource | None = None,
+                 execution_profile: ExecutionProfile | None = None) -> None:
         self.adapter = adapter
         self.source = source or ExecutionSource.PAPER
+        self.execution_profile = execution_profile or ExecutionProfile.paper()
 
     def submit(self, request: ExecutionRequest) -> ExecutionOutcomeRecord:
         if request.quantity <= 0:
@@ -53,7 +56,10 @@ class CoreExecutionGateway(ExecutionGateway):
                 context=ExecutionContext(
                     exchange_name=getattr(self.adapter, "exchange_name", ""),
                     source=self.source,
-                    metadata=dict(request.metadata),
+                    metadata={
+                        **self.execution_profile.to_metadata(),
+                        **dict(request.metadata),
+                    },
                 ),
             )
             result = self.adapter.execute(core_request)
