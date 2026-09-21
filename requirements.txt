@@ -5,3 +5,4 @@ pandas
 pyarrow
 websockets>=12.0
 python-binance
+psycopg[binary]
