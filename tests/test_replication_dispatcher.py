@@ -192,6 +192,7 @@ def test_settlement_required_blocks_open_but_allows_close_of_existing_position(t
         "user-30",
     )[0]
     assert position.is_active is False
-    assert position.status.value == "CLOSED"
+    from trade_manager.models import PositionStatus
+    assert position.status is PositionStatus.CLOSED
     assert position.remaining_quantity == 0.0
     assert position.master_position_id == "MASTER-SETTLEMENT-1"
