@@ -122,6 +122,16 @@ class ReplicaPositionStateStore:
         with self._lock:
             return self._positions.get(position_id)
 
+    def get_by_idempotency_key(self, idempotency_key: str) -> ReplicaPositionRecord | None:
+        key = str(idempotency_key).strip()
+        if not key:
+            return None
+        with self._lock:
+            for position in self._positions.values():
+                if position.idempotency_key == key:
+                    return position
+        return None
+
     def by_source_intent(self, source_intent_id: str) -> tuple[ReplicaPositionRecord, ...]:
         source = str(source_intent_id).strip()
         with self._lock:
@@ -246,7 +256,7 @@ class ReplicaPositionStateStore:
             marker = value.get("__enum__")
             if marker:
                 enum_type, member = marker.split(":", 1)
-                if enum_type == "PositionStatus":
+                if enum_type in {"PositionStatus", "ReplicaPositionStatus"}:
                     return PositionStatus[member]
             return {k: ReplicaPositionStateStore._decode(v) for k, v in value.items()}
         if isinstance(value, list):
