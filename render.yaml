@@ -1,0 +1,17 @@
+# Render Blueprint for the existing Paper Trading service.
+# The database is intentionally referenced as an existing workspace resource
+# so applying this file does not create a second database.
+services:
+  - type: web
+    name: my-crypto-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python shadow_main.py
+    autoDeployTrigger: commit
+    envVars:
+      - key: PAPER_EVIDENCE_DATABASE_URL
+        fromDatabase:
+          name: shadow-paper-evidence
+          property: connectionString
