@@ -36,6 +36,7 @@ from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
+from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -56,8 +57,25 @@ _paper_outcome_evidence_logged_ids: set[str] = set()
 # Brain is only a pre-Risk approval; Risk, Trade Manager and Execution remain
 # mandatory downstream authorities.
 brain_authority = GuardedBrainAuthority()
-_brain_authority_store = BrainShadowCaptureStore(
-    Path(getattr(runtime, "persistence_dir", None) or ".") / "brain_shadow" / "authority_captures.jsonl"
+_evidence_database_url = database_url_from_env()
+if _evidence_database_url:
+    _brain_authority_store = PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type="BRAIN_AUTHORITY",
+        max_records=50_000,
+    )
+else:
+    _brain_authority_store = BrainShadowCaptureStore(
+        Path(getattr(runtime, "persistence_dir", None) or ".") / "brain_shadow" / "authority_captures.jsonl"
+    )
+_paper_outcome_store = (
+    PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type="PAPER_OUTCOME",
+        max_records=50_000,
+    )
+    if _evidence_database_url
+    else None
 )
 runtime.brain_authority = brain_authority
 runtime.brain_authority_store = _brain_authority_store
@@ -247,6 +265,20 @@ def _emit_paper_outcome_evidence() -> int:
             "PAPER OUTCOME EVIDENCE %s",
             json.dumps(record, ensure_ascii=False, separators=(",", ":")),
         )
+
+        if _paper_outcome_store is not None:
+            try:
+                if not _paper_outcome_store.append(record):
+                    _legacy.logger.error(
+                        "Paper outcome evidence persistence failed position=%s error=%s",
+                        position_id,
+                        _paper_outcome_store.last_error,
+                    )
+            except Exception:
+                _legacy.logger.exception(
+                    "Paper outcome evidence persistence raised position=%s",
+                    position_id,
+                )
 
         _paper_outcome_evidence_logged_ids.add(position_id)
         emitted += 1
