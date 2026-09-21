@@ -226,22 +226,21 @@ class ShadowTradeManagerRuntime:
     def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
                  execution_adapter: Optional[ExecutionAdapter] = None, risk_config: Optional[RiskConfig] = None,
                  persistence_dir: Optional[str] = None,
-                 execution_profile: Optional[ExecutionProfile] = None) -> None:
+                 execution_profile: Optional[ExecutionProfile] = None,
+                 account_connection: Optional[AccountConnection] = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
-        self.execution_profile = execution_profile or ExecutionProfile.paper()
-        self.account_connection = (
-            AccountConnection.paper_default()
-            if self.execution_profile.is_paper
-            else AccountConnection(
-                connection_id=self.execution_profile.profile_id,
-                profile=self.execution_profile,
-                credential=None,
-            )
-        )
-        if not self.execution_profile.is_paper:
-            # A real non-Paper runtime must be constructed by the application
-            # layer with an explicit AccountConnection and credential provider.
-            raise ValueError("Non-Paper runtime requires an explicit account connection")
+
+        if account_connection is not None:
+            self.account_connection = account_connection
+            self.execution_profile = account_connection.profile
+            if execution_profile is not None and execution_profile != self.execution_profile:
+                raise ValueError("execution_profile must match account_connection.profile")
+        else:
+            self.execution_profile = execution_profile or ExecutionProfile.paper()
+            if not self.execution_profile.is_paper:
+                raise ValueError("Non-Paper runtime requires an explicit account connection")
+            self.account_connection = AccountConnection.paper_default()
+
         if execution_adapter is None and not self.execution_profile.is_paper:
             raise ValueError("A non-Paper execution profile requires an explicit execution adapter")
         self.last_entry_diagnostics: Dict[str, dict] = {}
