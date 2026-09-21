@@ -13,6 +13,7 @@ def test_open_intent_scales_by_follower_capital():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
         trade_mode="SCALP",
         intent_id="INTENT-1",
     )
@@ -34,6 +35,7 @@ def test_disabled_follower_is_not_planned():
         side=OrderSide.BUY,
         reference_capital=1000.0,
         target_position_value=50.0,
+        reference_entry_price=100.0,
     )
 
     plans = TradeReplicationPlanner.plan(
