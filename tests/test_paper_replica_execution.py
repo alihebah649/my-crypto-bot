@@ -1,5 +1,7 @@
 from core.account_connection import AccountConnection, ConnectionState, CredentialReference
 from core.account_registry import AccountRegistry, AccountRole, RegisteredAccount
+from core.replica_position_state import ReplicaPositionStateStore, ReplicaPositionStatus
+from core.settlement_trading_policy import SettlementState, SettlementTradingPolicy
 from core.execution_models import OrderSide, OrderStatus
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.paper_replica_executor import PaperReplicaExecutor
@@ -99,3 +101,68 @@ def test_repeat_of_same_master_intent_does_not_duplicate_paper_orders():
     assert second.skipped_duplicates == 1
     assert len(adapter.orders) == 1
     assert adapter.balance.assets["BTCUSDT"] == 0.175
+
+
+def test_existing_position_closes_after_settlement_becomes_required():
+    registry = AccountRegistry()
+    account = _user("user-overdue", 350.0)
+    registry.register(account)
+
+    store = ReplicaPositionStateStore()
+    adapter = PaperExecutionAdapter(initial_cash=350.0, fee_rate=0.001)
+    executor = PaperReplicaExecutor({"user-overdue": adapter}, position_store=store)
+    dispatcher = TradeReplicationDispatcher(registry)
+
+    open_intent = MasterTradeIntent.open(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        reference_capital=1000.0,
+        target_position_value=50.0,
+        reference_entry_price=100.0,
+        stop_loss_price=98.0,
+        trade_mode="SCALP",
+        intent_id="INTENT-LIFECYCLE-OPEN",
+    )
+    opened = dispatcher.dispatch(open_intent, executor.execute)
+
+    assert opened.dispatched == 1
+    position = store.active_for_account(
+        connection_id="user-overdue",
+        source_intent_id="INTENT-LIFECYCLE-OPEN",
+    )
+    assert position is not None
+    assert position.remaining_quantity == 0.5
+    assert position.status is ReplicaPositionStatus.OPEN
+
+    # Payment becomes overdue after the position already exists.
+    registry.replace(
+        RegisteredAccount(
+            connection=account.connection,
+            role=account.role,
+            capital_basis=account.capital_basis,
+            copy_enabled=account.copy_enabled,
+            settlement_policy=SettlementTradingPolicy(
+                SettlementState.SETTLEMENT_REQUIRED
+            ),
+        )
+    )
+
+    close_intent = MasterTradeIntent.close(
+        symbol="BTCUSDT",
+        reference_capital=1000.0,
+        close_fraction=1.0,
+        reference_exit_price=110.0,
+        source_position_intent_id="INTENT-LIFECYCLE-OPEN",
+        trade_mode="SCALP",
+        intent_id="INTENT-LIFECYCLE-CLOSE",
+    )
+    closed = dispatcher.dispatch(close_intent, executor.execute)
+
+    assert closed.dispatched == 1
+    assert closed.settlement_rejected == 0
+    restored = store.get(position.position_id)
+    assert restored is not None
+    assert restored.remaining_quantity == 0.0
+    assert restored.status is ReplicaPositionStatus.CLOSED
+    assert adapter.balance.assets.get("BTCUSDT", 0.0) == 0.0
+    assert adapter.balance.cash > 350.0
