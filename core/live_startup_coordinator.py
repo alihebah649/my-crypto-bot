@@ -4,9 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from core.binance_reconciliation import LocalPositionView, ReconciliationResult
+from core.binance_reconciliation import (
+    AccountLocalPositionView,
+    LocalPositionView,
+    ReconciliationResult,
+)
 from core.binance_startup_reconciliation import BinanceStartupReconciliation
 from core.execution_adapter import BinanceExecutionAdapter
+from core.binance_protection import BinanceSpotProtection
+from core.replica_position_state import ReplicaPositionStateStore
 from core.startup_reconciliation_gate import StartupGateDecision, StartupReconciliationGate
 
 
@@ -45,6 +51,49 @@ class LiveStartupCoordinator:
                         continue
                 matched = True
                 break
+            if not matched:
+                return False
+        return True
+
+    def start_account_replica(
+        self,
+        account_id: str,
+        position_store: ReplicaPositionStateStore,
+    ) -> LiveStartupResult:
+        """Start one authenticated account from canonical replica state."""
+        positions = tuple(
+            AccountLocalPositionView(
+                account_id=account_id,
+                position_id=position.position_id,
+                master_position_id=position.master_position_id,
+                user_position_id=position.user_position_id,
+                symbol=position.symbol,
+                quantity=position.remaining_quantity,
+                stop_price=position.stop_loss_price,
+            )
+            for position in position_store.active_for_connection(account_id)
+        )
+        self._adapter.connect()
+        snapshot = BinanceStartupReconciliation(
+            self._adapter,
+            self._tracked_symbols,
+        ).reconcile_account_replica(account_id, positions)
+        if snapshot.result.safe_to_resume and not self._exact_account_protection_ok(snapshot):
+            decision = StartupGateDecision(False, "RECONCILIATION_BLOCKED")
+        else:
+            decision = StartupReconciliationGate.evaluate(snapshot.result)
+        return LiveStartupResult(decision=decision, reconciliation=snapshot.result)
+
+    @staticmethod
+    def _exact_account_protection_ok(snapshot) -> bool:
+        """Require an active SELL stop for each account-local replica quantity."""
+        for position in snapshot.local_positions:
+            orders = snapshot.open_orders_by_symbol.get(position.symbol.upper(), ())
+            matched = BinanceSpotProtection.has_active_sell_protection(
+                list(orders),
+                quantity=position.quantity,
+                stop_price=position.stop_price,
+            )
             if not matched:
                 return False
         return True
