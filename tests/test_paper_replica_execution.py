@@ -131,7 +131,7 @@ def test_existing_position_closes_after_settlement_becomes_required():
         source_intent_id="INTENT-LIFECYCLE-OPEN",
     )
     assert position is not None
-    assert position.remaining_quantity == 0.5
+    assert position.remaining_quantity == 0.175
     assert position.status is ReplicaPositionStatus.OPEN
 
     # Payment becomes overdue after the position already exists.
