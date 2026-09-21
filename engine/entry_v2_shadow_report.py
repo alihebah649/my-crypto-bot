@@ -146,9 +146,32 @@ def build_entry_v2_shadow_report(
     rejected_open = sum(1 for row in rejected_execution_rows if row["status"] in _ACTIVE_STATUSES)
 
     by_adaptive_class: dict[str, dict[str, Any]] = {}
+    by_maturity_experiment: dict[str, dict[str, Any]] = {}
     for row in closed_adaptive:
         classification = str((row["adaptive_scalp_shadow"] or {}).get("classification") or "UNAVAILABLE")
         bucket = by_adaptive_class.setdefault(classification, {
+            "positions": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "realized_pnl": 0.0,
+            "fees": 0.0,
+        })
+        bucket["positions"] += 1
+        bucket["realized_pnl"] += row["realized_pnl"]
+        bucket["fees"] += row["fees"]
+        if row["realized_pnl"] > 0:
+            bucket["wins"] += 1
+        elif row["realized_pnl"] < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+
+    for row in closed_adaptive:
+        adaptive = row["adaptive_scalp_shadow"] or {}
+        experiment = adaptive.get("maturity_experiment") or {}
+        action = str(experiment.get("would_be_action") or "UNAVAILABLE")
+        bucket = by_maturity_experiment.setdefault(action, {
             "positions": 0,
             "wins": 0,
             "losses": 0,
@@ -195,6 +218,11 @@ def build_entry_v2_shadow_report(
         "adaptive_scalp_shadow": {
             "closed_positions": len(closed_adaptive),
             "by_classification": by_adaptive_class,
+            "maturity_experiment": {
+                "rule_version": 1,
+                "shadow_only": True,
+                "by_action": by_maturity_experiment,
+            },
         },
         "brain_shadow": analyze_brain_shadow_outcomes(
             brain_record_list,
