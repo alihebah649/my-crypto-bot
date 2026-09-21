@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from core.account_connection import AccountConnection, ConnectionState
+from core.settlement_trading_policy import SettlementState, SettlementTradingPolicy
 from core.trade_replication import FollowerAccount
 
 
@@ -28,6 +29,7 @@ class RegisteredAccount:
     role: AccountRole
     capital_basis: float
     copy_enabled: bool = True
+    settlement_policy: SettlementTradingPolicy = SettlementTradingPolicy(SettlementState.CURRENT)
 
     def __post_init__(self) -> None:
         if self.capital_basis <= 0.0:
