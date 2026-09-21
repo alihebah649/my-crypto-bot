@@ -206,6 +206,7 @@ class TradeReplicationPlanner:
                         symbol=intent.symbol,
                         side=intent.side,
                         action=ReplicationAction.CLOSE,
+                        reference_close_price=intent.reference_close_price,
                         close_fraction=intent.close_fraction,
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
