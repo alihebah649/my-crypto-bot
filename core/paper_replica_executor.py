@@ -54,6 +54,11 @@ class PaperReplicaExecutor:
         if instruction.action is ReplicationAction.CLOSE:
             return self._execute_close(instruction, adapter)
 
+        master_position_id = instruction.master_position_id or instruction.intent_id
+        existing = self.position_repository.get_by_master_position(master_position_id, instruction.connection_id)
+        if any(p.status is not PositionStatus.CLOSED for p in existing):
+            return False
+
         price = instruction.reference_entry_price
         if price is None or price <= 0.0 or instruction.target_quote_value <= 0.0:
             return False
