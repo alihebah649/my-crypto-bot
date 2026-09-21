@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
 from core.execution_profile import ExecutionProfile
+from core.execution_models import ExecutionSource
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.brain_market_regime import derive_market_breadth
 
