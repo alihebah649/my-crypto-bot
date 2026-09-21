@@ -16,6 +16,7 @@ from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from core.execution_adapter import ExecutionAdapter
+from core.execution_profile import ExecutionProfile
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.brain_market_regime import derive_market_breadth
 
@@ -222,8 +223,12 @@ class ShadowTradeManagerRuntime:
     """Fully composed Trade Manager runtime used by ``shadow_main.py``."""
     def __init__(self, *, initial_cash: float = 1000.0, fee_rate: float = 0.001,
                  execution_adapter: Optional[ExecutionAdapter] = None, risk_config: Optional[RiskConfig] = None,
-                 persistence_dir: Optional[str] = None) -> None:
+                 persistence_dir: Optional[str] = None,
+                 execution_profile: Optional[ExecutionProfile] = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
+        self.execution_profile = execution_profile or ExecutionProfile.paper()
+        if execution_adapter is None and not self.execution_profile.is_paper:
+            raise ValueError("A non-Paper execution profile requires an explicit execution adapter")
         self.last_entry_diagnostics: Dict[str, dict] = {}
         self.last_exit_watchdog: Dict[str, Any] = {}
         position_state = paper_state = None
@@ -239,7 +244,11 @@ class ShadowTradeManagerRuntime:
         self.risk_gateway = CoreRiskGateway(controller=self.risk_controller, position_sizer=self.position_sizer,
                                             portfolio_provider=self.portfolio_provider, market_provider=_MarketProvider(self.market),
                                             exposure_provider=_ExposureProvider(self.repository, self.market), quantity_normalizer=None)
-        self.execution_gateway = CoreExecutionGateway(self.execution_adapter); self.calculator = PositionCalculator()
+        self.execution_gateway = CoreExecutionGateway(
+            self.execution_adapter,
+            source=ExecutionSource.PAPER if self.execution_profile.is_paper else ExecutionSource.LIVE,
+            execution_profile=self.execution_profile,
+        ); self.calculator = PositionCalculator()
         self.position_risk = ExitPolicyPositionRiskManager(market_context_provider=self._position_market_context,
                                                            atr_provider=self._atr_percent, ema_provider=self._ema_trend,
                                                            trailing_atr_multiplier=1.5, break_even_trigger_percent=1.5,
