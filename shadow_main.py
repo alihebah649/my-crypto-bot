@@ -80,6 +80,14 @@ _paper_outcome_store = (
 runtime.brain_authority = brain_authority
 runtime.brain_authority_store = _brain_authority_store
 
+_legacy.logger.info(
+    "PAPER EVIDENCE STORAGE backend=%s paper_outcome=%s brain_authority=%s brain_shadow=%s",
+    "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
+    "POSTGRES" if _paper_outcome_store is not None else "LOCAL_LOG_ONLY",
+    "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
+    "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
+)
+
 
 def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     normalized = str(symbol).upper()
