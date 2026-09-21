@@ -672,8 +672,14 @@ def _observe_market_health() -> None:
     blocked = bool(snapshot.get("blocked"))
     last_path = snapshot.get("last_path") or ""
     retry_in = float(snapshot.get("blocked_for_seconds", 0.0) or 0.0)
-    if status_code in {418, 429}:
-        _market_health_notify(f"BINANCE RATE LIMIT {status_code}", f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}")
+    # A previous 418/429 remains diagnostic history after the circuit
+    # has reopened. Only report it as an active health state while the
+    # local market-data guard is actually blocked.
+    if status_code in {418, 429} and blocked:
+        _market_health_notify(
+            f"BINANCE RATE LIMIT {status_code}",
+            f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}",
+        )
         return
     if blocked:
         _market_health_notify("BINANCE CIRCUIT OPEN", f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s")
