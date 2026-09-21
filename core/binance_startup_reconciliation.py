@@ -6,9 +6,11 @@ from typing import Any, Iterable, Protocol
 
 from core.binance_protection import BinanceSpotProtection
 from core.binance_reconciliation import (
+    AccountLocalPositionView,
     ExchangeAsset,
     LocalPositionView,
     ReconciliationResult,
+    reconcile_account_spot_positions,
     reconcile_spot_positions,
 )
 
@@ -24,6 +26,19 @@ class StartupReconciliationSnapshot:
     local_positions: tuple[LocalPositionView, ...]
     open_orders_by_symbol: dict[str, tuple[dict[str, Any], ...]]
     active_protection_by_symbol: dict[str, bool]
+    result: ReconciliationResult
+
+
+
+
+
+@dataclass(frozen=True, slots=True)
+class AccountStartupReconciliationSnapshot:
+    account_id: str
+    exchange_assets: tuple[ExchangeAsset, ...]
+    local_positions: tuple[AccountLocalPositionView, ...]
+    open_orders_by_symbol: dict[str, tuple[dict[str, Any], ...]]
+    active_protection_by_position_id: dict[str, bool]
     result: ReconciliationResult
 
 
@@ -55,6 +70,48 @@ class BinanceStartupReconciliation:
             if quantity > 0.0:
                 assets.append(ExchangeAsset(symbol=symbol, quantity=quantity))
         return tuple(assets)
+
+    def reconcile_account_replica(
+        self,
+        account_id: str,
+        local_positions: Iterable[AccountLocalPositionView],
+    ) -> AccountStartupReconciliationSnapshot:
+        """Reconcile this authenticated exchange account against replica identities."""
+        local = tuple(local_positions)
+        tracked = set(self._tracked_symbols)
+        local_symbols = {p.symbol.upper() for p in local}
+        symbols = tracked | local_symbols
+
+        account = self._client.get_account_snapshot()
+        assets = self._account_assets(account, symbols)
+        orders_by_symbol = {
+            symbol: tuple(self._client.get_open_orders_snapshot(symbol))
+            for symbol in local_symbols
+        }
+        protection = {
+            position.user_position_id: BinanceSpotProtection.has_active_sell_protection(
+                orders_by_symbol.get(position.symbol.upper(), ()),
+                quantity=position.quantity,
+                stop_price=position.stop_price,
+            )
+            for position in local
+            if position.account_id == account_id
+        }
+        result = reconcile_account_spot_positions(
+            account_id,
+            assets,
+            local,
+            protection,
+        )
+        return AccountStartupReconciliationSnapshot(
+            account_id=account_id,
+            exchange_assets=assets,
+            local_positions=local,
+            open_orders_by_symbol=orders_by_symbol,
+            active_protection_by_position_id=protection,
+            result=result,
+        )
+
 
     def reconcile(self, local_positions: Iterable[LocalPositionView]) -> StartupReconciliationSnapshot:
         local = tuple(local_positions)
