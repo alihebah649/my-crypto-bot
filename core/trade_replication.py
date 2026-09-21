@@ -32,6 +32,7 @@ class MasterTradeIntent:
     reference_capital: float
     target_position_value: float = 0.0
     reference_entry_price: float | None = None
+    reference_close_price: float | None = None
     close_fraction: float = 1.0
     trade_mode: str = ""
     stop_loss_price: float | None = None
@@ -101,6 +102,7 @@ class MasterTradeIntent:
         trade_mode: str = "",
         strategy_snapshot_id: str = "",
         master_position_id: str | None = None,
+        reference_close_price: float | None = None,
         metadata: dict[str, Any] | None = None,
         intent_id: str | None = None,
     ) -> "MasterTradeIntent":
@@ -110,6 +112,7 @@ class MasterTradeIntent:
             side=side,
             action=ReplicationAction.CLOSE,
             reference_capital=reference_capital,
+            reference_close_price=reference_close_price,
             close_fraction=close_fraction,
             trade_mode=str(trade_mode or "").upper(),
             strategy_snapshot_id=str(strategy_snapshot_id or ""),
@@ -144,6 +147,7 @@ class ReplicaInstruction:
     action: ReplicationAction
     target_quote_value: float = 0.0
     reference_entry_price: float | None = None
+    reference_close_price: float | None = None
     stop_loss_price: float | None = None
     close_fraction: float = 0.0
     trade_mode: str = ""
@@ -190,6 +194,7 @@ class TradeReplicationPlanner:
                         trade_mode=intent.trade_mode,
                         strategy_snapshot_id=intent.strategy_snapshot_id,
                         master_position_id=intent.master_position_id or intent.intent_id,
+                        reference_close_price=intent.reference_close_price,
                         metadata=metadata,
                     )
                 )
