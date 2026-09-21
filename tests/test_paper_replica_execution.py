@@ -152,5 +152,8 @@ def test_same_open_intent_is_idempotent_after_process_restart(tmp_path):
 
     retry = restored_executor.execute(first.instructions[0])
     assert retry is True
-    assert len(restored_adapter.orders) == 1
+    # Orders are intentionally not restored by PaperExecutionAdapter; the
+    # persisted account balance proves the original execution survived restart,
+    # while the replica state makes the retry a safe no-op.
+    assert len(restored_adapter.orders) == 0
     assert restored_adapter.balance.assets["BTCUSDT"] == 0.175
