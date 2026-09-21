@@ -155,6 +155,14 @@ def classify_adaptive_scalp(
         or _mapping(scenario_map.get("trigger")).get("bullish_pattern")
     )
 
+    maturity_gate_pass = trigger_count >= 3
+    maturity_reasons = (
+        ["RECOVERY_TRIGGER_COUNT_3_PLUS"]
+        if maturity_gate_pass
+        else ["RECOVERY_TRIGGER_COUNT_BELOW_3"]
+    )
+    maturity_action = "WOULD_ALLOW" if maturity_gate_pass else "WOULD_BLOCK"
+
     base.update({
         "regime": regime,
         "strong_bear": strong_bear,
@@ -165,6 +173,13 @@ def classify_adaptive_scalp(
         "volume_ratio_5m": volume,
         "five_m_bias": five_m_bias,
         "bullish_pattern_confirmed": pattern_confirmed,
+        "maturity_experiment": {
+            "rule_version": 1,
+            "shadow_only": True,
+            "gate_pass": maturity_gate_pass,
+            "would_be_action": maturity_action,
+            "reasons": maturity_reasons,
+        },
     })
 
     reasons: list[str] = []
