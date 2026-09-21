@@ -1,12 +1,12 @@
 """Orchestration-only dispatcher for shared trade-intent replication.
 
 The dispatcher coordinates:
-    MasterTradeIntent -> AccountRegistry -> ReplicationPlanner -> DeliveryLedger
+    MasterTradeIntent -> AccountRegistry -> Account-Level Copy Risk
+    -> ReplicationPlanner -> DeliveryLedger -> Executor
 
 It intentionally knows nothing about indicators, market-data fetching,
 credentials, or exchange-specific APIs. A separate executor callback receives
-each ReplicaInstruction. Live execution is therefore still impossible unless
-a future application explicitly supplies a live executor.
+each approved ReplicaInstruction.
 """
 from __future__ import annotations
 
@@ -14,6 +14,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.account_registry import AccountRegistry
+from core.account_risk_gate import (
+    AccountExecutionSnapshotProvider,
+    AccountLevelRiskGate,
+    AccountRiskDecision,
+)
 from core.replication_delivery import (
     DeliveryState,
     ReplicationDeliveryLedger,
@@ -37,6 +42,7 @@ class DispatchResult:
     skipped_duplicates: int
     failed: int
     instructions: tuple[ReplicaInstruction, ...]
+    risk_rejected: int = 0
 
 
 ReplicaExecutor = Callable[[ReplicaInstruction], bool]
@@ -50,9 +56,18 @@ class TradeReplicationDispatcher:
         registry: AccountRegistry,
         *,
         ledger: ReplicationDeliveryLedger | None = None,
+        risk_gate: AccountLevelRiskGate | None = None,
+        account_state_provider: AccountExecutionSnapshotProvider | None = None,
     ) -> None:
+        if (risk_gate is None) != (account_state_provider is None):
+            raise ValueError(
+                "risk_gate and account_state_provider must be supplied together"
+            )
+
         self.registry = registry
         self.ledger = ledger or ReplicationDeliveryLedger()
+        self.risk_gate = risk_gate
+        self.account_state_provider = account_state_provider
 
     def dispatch(
         self,
@@ -67,9 +82,27 @@ class TradeReplicationDispatcher:
         dispatched = 0
         skipped_duplicates = 0
         failed = 0
+        risk_rejected = 0
         executable: list[ReplicaInstruction] = []
 
         for instruction in planned:
+            if self.risk_gate is not None:
+                account = self.registry.get(instruction.connection_id)
+                if account is None:
+                    risk_rejected += 1
+                    continue
+
+                assert self.account_state_provider is not None
+                snapshot = self.account_state_provider.snapshot(account)
+                risk_result = self.risk_gate.evaluate(
+                    account=account,
+                    instruction=instruction,
+                    snapshot=snapshot,
+                )
+                if risk_result.decision is AccountRiskDecision.REJECTED:
+                    risk_rejected += 1
+                    continue
+
             record = self.ledger.register_new(
                 intent_id=instruction.intent_id,
                 connection_id=instruction.connection_id,
@@ -126,6 +159,7 @@ class TradeReplicationDispatcher:
             skipped_duplicates=skipped_duplicates,
             failed=failed,
             instructions=tuple(executable),
+            risk_rejected=risk_rejected,
         )
 
 
