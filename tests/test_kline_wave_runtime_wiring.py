@@ -18,3 +18,11 @@ def test_paper_runtime_activates_kline_wave_scheduler():
 def test_runtime_trace_is_bound_to_the_active_kline_manager():
     main = (ROOT / "shadow_main.py").read_text(encoding="utf-8")
     assert '_legacy._market_data_runtime_trace_bind_manager(_active_market_data_manager)' in main
+
+
+def test_kline_fetch_syncs_the_manager_cache_and_hydrates_memory():
+    base = (ROOT / "shadow_main_base.py").read_text(encoding="utf-8")
+    assert 'manager.cache.put(' in base
+    assert 'f"{str(interval)}:{str(symbol).upper()}:{int(limit)}"' in base
+    assert 'manager_cache = manager.cache.get(' in base
+    assert '_kline_cache[key] = (float(manager_cache.fetched_at), payload)' in base

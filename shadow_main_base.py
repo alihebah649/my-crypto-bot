@@ -141,12 +141,38 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     key = (str(symbol).upper(), str(interval), int(limit))
     now = time.time()
     ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
+    manager = getattr(_legacy, "market_data_manager", None)
+    manager_cache = None
+    if manager is not None:
+        try:
+            manager_cache = manager.cache.get(
+                f"{str(interval)}:{str(symbol).upper()}:{int(limit)}"
+            )
+        except Exception:
+            manager_cache = None
+
     # Cache is checked before the shared-IP guard: a fresh closed-candle cache
     # is safe to consume without making another Binance request.
     with _kline_cache_lock:
         cached = _kline_cache.get(key)
-        if cached is not None and now - cached[0] < ttl:
+        cached_age = None if cached is None else max(0.0, now - cached[0])
+        if cached is not None and cached_age < ttl:
             return cached[1]
+
+    # The persistent MarketDataManager cache is the authoritative fallback
+    # across process restarts. Hydrate the in-memory cache when its snapshot is
+    # still fresh so the runtime and the entry-freshness audit share one clock.
+    if manager_cache is not None:
+        try:
+            manager_age = max(0.0, now - float(manager_cache.fetched_at))
+            if manager_age < ttl:
+                payload = manager_cache.payload
+                with _kline_cache_lock:
+                    _kline_cache[key] = (float(manager_cache.fetched_at), payload)
+                return payload
+        except (TypeError, ValueError):
+            pass
+
     if _binance_guard_active():
         return []
 
@@ -155,16 +181,38 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     # stale/missing entries outside the current wave are returned from bounded
     # cache only, preventing a simultaneous REST burst. Entry freshness is
     # still enforced separately before any paper order.
-    manager = getattr(_legacy, "market_data_manager", None)
     allowed_symbols = getattr(_legacy, "_market_data_kline_refresh_symbols", None)
     if manager is not None and isinstance(allowed_symbols, set):
         if str(symbol).upper() not in allowed_symbols:
+            if manager_cache is None:
+                return cached[1] if cached is not None else []
+            try:
+                stale_age = max(0.0, now - float(manager_cache.fetched_at))
+                stale_max = float(manager.policies[str(interval)].stale_max_age_seconds)
+                if stale_age <= stale_max:
+                    return manager_cache.payload
+            except (KeyError, TypeError, ValueError, AttributeError):
+                pass
             return cached[1] if cached is not None else []
 
     try:
         data = _original_fetch_klines(symbol, interval, limit)
+        fetched_at = time.time()
         with _kline_cache_lock:
-            _kline_cache[key] = (time.time(), data)
+            _kline_cache[key] = (fetched_at, data)
+        if manager is not None:
+            try:
+                manager.cache.put(
+                    f"{str(interval)}:{str(symbol).upper()}:{int(limit)}",
+                    data,
+                    fetched_at=fetched_at,
+                )
+            except Exception:
+                _legacy.logger.exception(
+                    "MarketDataManager cache sync failed for %s %s",
+                    symbol,
+                    interval,
+                )
         return data
     except requests.HTTPError as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
