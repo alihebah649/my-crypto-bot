@@ -76,6 +76,15 @@ _market_data_manager = MarketDataManager(
     kline_wave_interval_seconds=30.0,
 )
 _legacy.market_data_manager = _market_data_manager
+_legacy._market_data_manager_installed = True
+_legacy.logger.info(
+    "[MARKET-DATA-CONFIG] owner=shadow_main_base ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    len(_market_data_manager.ticker_groups()),
+    _market_data_manager.ticker_batch_size,
+    _market_data_manager.ticker_group_interval_seconds,
+    _market_data_manager.kline_wave_count,
+    _market_data_manager.kline_wave_interval_seconds,
+)
 
 
 def _retry_after_seconds(exc: Exception, default: float) -> float:
