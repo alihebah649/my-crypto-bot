@@ -51,3 +51,22 @@ def test_expired_snapshot_is_marked_stale_even_when_candle_is_recent():
     assert result["latest_raw_candle_open"] is False
     assert result["cache_expired"] is True
     assert result["state"] == "STALE"
+
+
+def test_closed_latest_candle_is_the_decision_candle():
+    captured = 1_720_000_300.0
+    candles = _candles(
+        int((captured - 300.0) * 1000),
+        int((captured - 30.0) * 1000),
+    )
+    result = audit_5m_entry_freshness(
+        candles_5m=candles,
+        captured_at=captured,
+        cache_timestamp=captured - 20.0,
+        cache_ttl_seconds=310.0,
+    )
+
+    assert result["latest_raw_candle_open"] is False
+    assert result["decision_candle_close_time_ms"] == candles[-1]["close_time"]
+    assert result["decision_candle_age_seconds"] == 30.0
+    assert result["state"] == "FRESH"
