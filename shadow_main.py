@@ -343,10 +343,10 @@ _paper_original_facade_execute_decision = runtime.facade.execute_decision
 _paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
 
-# A 24h ticker response is only used for current price, bid/ask and reporting
-# volume. Keep a valid snapshot available through short Binance rate-limit
-# windows; never fabricate a fresh market price when no prior snapshot exists.
-_TICKER_CACHE_TTL = 300.0
+# A 24h ticker snapshot is assembled from staggered 11-symbol Binance batches.
+# The merged cache keeps the full 22-symbol universe available while each group
+# is refreshed every 30 seconds; no strategy thresholds or entry rules change.
+_TICKER_CACHE_TTL = 30.0
 _TICKER_STALE_MAX_AGE = 900.0
 _ticker_cache: tuple[float, dict[str, dict]] | None = None
 _ticker_cache_lock = threading.RLock()
@@ -354,6 +354,26 @@ _ticker_cache_hits = 0
 _ticker_cache_misses = 0
 _ticker_cache_stale_uses = 0
 _ticker_cache_stale_active = False
+
+
+def _fetch_ticker_group_from_binance(symbols: list[str]) -> dict[str, dict]:
+    symbols = [str(symbol).upper() for symbol in symbols]
+    symbols_json = json.dumps(symbols, separators=(",", ":"))
+    try:
+        data = _legacy._binance_get("/api/v3/ticker/24hr", {"symbols": symbols_json})
+    except requests.HTTPError as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {418, 429}:
+            _set_binance_block(exc, "/api/v3/ticker/24hr")
+            return {}
+        raise
+    if not isinstance(data, list):
+        return {}
+    return {
+        str(item.get("symbol", "")).upper(): item
+        for item in data
+        if str(item.get("symbol", "")).upper() in symbols
+    }
 
 
 def _guarded_fetch_24h_tickers_with_cache():
@@ -365,17 +385,31 @@ def _guarded_fetch_24h_tickers_with_cache():
             _ticker_cache_hits += 1
             _ticker_cache_stale_active = False
             return cached[1]
+
     _ticker_cache_misses += 1
+    manager = globals().get("_market_data_manager")
+    if manager is not None and not _binance_guard_active():
+        try:
+            manager.refresh_ticker_group(_fetch_ticker_group_from_binance, now=now)
+            data = manager.merged_ticker_snapshot()
+            if data:
+                with _ticker_cache_lock:
+                    _ticker_cache = (time.time(), dict(data))
+                    _ticker_cache_stale_active = False
+                return data
+        except Exception:
+            _legacy.logger.exception("MarketDataManager ticker refresh failed")
+
     data = _paper_original_24h_tickers()
     if data:
         with _ticker_cache_lock:
             _ticker_cache = (time.time(), dict(data))
             _ticker_cache_stale_active = False
         return data
-    # Binance can temporarily answer with 429/418; the underlying guard then
-    # returns {}. Reuse only a bounded recent snapshot so the strategy is not
-    # fed invented data and the normal retry path remains intact. The snapshot
-    # remains diagnostic-only while stale: new paper entries are blocked.
+
+    # Binance can temporarily answer with 429/418; reuse only a bounded recent
+    # snapshot so the strategy is never fed invented data. New paper entries
+    # remain blocked while this fallback snapshot is stale.
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_STALE_MAX_AGE:
