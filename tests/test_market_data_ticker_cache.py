@@ -42,6 +42,8 @@ def test_ticker_cache_uses_bounded_stale_snapshot_when_binance_returns_empty(mon
     monkeypatch.setattr(shadow_main, "_ticker_cache_hits", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_misses", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_uses", 0)
+    # Isolate the legacy fallback contract from the active manager aggregation.
+    monkeypatch.setattr(shadow_main, "_market_data_manager", None)
 
     assert shadow_main._guarded_fetch_24h_tickers_with_cache() == original
 
