@@ -824,6 +824,12 @@ try:
         kline_cache_lock=_kline_cache_lock,
         kline_cache_ttl=_KLINE_CACHE_TTL,
     )
+
+    # Bind diagnostics to the same active manager used by the runtime so
+    # manager-controlled Kline refreshes are visible in MARKET-DATA-TRACE.
+    _active_market_data_manager = getattr(_legacy, "market_data_manager", None)
+    if _active_market_data_manager is not None:
+        _legacy._market_data_runtime_trace_bind_manager(_active_market_data_manager)
 except Exception as exc:  # pragma: no cover - diagnostic path must not break paper engine
     _legacy.logger.exception("Market-data runtime trace installation failed: %s", exc)
     _market_data_runtime_trace_snapshot = lambda: {"available": False, "error": str(exc)}
