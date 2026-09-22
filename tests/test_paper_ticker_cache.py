@@ -6,6 +6,7 @@ import shadow_main
 
 
 def reset_ticker_cache() -> None:
+    shadow_main._market_data_manager = None
     shadow_main._ticker_cache = None
     shadow_main._ticker_cache_hits = 0
     shadow_main._ticker_cache_misses = 0

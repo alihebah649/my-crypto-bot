@@ -71,7 +71,7 @@ _market_data_manager = MarketDataManager(
     PersistentMarketDataCache(Path(PAPER_STATE_DIR) / "market_data_manager_cache.json"),
     ticker_symbols=TRADING_SYMBOLS,
     ticker_batch_size=11,
-    ticker_group_interval_seconds=65.0,
+    ticker_group_interval_seconds=30.0,
     kline_wave_count=3,
     kline_wave_interval_seconds=30.0,
 )
