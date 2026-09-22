@@ -25,6 +25,9 @@ except Exception as exc:  # pragma: no cover - defensive runtime fallback
 _base_path = Path(__file__).with_name("shadow_main_base.py")
 _exec_source = _base_path.read_text(encoding="utf-8")
 globals()["_SHADOW_MAIN_EMBEDDED"] = True
+# This entrypoint owns the active MarketDataManager. The core package bootstrap
+# must not install a competing background manager during import.
+globals()["_SHADOW_MAIN_MANAGES_MARKET_DATA"] = True
 try:
     exec(compile(_exec_source, str(_base_path), "exec"), globals(), globals())
 finally:
