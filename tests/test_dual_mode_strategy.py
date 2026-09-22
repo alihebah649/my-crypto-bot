@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import shadow_main
 import shadow_main_legacy
 import dual_mode_strategy
@@ -137,3 +139,33 @@ def test_strategy_universe_remains_22_spot_pairs():
 
 # CI trigger checkpoint: safe adapter preserves original runtime composition.
 # The legacy runtime remains the execution authority.
+
+
+def test_strategy_uses_latest_closed_5m_candle():
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    closed_at = int((time.time() - 10.0) * 1000)
+    for candles in (candles_15m, candles_5m):
+        for candle_row in candles:
+            candle_row["open_time"] = closed_at - 299_000
+            candle_row["close_time"] = closed_at
+
+    seen_lengths = []
+
+    def record_rsi(prices, period=14):
+        seen_lengths.append(len(prices))
+        return 50.0
+
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    try:
+        monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", record_rsi)
+        monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+        monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+        monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (False, "NEUTRAL", False))
+        result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+    finally:
+        monkeypatch.undo()
+
+    assert seen_lengths[0] == 130
+    assert seen_lengths[1] == 30
+    assert result["scalp_signal"] in {"BUY", "HOLD"}
