@@ -545,6 +545,15 @@ def process_market_cycle() -> None:
         else:
             logger.warning("ENTRY BLOCKED %s: score=%s trace=%s", symbol, score.get("score"), trace)
 
+    missing_symbols = [symbol for symbol in TRADING_SYMBOLS if symbol not in new_scores]
+    logger.info(
+        "[MARKET-DATA-COMPLETENESS] tickers=%d/%d 15m=%d/%d 5m=%d/%d scored=%d/%d missing=%s",
+        len(tickers), len(TRADING_SYMBOLS),
+        len(candles_15m), len(TRADING_SYMBOLS),
+        len(candles_5m), len(TRADING_SYMBOLS),
+        len(new_scores), len(TRADING_SYMBOLS),
+        ",".join(missing_symbols) if missing_symbols else "NONE",
+    )
     logger.info("Paper cycle complete: data=%d/%d, BUY=%d, top=%s",
                 len(new_scores), len(TRADING_SYMBOLS),
                 sum(1 for row in new_scores.values() if row.get("signal") == "BUY"),
