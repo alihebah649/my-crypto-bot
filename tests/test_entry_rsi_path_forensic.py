@@ -1,3 +1,5 @@
+import time
+
 from dual_mode_strategy import score_symbol
 
 
@@ -46,11 +48,18 @@ def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
     monkeypatch.setattr("dual_mode_strategy.calculate_ema", lambda *_args, **_kwargs: 99.0)
     monkeypatch.setattr("dual_mode_strategy.bullish_pattern", lambda *_args, **_kwargs: (True, "BULLISH_BREAKOUT", True))
 
+    candles_15m = _series(150)
+    candles_5m = _series(60)
+    # The latest rows represent the still-open interval, so the strategy must
+    # continue excluding them while using the latest closed rows for RSI.
+    candles_15m[-1]["close_time"] = int(time.time() * 1000) + 60_000
+    candles_5m[-1]["close_time"] = int(time.time() * 1000) + 60_000
+
     result = score_symbol(
         "TESTUSDT",
         {"lastPrice": "100.0"},
-        _series(150),
-        _series(60),
+        candles_15m,
+        candles_5m,
     )
 
     assert result["rsi"] == 57.21
