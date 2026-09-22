@@ -26,6 +26,7 @@ from core.brain_shadow_capture_store import BrainShadowCaptureStore
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.brain_market_regime import derive_market_breadth
 from core.mtf_context_cache import MTFContextCache
+from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 
 # Additional assets are deliberately limited to established Spot assets that
 # currently pass the external Shariah screen used for this project. This is a
@@ -62,6 +63,19 @@ _original_fetch_klines = _legacy.fetch_klines
 _KLINE_CACHE_TTL = {"5m": 310.0, "15m": 910.0, "1h": 3610.0, "4h": 14410.0}
 _kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _kline_cache_lock = threading.RLock()
+
+# Activate the staggered Kline scheduler in the live Paper runtime. The
+# scheduler is intentionally independent of strategy/risk decisions; it only
+# limits which symbols may make a network refresh during each 30s cycle.
+_market_data_manager = MarketDataManager(
+    PersistentMarketDataCache(Path(PAPER_STATE_DIR) / "market_data_manager_cache.json"),
+    ticker_symbols=TRADING_SYMBOLS,
+    ticker_batch_size=11,
+    ticker_group_interval_seconds=65.0,
+    kline_wave_count=3,
+    kline_wave_interval_seconds=30.0,
+)
+_legacy.market_data_manager = _market_data_manager
 
 
 def _retry_after_seconds(exc: Exception, default: float) -> float:
