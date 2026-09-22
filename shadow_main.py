@@ -532,6 +532,10 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
     trace["trade_modes_skipped_existing"] = skipped_existing
     trace["trade_modes_opened"] = [str(p.entry_metadata.get("trade_mode", "SWING")).upper() for p in opened]
     trace["positions_opened"] = [p.position_id for p in opened]
+    if opened:
+        trace["position_id"] = opened[0].position_id
+    else:
+        trace.pop("position_id", None)
     trace["dual_lane_entry"] = len(opened) > 1
     if opened:
         trace["trade_mode"] = str(opened[0].entry_metadata.get("trade_mode", "SWING")).upper()
@@ -666,7 +670,19 @@ def _run_exit_watchdog_with_overlays():
 runtime.run_exit_watchdog = _run_exit_watchdog_with_overlays
 
 
+def _reset_entry_diagnostics_for_cycle() -> None:
+    """Clear per-symbol entry diagnostics at the start of each market cycle.
+
+    These diagnostics are cycle-scoped observability. Durable Paper outcome evidence
+    remains keyed to the committed position, so clearing them cannot erase trade history.
+    """
+    for symbol in list(runtime.last_entry_diagnostics):
+        if not str(symbol).startswith("__"):
+            runtime.last_entry_diagnostics.pop(symbol, None)
+
+
 def _process_market_cycle_with_overlays():
+    _reset_entry_diagnostics_for_cycle()
     original_has_position = runtime.controller.has_position
     runtime.controller.has_position = _lane_aware_existing_position_gate
     try:
