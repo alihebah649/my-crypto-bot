@@ -28,6 +28,10 @@ def _find_shadow_main():
 
 def _install_market_data_layer() -> bool:
     try:
+        main = _find_shadow_main()
+        if main is not None and getattr(main, "_SHADOW_MAIN_MANAGES_MARKET_DATA", False):
+            return False
+
         legacy = _find_legacy()
         if legacy is None or getattr(legacy, "_market_data_manager_installed", False):
             return False
@@ -45,7 +49,7 @@ def _install_market_data_layer() -> bool:
             PersistentMarketDataCache(state_dir / "market_data_cache.json"),
             ticker_symbols=symbols,
             ticker_batch_size=11,
-            ticker_group_interval_seconds=65.0,
+            ticker_group_interval_seconds=30.0,
         )
 
         original_ticker = ticker
@@ -152,7 +156,7 @@ def _install_market_data_layer() -> bool:
 
         threading.Thread(target=refresh_loop, daemon=True, name="persistent-market-data").start()
         try:
-            legacy.logger.info("Persistent market-data layer installed: 11+11 ticker groups, 65s inter-group gap")
+            legacy.logger.info("Persistent market-data layer installed: 11+11 ticker groups, 30s inter-group gap")
         except Exception:
             pass
         return True
@@ -162,9 +166,13 @@ def _install_market_data_layer() -> bool:
 
 def _delayed_install() -> None:
     for _ in range(20):
+        main = _find_shadow_main()
+        if main is not None and getattr(main, "_SHADOW_MAIN_MANAGES_MARKET_DATA", False):
+            return
         if _install_market_data_layer():
             return
-        if getattr(_find_legacy(), "_market_data_manager_installed", False):
+        legacy = _find_legacy()
+        if legacy is not None and getattr(legacy, "_market_data_manager_installed", False):
             return
         time.sleep(1.0)
 
