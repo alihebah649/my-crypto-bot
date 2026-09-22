@@ -34,3 +34,14 @@ def test_runtime_merges_staggered_ticker_groups_into_full_snapshot():
     assert "manager.refresh_ticker_group(_fetch_ticker_group_from_binance, now=now)" in main
     assert "data = manager.merged_ticker_snapshot()" in main
     assert "_TICKER_CACHE_TTL = 30.0" in main
+
+
+def test_core_bootstrap_does_not_compete_with_explicit_shadow_manager():
+    core_init = (ROOT / "core" / "__init__.py").read_text(encoding="utf-8")
+    main = (ROOT / "shadow_main.py").read_text(encoding="utf-8")
+    base = (ROOT / "shadow_main_base.py").read_text(encoding="utf-8")
+    assert '_SHADOW_MAIN_MANAGES_MARKET_DATA' in core_init
+    assert 'getattr(main, "_SHADOW_MAIN_MANAGES_MARKET_DATA", False)' in core_init
+    assert 'globals()["_SHADOW_MAIN_MANAGES_MARKET_DATA"] = True' in main
+    assert '_legacy._market_data_manager_installed = True' in base
+    assert "ticker_group_interval_seconds=30.0" in core_init
