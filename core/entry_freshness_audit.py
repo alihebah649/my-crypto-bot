@@ -54,12 +54,18 @@ def audit_5m_entry_freshness(
         except (TypeError, ValueError):
             result["latest_raw_candle_open"] = False
 
-    if len(candles_5m) < 2:
+    if len(candles_5m) < 1:
         return result
 
-    # This is the exact row selected by the active strategy's candles_5m[:-1]
-    # contract. We deliberately do not infer a different row from candle state.
-    decision = candles_5m[-2]
+    # The strategy uses the latest raw candle when it is already closed. When
+    # the newest row is still open, it excludes that row and uses the previous
+    # closed candle instead. Keep this audit contract identical to execution.
+    if result["latest_raw_candle_open"]:
+        if len(candles_5m) < 2:
+            return result
+        decision = candles_5m[-2]
+    else:
+        decision = candles_5m[-1]
     decision_open = decision.get("open_time")
     decision_close = decision.get("close_time")
     result["decision_candle_open_time_ms"] = decision_open

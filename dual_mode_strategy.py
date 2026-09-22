@@ -1,6 +1,8 @@
 """Dual-lane strategy: 5m reversal-led Scalping + high-confidence Swing."""
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 
 from multi_timeframe_context import analyze_multi_timeframe_context
@@ -15,6 +17,22 @@ SCALP_MAX_RSI = 55.0
 SCALP_RSI_RISE_MIN = 1.5
 SCALP_RECOVERY_TRIGGER_MIN = 2
 SCALP_RECOVERY_POINTS = 4
+
+
+def _closed_candles(candles, captured_at=None):
+    """Use the latest candle when it is closed; otherwise exclude the open candle."""
+    if not candles:
+        return []
+    latest = candles[-1]
+    latest_close = latest.get("close_time") if isinstance(latest, dict) else None
+    if latest_close is not None:
+        try:
+            now_ms = float(captured_at if captured_at is not None else time.time()) * 1000.0
+            if now_ms > float(latest_close):
+                return list(candles)
+        except (TypeError, ValueError):
+            pass
+    return list(candles[:-1]) if len(candles) > 1 else []
 
 
 def calculate_ema(prices, period=100):
@@ -139,10 +157,10 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
     are context only and can penalize a weak counter-trend recovery, but they
     cannot by themselves authorize an entry.
     """
-    c15 = candles_15m[:-1] if len(candles_15m) > 1 else []
-    c5 = candles_5m[:-1] if len(candles_5m) > 1 else []
-    c1h = candles_1h[:-1] if candles_1h and len(candles_1h) > 1 else []
-    c4h = candles_4h[:-1] if candles_4h and len(candles_4h) > 1 else []
+    c15 = _closed_candles(candles_15m)
+    c5 = _closed_candles(candles_5m)
+    c1h = _closed_candles(candles_1h) if candles_1h else []
+    c4h = _closed_candles(candles_4h) if candles_4h else []
     price = float(ticker.get("lastPrice", 0))
     if len(c15) < 100 or len(c5) < 4 or price <= 0:
         return {
