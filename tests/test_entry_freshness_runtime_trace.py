@@ -98,5 +98,5 @@ def test_score_result_marks_old_snapshot_stale_without_changing_signal():
 
     assert audit["state"] == "STALE"
     assert audit["cache_expired"] is True
-    assert audit["decision_candle_close_time_ms"] == candles[-2]["close_time"]
+    assert audit["decision_candle_close_time_ms"] == candles[-1]["close_time"]
     assert result["scalp_signal"] == "BUY"
