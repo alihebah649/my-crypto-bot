@@ -66,3 +66,71 @@ def test_brain_shadow_store_round_trip(tmp_path):
     store = BrainShadowCaptureStore(tmp_path / "brain.jsonl")
     assert store.append({"capture_id": "cap-1", "brain_action": "HOLD"}) is True
     assert store.read_all() == [{"capture_id": "cap-1", "brain_action": "HOLD"}]
+
+
+def test_entry_cycle_brain_shadow_binds_to_matching_position_lane():
+    from core.brain_shadow_binding import attach_brain_shadow_entry
+
+    class FakeRepository:
+        def __init__(self):
+            self.positions = []
+            self.updated = []
+
+        def get_open_positions(self):
+            return list(self.positions)
+
+        def update(self, position):
+            self.updated.append(position.position_id)
+
+    repo = FakeRepository()
+    scalp = FakePosition("POS-SCALP", "TESTUSDT", "SCALP", "cap-1", status="OPEN")
+    swing = FakePosition("POS-SWING", "TESTUSDT", "SWING", "cap-2", status="OPEN")
+    repo.positions.extend([scalp, swing])
+
+    record = {
+        "capture_id": "cap-1",
+        "trade_mode": "SCALP",
+        "brain_action": "BUY",
+        "brain_confidence": 70.0,
+        "brain_reason": "SCALP_RECOVERY_CONFIRMED",
+        "agreement": True,
+        "timestamp": 1234.5,
+    }
+
+    assert attach_brain_shadow_entry(repo, record) == "POS-SCALP"
+    assert scalp.entry_metadata["brain_shadow_entry"] == record
+    assert swing.entry_metadata.get("brain_shadow_entry") is None
+    assert repo.updated == ["POS-SCALP"]
+
+
+def test_paper_outcome_reads_position_bound_brain_shadow_without_store_lookup():
+    from core.paper_outcome_evidence import build_paper_outcome_evidence
+
+    position = FakePosition(
+        "POS-BOUND", "TESTUSDT", "SCALP", "cap-bound", status="CLOSED", pnl=0.25, fees=0.1
+    )
+    position.opened_at = 100.0
+    position.closed_at = 130.0
+    position.quantity = 1.0
+    position.entry_price = 100.0
+    position.current_price = 101.0
+    position.stop_loss = 98.0
+    position.take_profit = None
+    position.gross_pnl = 0.35
+    position.exit_metadata = {"exit_price": 101.0}
+    position.entry_context = {"strategy_score": {}}
+    position.entry_metadata["brain_shadow_entry"] = {
+        "capture_id": "cap-bound",
+        "trade_mode": "SCALP",
+        "brain_action": "BUY",
+        "brain_confidence": 72.0,
+        "brain_reason": "CONFIRMED_ENTRY",
+        "agreement": True,
+    }
+
+    record = build_paper_outcome_evidence(position)
+    assert record["brain"]["capture_id"] == "cap-bound"
+    assert record["brain"]["action"] == "BUY"
+    assert record["brain"]["confidence"] == 72.0
+    assert record["brain"]["reason"] == "CONFIRMED_ENTRY"
+    assert record["brain"]["agreement"] is True

@@ -38,6 +38,13 @@ def build_paper_outcome_evidence(
     brain_record: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry_metadata = getattr(position, "entry_metadata", {}) or {}
+    # A position may carry the exact Brain Shadow observation captured during
+    # its entry cycle. Use it automatically when the caller did not supply a
+    # historical Brain record, while keeping the explicit argument authoritative.
+    if brain_record is None:
+        bound_brain = entry_metadata.get("brain_shadow_entry")
+        if isinstance(bound_brain, Mapping):
+            brain_record = bound_brain
     exit_metadata = getattr(position, "exit_metadata", {}) or {}
     entry_context = getattr(position, "entry_context", {}) or {}
     strategy = (
