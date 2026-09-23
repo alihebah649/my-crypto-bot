@@ -9,6 +9,7 @@ services:
     region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: python shadow_main.py
+    healthCheckPath: /health/paper
     autoDeployTrigger: commit
     envVars:
       - key: PAPER_EVIDENCE_DATABASE_URL
