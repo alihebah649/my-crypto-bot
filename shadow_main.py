@@ -287,7 +287,12 @@ def _emit_paper_outcome_evidence() -> int:
 
         entry_metadata = getattr(position, "entry_metadata", {}) or {}
         capture_id = entry_metadata.get("entry_v2_shadow_capture_id")
-        brain_record = _find_brain_record_for_capture(capture_id)
+        # Prefer the entry-cycle Brain Shadow snapshot bound to this position.
+        # Fallback to the durable store for older positions created before the
+        # binding fix.
+        brain_record = entry_metadata.get("brain_shadow_entry")
+        if not isinstance(brain_record, dict):
+            brain_record = _find_brain_record_for_capture(capture_id)
         brain_authority_record = _find_brain_authority_record_for_capture(capture_id)
 
         record = build_paper_outcome_evidence(
