@@ -62,6 +62,7 @@ def build_paper_outcome_evidence(
         stop_distance_percent = 0.0
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
+    entry_decision_chain = entry_metadata.get("entry_decision_chain")
 
     def _relative_to_entry(value: Any, entry: float) -> float | None:
         try:
@@ -87,7 +88,7 @@ def build_paper_outcome_evidence(
     )
 
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "evidence_type": "PAPER_OUTCOME",
         "position_id": str(getattr(position, "position_id", "")),
         "symbol": str(getattr(position, "symbol", "")).upper(),
@@ -115,6 +116,7 @@ def build_paper_outcome_evidence(
             "name",
             getattr(position, "close_reason", None),
         ),
+        "entry_decision_chain": _safe(entry_decision_chain) if isinstance(entry_decision_chain, Mapping) else None,
         "entry_v2": {
             "capture_id": entry_metadata.get("entry_v2_shadow_capture_id"),
             "decision": v2.get("decision"),
