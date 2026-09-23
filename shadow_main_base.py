@@ -25,6 +25,7 @@ from core.brain_shadow_runtime import BrainShadowRuntime
 from core.brain_shadow_capture_store import BrainShadowCaptureStore
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.brain_market_regime import derive_market_breadth
+from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 
@@ -679,6 +680,13 @@ def _run_brain_shadow_cycle() -> None:
                     entry_v2_capture_id=capture_id,
                 )
                 shadow_by_mode[mode] = record.to_dict()
+
+                # Persist the exact entry-cycle Brain Shadow observation onto
+                # the matching Paper position. The match uses the immutable
+                # Entry v2 capture identity plus lane, so later scan-time
+                # HOLD observations cannot overwrite entry evidence.
+                if capture_id:
+                    attach_brain_shadow_entry(runtime.repository, record.to_dict())
 
                 if (
                     record.strategy_action == "BUY"
