@@ -36,6 +36,7 @@ finally:
 from trade_manager.models import PositionStatus
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
+from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
@@ -482,6 +483,24 @@ def _loss_cooldown(symbol: str) -> float:
     return loss_cooldown_remaining(runtime.repository.get_closed_positions(), symbol, now=time.time(), cooldown_seconds=REENTRY_COOLDOWN_SECONDS)
 
 
+def _entry_decision_chain_for(symbol: str, mode: str, score: dict, *, final_approved: bool | None = None,
+                              execution_attempted: bool = False, position_opened: bool = False,
+                              failed_gate: str | None = None) -> dict:
+    trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
+    brain_by_mode = trace.get("brain_authority_by_mode", {}) or {}
+    v2_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
+    return build_entry_decision_chain(
+        score,
+        trade_mode=mode,
+        brain_record=brain_by_mode.get(str(mode).upper()),
+        v2_record=v2_by_mode.get(str(mode).upper()),
+        final_approved=final_approved,
+        execution_attempted=execution_attempted,
+        position_opened=position_opened,
+        failed_gate=failed_gate,
+    )
+
+
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
     # Freeze the exact candidate snapshot before Brain and all downstream work.
@@ -490,6 +509,21 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     candidate_strategy_snapshot = deepcopy(score) if isinstance(score, dict) else {}
     candidate_snapshot_captured_at = time.time()
     freshness = candidate_strategy_snapshot.get("entry_freshness_5m") if isinstance(candidate_strategy_snapshot, dict) else None
+
+    def _record_chain(*, final_approved: bool | None, execution_attempted: bool,
+                      position_opened: bool, failed_gate: str | None = None) -> dict:
+        chain = _entry_decision_chain_for(
+            symbol,
+            mode,
+            candidate_strategy_snapshot,
+            final_approved=final_approved,
+            execution_attempted=execution_attempted,
+            position_opened=position_opened,
+            failed_gate=failed_gate,
+        )
+        runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
+        return chain
+
     if not entry_execution_freshness_allowed(freshness, mode):
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({
@@ -498,6 +532,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             "execution": "NOT_RUN",
             "entry_freshness_5m": freshness,
         })
+        _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_ENTRY_DATA")
         _legacy.logger.info(
             "ENTRY BLOCKED %s: stale 5m decision data mode=%s age=%ss",
             symbol,
@@ -510,19 +545,24 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     if stale_active:
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_STALE_TICKER", "ticker_stale_active": True, "trade_mode": mode, "execution": "NOT_RUN"})
+        _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_TICKER")
         _legacy.logger.info("ENTRY BLOCKED %s: stale ticker snapshot active mode=%s", symbol, mode)
         return None
     remaining = _loss_cooldown(symbol)
     if remaining > 0:
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_LOSS_COOLDOWN", "loss_cooldown_seconds": round(remaining, 1), "loss_cooldown_hours": round(remaining / 3600.0, 2), "trade_mode": mode, "execution": "NOT_RUN"})
+        _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="LOSS_COOLDOWN")
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     if not _brain_authority_entry_gate(symbol, candidate_strategy_snapshot, mode):
+        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+        failed = trace.get("brain_authority_rejection_reason") or "BRAIN_AUTHORITY"
+        _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate=str(failed))
         return None
+
+    # Brain Authority passed (or explicitly bypassed incomplete context).
     _current_trade_mode["value"] = mode
-    # Keep older test/integration callables compatible while the real runtime
-    # receives the frozen candidate snapshot explicitly.
     try:
         params = inspect.signature(_original_runtime_open_position).parameters
         accepts_snapshot = (
@@ -531,6 +571,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         )
     except (TypeError, ValueError):
         accepts_snapshot = True
+
     if accepts_snapshot:
         position = _original_runtime_open_position(
             symbol,
@@ -542,10 +583,26 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         )
     else:
         position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
+
     if position is not None:
+        chain = _record_chain(
+            final_approved=True,
+            execution_attempted=True,
+            position_opened=True,
+        )
         position.entry_metadata["trade_mode"] = mode
         position.metadata["trade_mode"] = mode
+        position.entry_metadata["entry_decision_chain"] = chain
+        position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
+    else:
+        chain = _record_chain(
+            final_approved=False,
+            execution_attempted=True,
+            position_opened=False,
+            failed_gate="DOWNSTREAM_OPEN_POSITION",
+        )
+        runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
     return position
 
 
