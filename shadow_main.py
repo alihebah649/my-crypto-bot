@@ -40,6 +40,7 @@ from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
+from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -924,6 +925,23 @@ def _run_dual_mode_engine_thread() -> None:
         }
         runtime.last_entry_diagnostics.setdefault("__paper_loop__", {})["thread_exit"] = dict(_dual_mode_engine_thread_last_exit)
         _legacy.logger.error("Dual-mode market engine thread returned unexpectedly; trading loop is no longer running")
+
+
+def _paper_engine_health_payload() -> dict:
+    heartbeat = runtime.last_entry_diagnostics.get("__paper_loop__", {}) or {}
+    return _paper_engine_health_snapshot(
+        _dual_mode_engine_thread,
+        heartbeat,
+        max_age_seconds=120.0,
+    )
+
+
+@app.get("/health/paper")
+def _paper_engine_health():
+    payload = _paper_engine_health_payload()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return jsonify(payload), status_code
+
 
 
 def _paper_engine_thread_watchdog() -> None:
