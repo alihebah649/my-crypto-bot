@@ -52,13 +52,20 @@ def build_paper_outcome_evidence(
         if isinstance(entry_context, Mapping)
         else {}
     ) or {}
+    entry_stop_source = "ENTRY_METADATA"
+    entry_stop_value = entry_metadata.get("entry_stop_loss")
+    if entry_stop_value is None:
+        entry_stop_source = "POSITION_CURRENT_STOP_FALLBACK"
+        entry_stop_value = getattr(position, "stop_loss", 0.0)
+    entry_stop_loss = None
     stop_distance_percent = 0.0
     try:
         entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
-        stop_price = float(getattr(position, "stop_loss", 0.0) or 0.0)
-        if entry_price > 0 and stop_price > 0:
-            stop_distance_percent = max(0.0, (entry_price - stop_price) / entry_price * 100.0)
+        entry_stop_loss = float(entry_stop_value or 0.0)
+        if entry_price > 0 and entry_stop_loss > 0:
+            stop_distance_percent = max(0.0, (entry_price - entry_stop_loss) / entry_price * 100.0)
     except (TypeError, ValueError):
+        entry_stop_loss = None
         stop_distance_percent = 0.0
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
@@ -107,6 +114,7 @@ def build_paper_outcome_evidence(
         "entry_price": float(getattr(position, "entry_price", 0.0) or 0.0),
         "exit_price": float(exit_price or 0.0),
         "stop_loss": float(getattr(position, "stop_loss", 0.0) or 0.0),
+        "entry_stop_loss": entry_stop_loss,
         "take_profit": getattr(position, "take_profit", None),
         "gross_pnl": float(getattr(position, "gross_pnl", 0.0) or 0.0),
         "realized_pnl": float(getattr(position, "realized_pnl", 0.0) or 0.0),
@@ -186,6 +194,7 @@ def build_paper_outcome_evidence(
             "mtf_net": strategy.get("mtf_net"),
             "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
             "stop_distance_percent": round(stop_distance_percent, 6),
+            "stop_distance_source": entry_stop_source,
             "ema100": strategy.get("ema100"),
             "entry_vs_ema100_percent": _relative_to_entry(strategy.get("ema100"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("ema100") is not None else None,
             "atr": strategy.get("atr"),
