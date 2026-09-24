@@ -326,12 +326,21 @@ TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 # not feed strategy, risk, or execution yet. This lets us validate continuity
 # while REST remains the authoritative source during the migration stage.
 _binance_market_stream = BinanceMarketStream(TRADING_SYMBOLS)
-_binance_market_stream.start()
+if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+    _binance_market_stream.start()
 _legacy.binance_market_stream = _binance_market_stream
 
-@app.get("/binance-ws-health")
+
 def _binance_ws_health():
     return jsonify(_binance_market_stream.snapshot()), 200
+
+
+if "binance_ws_health" not in app.view_functions:
+    app.add_url_rule(
+        "/binance-ws-health",
+        endpoint="binance_ws_health",
+        view_func=_binance_ws_health,
+    )
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
 _brain_shadow_database_url = database_url_from_env()
