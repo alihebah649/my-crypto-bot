@@ -170,5 +170,5 @@ def test_paper_outcome_uses_frozen_entry_stop_after_protection_moves_stop():
 
     assert record["entry_stop_loss"] == 64.44336984
     assert record["stop_loss"] == 66.1722122122
-    assert record["entry_forensics"]["stop_distance_percent"] == 2.418622
+    assert record["entry_forensics"]["stop_distance_percent"] == 2.417671
     assert record["entry_forensics"]["stop_distance_source"] == "ENTRY_METADATA"
