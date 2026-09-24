@@ -46,7 +46,7 @@ def test_shadow_feed_parses_kline_and_ticker_without_strategy_side_effects():
     assert snapshot["closed_kline_events"] == 1
     assert snapshot["symbols_with_latest_kline"] == 1
     assert snapshot["tickers_with_latest"] == 1
-    assert snapshot["coverage_kline_percent"] == 6.25
+    assert snapshot["coverage_kline_percent"] == 25.0
     assert snapshot["coverage_ticker_percent"] == 100.0
 
 
