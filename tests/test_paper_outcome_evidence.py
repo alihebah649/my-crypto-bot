@@ -20,6 +20,7 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
         close_reason=SimpleNamespace(name="TAKE_PROFIT"),
         entry_metadata={
             "trade_mode": "SCALP",
+            "entry_stop_loss": 693.0,
             "entry_v2_shadow_capture_id": "cap-1",
             "entry_v2_shadow_decision": {
                 "decision": "REJECT_NO_RECLAIM",
@@ -140,3 +141,34 @@ def test_paper_outcome_contains_scalp_forensics():
     assert record["entry_forensics"]["combined_signature"] == "LATE_RECOVERY__BREAKOUT"
     assert record["entry_forensics"]["recovery_trigger_count"] == 3
     assert record["entry_forensics"]["stop_distance_percent"] == 1.5
+
+
+def test_paper_outcome_uses_frozen_entry_stop_after_protection_moves_stop():
+    position = SimpleNamespace(
+        position_id="POS-STOP-FROZEN",
+        symbol="LTCUSDT",
+        opened_at=100.0,
+        closed_at=150.0,
+        quantity=1.0,
+        entry_price=66.04,
+        current_price=67.9,
+        stop_loss=66.1722122122,
+        take_profit=None,
+        gross_pnl=1.8,
+        realized_pnl=1.7,
+        total_fees=0.1,
+        close_reason=SimpleNamespace(name="TRAILING_STOP"),
+        entry_metadata={
+            "trade_mode": "SCALP",
+            "entry_stop_loss": 64.44336984,
+        },
+        entry_context={"strategy_score": {}},
+        exit_metadata={"exit_price": 67.9},
+    )
+
+    record = build_paper_outcome_evidence(position)
+
+    assert record["entry_stop_loss"] == 64.44336984
+    assert record["stop_loss"] == 66.1722122122
+    assert record["entry_forensics"]["stop_distance_percent"] == 2.418622
+    assert record["entry_forensics"]["stop_distance_source"] == "ENTRY_METADATA"
