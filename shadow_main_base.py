@@ -28,6 +28,7 @@ from core.brain_market_regime import derive_market_breadth
 from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
+from core.binance_market_stream import BinanceMarketStream
 
 # Additional assets are deliberately limited to established Spot assets that
 # currently pass the external Shariah screen used for this project. This is a
@@ -319,6 +320,18 @@ _legacy.BUY_SCORE_THRESHOLD = BUY_SCORE_THRESHOLD
 app = _legacy.app
 runtime = _legacy.runtime
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
+
+# Diagnostic-only WebSocket shadow feed. It receives the same Spot ticker and
+# Kline streams that we plan to make authoritative after validation, but it does
+# not feed strategy, risk, or execution yet. This lets us validate continuity
+# while REST remains the authoritative source during the migration stage.
+_binance_market_stream = BinanceMarketStream(TRADING_SYMBOLS)
+_binance_market_stream.start()
+_legacy.binance_market_stream = _binance_market_stream
+
+@app.get("/binance-ws-health")
+def _binance_ws_health():
+    return jsonify(_binance_market_stream.snapshot()), 200
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
 _brain_shadow_database_url = database_url_from_env()
