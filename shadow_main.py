@@ -616,6 +616,9 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
         position.entry_metadata["trade_mode"] = mode
+        # Preserve the stop requested at entry before any later protection/trailing
+        # logic can mutate position.stop_loss. This is diagnostic-only attribution.
+        position.entry_metadata["entry_stop_loss"] = float(stop_loss)
         position.metadata["trade_mode"] = mode
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
