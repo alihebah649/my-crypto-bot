@@ -561,6 +561,28 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate=str(failed))
         return None
 
+    # Snapshot the attribution inputs BEFORE downstream execution. The original
+    # open-position path can mutate/reset runtime.last_entry_diagnostics, so
+    # rebuilding the chain after execution can otherwise lose the Brain/V2
+    # decision that actually authorized this exact entry.
+    pre_execution_trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
+    pre_execution_brain = deepcopy(
+        (pre_execution_trace.get("brain_authority_by_mode", {}) or {}).get(str(mode).upper())
+    )
+    pre_execution_v2 = deepcopy(
+        (pre_execution_trace.get("entry_v2_shadow_by_mode", {}) or {}).get(str(mode).upper())
+    )
+    pre_execution_chain = build_entry_decision_chain(
+        candidate_strategy_snapshot,
+        trade_mode=mode,
+        brain_record=pre_execution_brain,
+        v2_record=pre_execution_v2,
+        final_approved=None,
+        execution_attempted=False,
+        position_opened=False,
+        failed_gate=None,
+    )
+
     # Brain Authority passed (or explicitly bypassed incomplete context).
     _current_trade_mode["value"] = mode
     try:
@@ -585,23 +607,27 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
 
     if position is not None:
-        chain = _record_chain(
-            final_approved=True,
-            execution_attempted=True,
-            position_opened=True,
-        )
+        pre_execution_chain["final"] = {
+            "approved": True,
+            "execution_attempted": True,
+            "position_opened": True,
+            "failed_gate": None,
+        }
+        chain = pre_execution_chain
+        runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
         position.entry_metadata["trade_mode"] = mode
         position.metadata["trade_mode"] = mode
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
     else:
-        chain = _record_chain(
-            final_approved=False,
-            execution_attempted=True,
-            position_opened=False,
-            failed_gate="DOWNSTREAM_OPEN_POSITION",
-        )
+        pre_execution_chain["final"] = {
+            "approved": False,
+            "execution_attempted": True,
+            "position_opened": False,
+            "failed_gate": "DOWNSTREAM_OPEN_POSITION",
+        }
+        chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
     return position
 
