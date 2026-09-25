@@ -1,3 +1,5 @@
+import pytest
+
 from core.binance_rest_ws_comparison import compare_rest_ws_candle
 
 
@@ -54,7 +56,7 @@ def test_compare_rest_ws_detects_divergence_on_same_candle():
 
     assert result["status"] == "DIVERGENCE"
     assert result["fields_match"] is False
-    assert result["max_abs_diff"] == 0.01
+    assert result["max_abs_diff"] == pytest.approx(0.01)
 
 
 def test_compare_rest_ws_ignores_unclosed_websocket_candle():
