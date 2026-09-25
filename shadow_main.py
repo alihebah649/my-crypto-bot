@@ -1088,7 +1088,8 @@ def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
 
     try:
         rest_candles = _binance_rest_candles_for_compare(symbol, interval)
-        ws_candle = stream.get_latest_kline(symbol, interval)
+        get_closed = getattr(stream, "get_latest_closed_kline", None)
+        ws_candle = get_closed(symbol, interval) if callable(get_closed) else stream.get_latest_kline(symbol, interval)
         result = compare_rest_ws_candle(rest_candles, ws_candle)
         result.update(
             {
