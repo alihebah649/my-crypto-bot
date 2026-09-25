@@ -1058,26 +1058,48 @@ _BINANCE_REST_WS_COMPARE_INTERVALS = ("5m", "15m", "1h", "4h")
 
 
 def _binance_rest_candles_for_compare(symbol: str, interval: str) -> list[dict]:
-    raw = _legacy._binance_get(
-        "/api/v3/klines",
-        {"symbol": str(symbol).upper(), "interval": str(interval), "limit": 3},
-    )
-    candles: list[dict] = []
-    for row in raw or []:
-        if not isinstance(row, (list, tuple)) or len(row) < 7:
-            continue
-        candles.append(
-            {
-                "open_time": int(row[0]),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]),
-                "close_time": int(row[6]),
-            }
-        )
-    return candles
+    """Read fresh REST candles already acquired by the Paper market-data path.
+
+    This diagnostic must not create an extra Binance request. The Paper engine's
+    guarded REST fetch path populates the shared MarketDataManager cache, so the
+    comparison can reuse the same REST-authoritative data without adding rate
+    pressure or changing execution behavior.
+    """
+    manager = getattr(_legacy, "market_data_manager", None)
+    cache = getattr(manager, "cache", None)
+    if manager is None or cache is None:
+        return []
+
+    upper_symbol = str(symbol).upper()
+    interval_name = str(interval)
+    limit = 150 if interval_name == "15m" else 60
+    key = f"{interval_name}:{upper_symbol}:{limit}"
+
+    try:
+        if not manager.entry_data_is_fresh(interval_name, key):
+            return []
+        snapshot = cache.get(key)
+        payload = snapshot.payload if snapshot is not None else None
+    except Exception:
+        return []
+
+    if not isinstance(payload, list):
+        return []
+
+    return [
+        {
+            "open_time": int(candle["open_time"]),
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+            "volume": float(candle["volume"]),
+            "close_time": int(candle["close_time"]),
+        }
+        for candle in payload
+        if isinstance(candle, dict)
+        and all(field in candle for field in ("open_time", "open", "high", "low", "close", "volume", "close_time"))
+    ]
 
 
 def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
