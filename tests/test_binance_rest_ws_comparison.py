@@ -1,6 +1,6 @@
 import pytest
 
-from core.binance_rest_ws_comparison import compare_rest_ws_candle
+from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
 
 
 def test_compare_rest_ws_closed_candle_match():
@@ -66,3 +66,30 @@ def test_compare_rest_ws_ignores_unclosed_websocket_candle():
     )
 
     assert result["status"] == "NO_WS_CLOSED_CANDLE"
+
+
+def test_normalize_rest_candles_filters_invalid_rows():
+    payload = [
+        {
+            "open_time": "1000",
+            "open": "10",
+            "high": "11",
+            "low": "9",
+            "close": "10.5",
+            "volume": "25",
+            "close_time": "1299",
+        },
+        {"open_time": "bad"},
+    ]
+
+    result = normalize_rest_candles(payload)
+
+    assert result == [{
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 25.0,
+        "close_time": 1299,
+    }]
