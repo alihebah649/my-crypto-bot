@@ -1078,18 +1078,15 @@ def _binance_rest_candles_for_compare(
     key = f"{interval_name}:{upper_symbol}:{limit}"
 
     try:
-        if not manager.entry_data_is_fresh(interval_name, key):
-            return [], None
+        # Diagnostic comparison must inspect the available cache snapshot even
+        # when its normal entry TTL has expired. The snapshot timestamp is then
+        # used by compare_rest_ws_candle() to distinguish a pre-close snapshot
+        # from a valid historical closed-candle comparison.
         snapshot = cache.get(key)
-        payload = snapshot.payload if snapshot is not None else None
-        fetched_at = float(snapshot.fetched_at) if snapshot is not None else None
+        from core.binance_rest_ws_comparison import normalize_cached_rest_snapshot
+        return normalize_cached_rest_snapshot(snapshot)
     except Exception:
         return [], None
-
-    if not isinstance(payload, list):
-        return [], fetched_at
-
-    return normalize_rest_candles(payload), fetched_at
 
 
 def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
