@@ -13,6 +13,32 @@ from typing import Any, Mapping, Sequence
 _OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
 
 
+def normalize_rest_candles(payload: Any) -> list[dict[str, Any]]:
+    """Normalize already-fetched REST candle mappings for comparison."""
+    if not isinstance(payload, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    required = ("open_time", "open", "high", "low", "close", "volume", "close_time")
+    for candle in payload:
+        if not isinstance(candle, Mapping) or not all(field in candle for field in required):
+            continue
+        try:
+            normalized.append(
+                {
+                    "open_time": int(candle["open_time"]),
+                    "open": float(candle["open"]),
+                    "high": float(candle["high"]),
+                    "low": float(candle["low"]),
+                    "close": float(candle["close"]),
+                    "volume": float(candle["volume"]),
+                    "close_time": int(candle["close_time"]),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
 def compare_rest_ws_candle(
     rest_candles: Sequence[Mapping[str, Any]],
     ws_candle: Mapping[str, Any] | None,
