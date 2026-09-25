@@ -42,6 +42,7 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
+from core.binance_rest_ws_comparison import compare_rest_ws_candle
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -1030,6 +1031,8 @@ def _paper_engine_health_payload() -> dict:
                 "mode": "SHADOW_ONLY",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+    with _binance_rest_ws_compare_lock:
+        payload["binance_rest_ws_comparison"] = dict(_binance_rest_ws_last_comparison)
     return payload
 
 
@@ -1039,6 +1042,109 @@ def _paper_engine_health():
     status_code = 200 if payload["status"] == "ok" else 503
     return jsonify(payload), status_code
 
+
+
+_binance_rest_ws_compare_lock = threading.RLock()
+_binance_rest_ws_last_comparison: dict[str, object] = {
+    "status": "NOT_RUN",
+    "symbol": None,
+    "interval": None,
+    "open_time": None,
+    "max_abs_diff": None,
+    "fields_match": None,
+}
+_binance_rest_ws_compare_index = 0
+_BINANCE_REST_WS_COMPARE_INTERVALS = ("5m", "15m", "1h", "4h")
+
+
+def _binance_rest_candles_for_compare(symbol: str, interval: str) -> list[dict]:
+    raw = _legacy._binance_get(
+        "/api/v3/klines",
+        {"symbol": str(symbol).upper(), "interval": str(interval), "limit": 3},
+    )
+    candles: list[dict] = []
+    for row in raw or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 7:
+            continue
+        candles.append(
+            {
+                "open_time": int(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+                "close_time": int(row[6]),
+            }
+        )
+    return candles
+
+
+def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
+    global _binance_rest_ws_last_comparison
+    stream = globals().get("_binance_market_stream")
+    if stream is None or not callable(getattr(stream, "get_latest_kline", None)):
+        return
+
+    try:
+        rest_candles = _binance_rest_candles_for_compare(symbol, interval)
+        ws_candle = stream.get_latest_kline(symbol, interval)
+        result = compare_rest_ws_candle(rest_candles, ws_candle)
+        result.update(
+            {
+                "symbol": str(symbol).upper(),
+                "interval": str(interval),
+                "checked_at": time.time(),
+            }
+        )
+        _legacy.logger.info(
+            "[BINANCE-REST-WS-COMPARE] symbol=%s interval=%s status=%s "
+            "open_time=%s fields_match=%s max_abs_diff=%s",
+            result.get("symbol"),
+            result.get("interval"),
+            result.get("status"),
+            result.get("open_time"),
+            result.get("fields_match"),
+            result.get("max_abs_diff"),
+        )
+    except Exception as exc:
+        result = {
+            "status": "ERROR",
+            "symbol": str(symbol).upper(),
+            "interval": str(interval),
+            "error": f"{type(exc).__name__}: {exc}",
+            "checked_at": time.time(),
+        }
+        _legacy.logger.warning(
+            "[BINANCE-REST-WS-COMPARE] symbol=%s interval=%s status=ERROR error=%s",
+            symbol,
+            interval,
+            result["error"],
+        )
+
+    with _binance_rest_ws_compare_lock:
+        _binance_rest_ws_last_comparison = dict(result)
+
+
+def _binance_rest_ws_compare_loop() -> None:
+    global _binance_rest_ws_compare_index
+    compare_symbols = tuple(TRADING_SYMBOLS)
+    if not compare_symbols:
+        return
+
+    while True:
+        try:
+            symbol_index = _binance_rest_ws_compare_index // len(_BINANCE_REST_WS_COMPARE_INTERVALS)
+            interval_index = _binance_rest_ws_compare_index % len(_BINANCE_REST_WS_COMPARE_INTERVALS)
+            symbol = compare_symbols[symbol_index % len(compare_symbols)]
+            interval = _BINANCE_REST_WS_COMPARE_INTERVALS[interval_index]
+            _binance_rest_ws_compare_once(symbol, interval)
+            _binance_rest_ws_compare_index = (_binance_rest_ws_compare_index + 1) % (
+                len(compare_symbols) * len(_BINANCE_REST_WS_COMPARE_INTERVALS)
+            )
+        except Exception:
+            _legacy.logger.exception("Binance REST vs WebSocket comparison loop failed")
+        time.sleep(60.0)
 
 
 def _binance_websocket_health_loop() -> None:
@@ -1107,5 +1213,10 @@ if __name__ == "__main__":
         target=_binance_websocket_health_loop,
         daemon=True,
         name="binance-websocket-health",
+    ).start()
+    threading.Thread(
+        target=_binance_rest_ws_compare_loop,
+        daemon=True,
+        name="binance-rest-ws-compare",
     ).start()
     _legacy.run_flask()
