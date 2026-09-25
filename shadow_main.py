@@ -1048,22 +1048,9 @@ def _binance_websocket_health_loop() -> None:
             if stream is not None and callable(getattr(stream, "snapshot", None)):
                 snapshot = stream.snapshot()
                 _legacy.logger.info(
-                    "[BINANCE-WS-HEALTH] connected=%s healthy=%s streams=%s "
-                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s "
-                    "closed_kline=%s reconnects=%s parse_errors=%s last_event_age=%.2f",
-                    snapshot.get("connected"),
-                    snapshot.get("event_stream_healthy"),
-                    snapshot.get("stream_count"),
-                    snapshot.get("symbols_with_latest_kline"),
-                    snapshot.get("expected_kline_streams"),
-                    snapshot.get("tickers_with_latest"),
-                    snapshot.get("expected_tickers"),
-                    snapshot.get("events_total"),
-                    snapshot.get("closed_kline_events"),
-                    snapshot.get("reconnects"),
-                    float(snapshot.get("last_event_age_seconds") or 0.0),
-                )
-        except Exception:
+                    "[BINANCE-WS-HEALTH] %s",
+                    json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                )        except Exception:
             _legacy.logger.exception("Binance WebSocket health logger failed")
         time.sleep(60.0)
 
