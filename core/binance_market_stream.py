@@ -73,6 +73,7 @@ class BinanceMarketStream:
         self._last_error: str | None = None
 
         self._latest_kline: dict[tuple[str, str], dict[str, Any]] = {}
+        self._latest_closed_kline: dict[tuple[str, str], dict[str, Any]] = {}
         self._latest_ticker: dict[str, dict[str, Any]] = {}
 
     @property
@@ -212,13 +213,19 @@ class BinanceMarketStream:
         }
         with self._lock:
             self._kline_events += 1
+            self._latest_kline[(symbol, interval)] = candle
             if candle["is_closed"]:
                 self._closed_kline_events += 1
-            self._latest_kline[(symbol, interval)] = candle
+                self._latest_closed_kline[(symbol, interval)] = candle
 
     def get_latest_kline(self, symbol: str, interval: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._latest_kline.get((str(symbol).upper(), str(interval)))
+            return dict(value) if isinstance(value, Mapping) else None
+
+    def get_latest_closed_kline(self, symbol: str, interval: str) -> dict[str, Any] | None:
+        with self._lock:
+            value = self._latest_closed_kline.get((str(symbol).upper(), str(interval)))
             return dict(value) if isinstance(value, Mapping) else None
 
     def get_latest_ticker(self, symbol: str) -> dict[str, Any] | None:
