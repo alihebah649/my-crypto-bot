@@ -39,6 +39,27 @@ def normalize_rest_candles(payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+
+def normalize_cached_rest_snapshot(snapshot: Any) -> tuple[list[dict[str, Any]], float | None]:
+    """Normalize one cached REST snapshot for diagnostic comparison.
+
+    The snapshot age is intentionally not filtered here. A cached snapshot may
+    be older than the market-data fresh TTL and still be the correct snapshot
+    to classify: its fetched_at timestamp lets the comparator distinguish a
+    pre-close snapshot from a valid historical candle comparison.
+    """
+    if snapshot is None:
+        return [], None
+
+    payload = getattr(snapshot, "payload", None)
+    fetched_at_raw = getattr(snapshot, "fetched_at", None)
+    try:
+        fetched_at = None if fetched_at_raw is None else float(fetched_at_raw)
+    except (TypeError, ValueError):
+        fetched_at = None
+
+    return normalize_rest_candles(payload), fetched_at
+
 def compare_rest_ws_candle(
     rest_candles: Sequence[Mapping[str, Any]],
     ws_candle: Mapping[str, Any] | None,

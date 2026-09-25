@@ -126,3 +126,27 @@ def test_compare_rest_ws_snapshot_predates_candle_close():
     assert result["open_time"] == 1000
     assert result["rest_snapshot_fetched_at"] == 1.298
     assert result["ws_close_time"] == 1299
+
+
+def test_normalize_cached_rest_snapshot_preserves_stale_snapshot_timestamp():
+    from types import SimpleNamespace
+
+    from core.binance_rest_ws_comparison import normalize_cached_rest_snapshot
+
+    snapshot = SimpleNamespace(
+        fetched_at=1_298.0,
+        payload=[{
+            "open_time": 1000,
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": 10.5,
+            "volume": 25.0,
+            "close_time": 1299,
+        }],
+    )
+
+    candles, fetched_at = normalize_cached_rest_snapshot(snapshot)
+
+    assert candles[0]["open_time"] == 1000
+    assert fetched_at == 1298.0
