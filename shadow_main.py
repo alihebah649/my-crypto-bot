@@ -1061,6 +1061,7 @@ def _binance_websocket_health_loop() -> None:
                     snapshot.get("events_total"),
                     snapshot.get("closed_kline_events"),
                     snapshot.get("reconnects"),
+                    snapshot.get("parse_errors"),
                     float(snapshot.get("last_event_age_seconds") or 0.0),
                 )
         except Exception:
