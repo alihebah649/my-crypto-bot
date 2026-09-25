@@ -1057,18 +1057,20 @@ _binance_rest_ws_compare_index = 0
 _BINANCE_REST_WS_COMPARE_INTERVALS = ("5m", "15m", "1h", "4h")
 
 
-def _binance_rest_candles_for_compare(symbol: str, interval: str) -> list[dict]:
-    """Read fresh REST candles already acquired by the Paper market-data path.
+def _binance_rest_candles_for_compare(
+    symbol: str,
+    interval: str,
+) -> tuple[list[dict], float | None]:
+    """Read fresh REST candles and their cache snapshot time.
 
-    This diagnostic must not create an extra Binance request. The Paper engine's
-    guarded REST fetch path populates the shared MarketDataManager cache, so the
-    comparison can reuse the same REST-authoritative data without adding rate
-    pressure or changing execution behavior.
+    The snapshot time is retained so a forming REST candle is never compared
+    against a newly closed WebSocket candle and mislabeled as a source
+    divergence.
     """
     manager = getattr(_legacy, "market_data_manager", None)
     cache = getattr(manager, "cache", None)
     if manager is None or cache is None:
-        return []
+        return [], None
 
     upper_symbol = str(symbol).upper()
     interval_name = str(interval)
@@ -1077,16 +1079,17 @@ def _binance_rest_candles_for_compare(symbol: str, interval: str) -> list[dict]:
 
     try:
         if not manager.entry_data_is_fresh(interval_name, key):
-            return []
+            return [], None
         snapshot = cache.get(key)
         payload = snapshot.payload if snapshot is not None else None
+        fetched_at = float(snapshot.fetched_at) if snapshot is not None else None
     except Exception:
-        return []
+        return [], None
 
     if not isinstance(payload, list):
-        return []
+        return [], fetched_at
 
-    return normalize_rest_candles(payload)
+    return normalize_rest_candles(payload), fetched_at
 
 
 def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
@@ -1096,10 +1099,14 @@ def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
         return
 
     try:
-        rest_candles = _binance_rest_candles_for_compare(symbol, interval)
+        rest_candles, rest_snapshot_fetched_at = _binance_rest_candles_for_compare(symbol, interval)
         get_closed = getattr(stream, "get_latest_closed_kline", None)
         ws_candle = get_closed(symbol, interval) if callable(get_closed) else stream.get_latest_kline(symbol, interval)
-        result = compare_rest_ws_candle(rest_candles, ws_candle)
+        result = compare_rest_ws_candle(
+            rest_candles,
+            ws_candle,
+            rest_snapshot_fetched_at=rest_snapshot_fetched_at,
+        )
         result.update(
             {
                 "symbol": str(symbol).upper(),
@@ -1117,6 +1124,16 @@ def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
             result.get("fields_match"),
             result.get("max_abs_diff"),
         )
+        if result.get("status") == "DIVERGENCE":
+            _legacy.logger.info(
+                "[BINANCE-REST-WS-COMPARE-DIFF] symbol=%s interval=%s field_abs_diff=%s "
+                "rest_snapshot_fetched_at=%s ws_close_time=%s",
+                result.get("symbol"),
+                result.get("interval"),
+                result.get("field_abs_diff"),
+                result.get("rest_snapshot_fetched_at"),
+                result.get("ws_close_time"),
+            )
     except Exception as exc:
         result = {
             "status": "ERROR",

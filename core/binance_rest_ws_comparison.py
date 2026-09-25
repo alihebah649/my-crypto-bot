@@ -45,6 +45,7 @@ def compare_rest_ws_candle(
     *,
     relative_tolerance: float = 1e-12,
     absolute_tolerance: float = 1e-12,
+    rest_snapshot_fetched_at: float | None = None,
 ) -> dict[str, Any]:
     """Compare one WS closed candle with the REST candle having the same open time."""
     result: dict[str, Any] = {
@@ -63,6 +64,18 @@ def compare_rest_ws_candle(
         return result
 
     result["open_time"] = ws_open_time
+
+    ws_close_time = _as_int(ws_candle.get("close_time"))
+    if (
+        rest_snapshot_fetched_at is not None
+        and ws_close_time is not None
+        and float(rest_snapshot_fetched_at) < (ws_close_time / 1000.0)
+    ):
+        result["status"] = "REST_SNAPSHOT_PREDATES_CANDLE_CLOSE"
+        result["rest_snapshot_fetched_at"] = float(rest_snapshot_fetched_at)
+        result["ws_close_time"] = ws_close_time
+        return result
+
     match = None
     for candle in rest_candles:
         if not isinstance(candle, Mapping):
