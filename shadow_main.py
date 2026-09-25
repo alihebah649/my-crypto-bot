@@ -1015,11 +1015,22 @@ def _run_dual_mode_engine_thread() -> None:
 
 def _paper_engine_health_payload() -> dict:
     heartbeat = runtime.last_entry_diagnostics.get("__paper_loop__", {}) or {}
-    return _paper_engine_health_snapshot(
+    payload = _paper_engine_health_snapshot(
         _dual_mode_engine_thread,
         heartbeat,
         max_age_seconds=120.0,
     )
+    stream = globals().get("_binance_market_stream")
+    if stream is not None and callable(getattr(stream, "snapshot", None)):
+        try:
+            payload["binance_websocket"] = stream.snapshot()
+        except Exception as exc:
+            payload["binance_websocket"] = {
+                "available": False,
+                "mode": "SHADOW_ONLY",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+    return payload
 
 
 @app.get("/health/paper")
@@ -1028,6 +1039,33 @@ def _paper_engine_health():
     status_code = 200 if payload["status"] == "ok" else 503
     return jsonify(payload), status_code
 
+
+
+def _binance_websocket_health_loop() -> None:
+    while True:
+        try:
+            stream = globals().get("_binance_market_stream")
+            if stream is not None and callable(getattr(stream, "snapshot", None)):
+                snapshot = stream.snapshot()
+                _legacy.logger.info(
+                    "[BINANCE-WS-HEALTH] connected=%s healthy=%s streams=%s "
+                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s "
+                    "closed_kline=%s reconnects=%s parse_errors=%s last_event_age=%.2f",
+                    snapshot.get("connected"),
+                    snapshot.get("event_stream_healthy"),
+                    snapshot.get("stream_count"),
+                    snapshot.get("symbols_with_latest_kline"),
+                    snapshot.get("expected_kline_streams"),
+                    snapshot.get("tickers_with_latest"),
+                    snapshot.get("expected_tickers"),
+                    snapshot.get("events_total"),
+                    snapshot.get("closed_kline_events"),
+                    snapshot.get("reconnects"),
+                    float(snapshot.get("last_event_age_seconds") or 0.0),
+                )
+        except Exception:
+            _legacy.logger.exception("Binance WebSocket health logger failed")
+        time.sleep(60.0)
 
 
 def _paper_engine_thread_watchdog() -> None:
@@ -1063,5 +1101,10 @@ if __name__ == "__main__":
         target=_paper_engine_thread_watchdog,
         daemon=True,
         name="paper-engine-thread-watchdog",
+    ).start()
+    threading.Thread(
+        target=_binance_websocket_health_loop,
+        daemon=True,
+        name="binance-websocket-health",
     ).start()
     _legacy.run_flask()
