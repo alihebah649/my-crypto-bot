@@ -93,3 +93,36 @@ def test_normalize_rest_candles_filters_invalid_rows():
         "volume": 25.0,
         "close_time": 1299,
     }]
+
+
+def test_compare_rest_ws_snapshot_predates_candle_close():
+    rest = [{
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 25.0,
+        "close_time": 1299,
+    }]
+    ws = {
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 12.0,
+        "low": 8.0,
+        "close": 11.0,
+        "volume": 40.0,
+        "close_time": 1299,
+        "is_closed": True,
+    }
+
+    result = compare_rest_ws_candle(
+        rest,
+        ws,
+        rest_snapshot_fetched_at=1.298,
+    )
+
+    assert result["status"] == "REST_SNAPSHOT_PREDATES_CANDLE_CLOSE"
+    assert result["open_time"] == 1000
+    assert result["rest_snapshot_fetched_at"] == 1.298
+    assert result["ws_close_time"] == 1299
