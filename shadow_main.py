@@ -42,7 +42,7 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
-from core.binance_rest_ws_comparison import compare_rest_ws_candle
+from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -1086,20 +1086,7 @@ def _binance_rest_candles_for_compare(symbol: str, interval: str) -> list[dict]:
     if not isinstance(payload, list):
         return []
 
-    return [
-        {
-            "open_time": int(candle["open_time"]),
-            "open": float(candle["open"]),
-            "high": float(candle["high"]),
-            "low": float(candle["low"]),
-            "close": float(candle["close"]),
-            "volume": float(candle["volume"]),
-            "close_time": int(candle["close_time"]),
-        }
-        for candle in payload
-        if isinstance(candle, dict)
-        and all(field in candle for field in ("open_time", "open", "high", "low", "close", "volume", "close_time"))
-    ]
+    return normalize_rest_candles(payload)
 
 
 def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
