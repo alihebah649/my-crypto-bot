@@ -65,3 +65,27 @@ def test_unknown_symbol_or_interval_does_not_expand_shadow_state():
     assert feed.get_latest_kline("ETHUSDT", "5m") is None
     assert feed.get_latest_kline("BTCUSDT", "1m") is None
     assert feed.snapshot()["symbols_with_latest_kline"] == 0
+
+
+def test_latest_closed_kline_survives_start_of_next_candle():
+    feed = BinanceMarketStream(["BTCUSDT"])
+
+    feed._consume_message(
+        '{"data":{"e":"kline","E":1,"s":"BTCUSDT","k":'
+        '{"t":1000,"T":1299999,"s":"BTCUSDT","i":"5m",'
+        '"o":"100","c":"101","h":"102","l":"99","v":"10","q":"1005","x":true}}}'
+    )
+    feed._consume_message(
+        '{"data":{"e":"kline","E":2,"s":"BTCUSDT","k":'
+        '{"t":1300000,"T":1599999,"s":"BTCUSDT","i":"5m",'
+        '"o":"101","c":"101.5","h":"102","l":"100.5","v":"2","q":"203","x":false}}}'
+    )
+
+    latest = feed.get_latest_kline("BTCUSDT", "5m")
+    latest_closed = feed.get_latest_closed_kline("BTCUSDT", "5m")
+
+    assert latest["is_closed"] is False
+    assert latest["open_time"] == 1300000
+    assert latest_closed["is_closed"] is True
+    assert latest_closed["open_time"] == 1000
+    assert latest_closed["close"] == 101.0
