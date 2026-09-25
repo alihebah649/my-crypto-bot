@@ -1048,20 +1048,18 @@ def _binance_websocket_health_loop() -> None:
             if stream is not None and callable(getattr(stream, "snapshot", None)):
                 snapshot = stream.snapshot()
                 _legacy.logger.info(
-                    "[BINANCE-WS-HEALTH] connected=%s healthy=%s streams=%s "
-                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s "
-                    "closed_kline=%s reconnects=%s parse_errors=%s last_event_age=%.2f",
-                    snapshot.get("connected"),
-                    snapshot.get("event_stream_healthy"),
-                    snapshot.get("stream_count"),
-                    snapshot.get("symbols_with_latest_kline"),
-                    snapshot.get("expected_kline_streams"),
-                    snapshot.get("tickers_with_latest"),
-                    snapshot.get("expected_tickers"),
-                    snapshot.get("events_total"),
-                    snapshot.get("closed_kline_events"),
-                    snapshot.get("reconnects"),
-                    float(snapshot.get("last_event_age_seconds") or 0.0),
+                    f"[BINANCE-WS-HEALTH] connected={snapshot.get('connected')} "
+                    f"healthy={snapshot.get('event_stream_healthy')} "
+                    f"streams={snapshot.get('stream_count')} "
+                    f"kline_coverage={snapshot.get('symbols_with_latest_kline')}/"
+                    f"{snapshot.get('expected_kline_streams')} "
+                    f"ticker_coverage={snapshot.get('tickers_with_latest')}/"
+                    f"{snapshot.get('expected_tickers')} "
+                    f"events={snapshot.get('events_total')} "
+                    f"closed_kline={snapshot.get('closed_kline_events')} "
+                    f"reconnects={snapshot.get('reconnects')} "
+                    f"parse_errors={snapshot.get('parse_errors')} "
+                    f"last_event_age={float(snapshot.get('last_event_age_seconds') or 0.0):.2f}",
                 )
         except Exception:
             _legacy.logger.exception("Binance WebSocket health logger failed")
