@@ -77,6 +77,11 @@ def build_paper_outcome_evidence(
         entry_stop_loss = None
         stop_distance_percent = 0.0
         stop_distance_invalid_reason = "NON_NUMERIC_STOP_OR_ENTRY"
+    market_data_source = str(
+        strategy.get("market_data_source")
+        or entry_context.get("market_data_source")
+        or "UNKNOWN"
+    ).upper()
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
     entry_decision_chain = entry_metadata.get("entry_decision_chain")
@@ -109,6 +114,7 @@ def build_paper_outcome_evidence(
         "evidence_type": "PAPER_OUTCOME",
         "position_id": str(getattr(position, "position_id", "")),
         "symbol": str(getattr(position, "symbol", "")).upper(),
+        "market_data_source": market_data_source,
         "trade_mode": str(
             entry_metadata.get(
                 "trade_mode",
@@ -181,6 +187,7 @@ def build_paper_outcome_evidence(
             "upper_band": strategy.get("upper_band"),
             "strategy_snapshot_source": entry_context.get("strategy_snapshot_source"),
             "strategy_snapshot_captured_at": entry_context.get("strategy_snapshot_captured_at"),
+            "market_data_source": market_data_source,
         },
         "regime": {
             "market": strategy.get("market_regime"),

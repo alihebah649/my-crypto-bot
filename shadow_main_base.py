@@ -436,7 +436,19 @@ def _fetch_strategy_data_with_mtf():
 
 def _score_symbol_with_mtf(symbol, ticker, candles_15m, candles_5m):
     context = _mtf_candles.get(symbol, {})
-    return score_symbol(symbol, ticker, candles_15m, candles_5m, context.get("1h", []), context.get("4h", []))
+    scored = score_symbol(
+        symbol,
+        ticker,
+        candles_15m,
+        candles_5m,
+        context.get("1h", []),
+        context.get("4h", []),
+    )
+    if isinstance(scored, dict):
+        scored["market_data_source"] = str(
+            ticker.get("market_data_source", "UNKNOWN")
+        ).upper()
+    return scored
 
 
 _legacy.fetch_strategy_data = _fetch_strategy_data_with_mtf

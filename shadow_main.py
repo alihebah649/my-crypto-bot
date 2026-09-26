@@ -38,6 +38,7 @@ from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
+from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
@@ -723,6 +724,20 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
     return result
 
 
+
+
+@app.get("/paper/market-data-comparison")
+def paper_market_data_comparison():
+    """Compare closed Paper outcomes by their fixed market-data source."""
+    records = []
+    if _paper_outcome_store is not None:
+        try:
+            records = _paper_outcome_store.read_all()
+        except Exception:
+            _legacy.logger.exception("Market-data source comparison read failed")
+    return jsonify(
+        compare_paper_outcomes_by_market_data_source(records)
+    ), 200
 
 
 @app.get("/paper/brain-authority")

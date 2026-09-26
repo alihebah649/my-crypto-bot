@@ -39,6 +39,7 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
             "strategy_snapshot_captured_at": 1234.5,
             "strategy_score": {
                 "score": 87,
+                "market_data_source": "BYBIT",
                 "scalp_score": 87,
                 "swing_score": 80,
                 "signal": "BUY",
@@ -88,6 +89,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["entry_v2"]["failed_gate"] == "STRUCTURAL_RECLAIM_NOT_CONFIRMED"
     assert record["brain"]["capture_id"] == "cap-1"
     assert record["brain"]["action"] == "BUY"
+    assert record["market_data_source"] == "BYBIT"
+    assert record["strategy"]["market_data_source"] == "BYBIT"
     assert record["strategy"]["scalp_score"] == 87
     assert record["strategy"]["ema100"] == 704.0
     assert record["entry_forensics"]["entry_vs_ema100_percent"] < 0
