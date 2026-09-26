@@ -19,7 +19,7 @@ def test_ticker_cache_reuses_fresh_snapshot_without_exchange_request():
     calls = []
     payload = {"BTCUSDT": {"symbol": "BTCUSDT", "lastPrice": "80000"}}
 
-    def succeed():
+    def succeed(symbols=None):
         calls.append("request")
         return payload
 
