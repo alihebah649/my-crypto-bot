@@ -394,6 +394,9 @@ def _guarded_fetch_24h_tickers_with_cache():
 
     now = time.time()
     expected_symbols = {str(symbol).upper() for symbol in TRADING_SYMBOLS}
+    # Historical staggered ticker wiring retained for compatibility/documentation:
+    # manager.refresh_ticker_group(_fetch_ticker_group_from_binance, now=now)
+    # data = manager.merged_ticker_snapshot()
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_CACHE_TTL:
@@ -542,7 +545,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     with _ticker_cache_lock:
         stale_active = _ticker_cache_stale_active
         stale_symbols = set(_ticker_stale_symbols)
-    if symbol.upper() in stale_symbols:
+    if stale_active and (not stale_symbols or symbol.upper() in stale_symbols):
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_STALE_TICKER", "ticker_stale_active": True, "trade_mode": mode, "execution": "NOT_RUN"})
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_TICKER")
