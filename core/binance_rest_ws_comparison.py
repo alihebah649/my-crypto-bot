@@ -107,6 +107,30 @@ def compare_rest_ws_candle(
 
     if match is None:
         result["status"] = "NO_REST_MATCH"
+        result["rest_candle_count"] = len(rest_candles)
+        result["rest_snapshot_fetched_at"] = (
+            None if rest_snapshot_fetched_at is None else float(rest_snapshot_fetched_at)
+        )
+        result["ws_close_time"] = ws_close_time
+
+        rest_open_times = sorted(
+            open_time
+            for candle in rest_candles
+            if isinstance(candle, Mapping)
+            for open_time in [_as_int(candle.get("open_time"))]
+            if open_time is not None
+        )
+        if not rest_open_times:
+            result["rest_window_relation"] = "REST_EMPTY"
+        else:
+            result["rest_min_open_time"] = rest_open_times[0]
+            result["rest_max_open_time"] = rest_open_times[-1]
+            if ws_open_time < rest_open_times[0]:
+                result["rest_window_relation"] = "WS_OLDER_THAN_REST_WINDOW"
+            elif ws_open_time > rest_open_times[-1]:
+                result["rest_window_relation"] = "WS_NEWER_THAN_REST_WINDOW"
+            else:
+                result["rest_window_relation"] = "REST_WINDOW_HAS_OPEN_TIME_GAP"
         return result
 
     diffs: dict[str, float] = {}
