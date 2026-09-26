@@ -248,11 +248,10 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
     manager = getattr(_legacy, "market_data_manager", None)
     manager_cache = None
+    cache_key = f"{str(interval)}:{str(symbol).upper()}:{int(limit)}"
     if manager is not None:
         try:
-            manager_cache = manager.cache.get(
-                f"{str(interval)}:{symbol}:{int(limit)}"
-            )
+            manager_cache = manager.cache.get(cache_key)
         except Exception:
             manager_cache = None
 
@@ -301,7 +300,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
             if manager is not None:
                 try:
                     manager.cache.put(
-                        f"{str(interval)}:{symbol}:{int(limit)}",
+                        cache_key,
                         data,
                         fetched_at=fetched_at,
                     )
