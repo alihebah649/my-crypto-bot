@@ -109,7 +109,7 @@ from types import SimpleNamespace
 import pytest
 
 from trade_manager.core_risk_gateway import CoreRiskGateway
-from trade_manager.correlation_provider import KlineCorrelationProvider
+from trade_manager.core_risk_providers import KlineCorrelationProvider
 from trade_manager.integration_contracts import RiskSizingRequest
 from trade_manager.models import PositionStatus
 from trade_manager.part6_risk import MarketContext, PortfolioSnapshot, RiskConfig, RiskController, SymbolExposure, PositionSizeCalculator
