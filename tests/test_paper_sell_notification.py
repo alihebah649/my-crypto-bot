@@ -33,6 +33,8 @@ def test_closed_paper_position_gets_sell_notification_once(monkeypatch):
     assert shadow_main._notify_closed_positions() == 1
     assert len(sent_messages) == 1
     assert "PAPER SELL" in sent_messages[0] and "ADAUSDT" in sent_messages[0]
+    assert "Position ID:" in sent_messages[0]
+    assert "Trade Type: SWING" in sent_messages[0]
     assert "Net P&L: -0.0052$" in sent_messages[0]
     assert "Exit details: Stop Loss / Break Even Triggered" in sent_messages[0]
     assert position.exit_metadata["telegram_notification_sent"] is True
