@@ -38,11 +38,11 @@ def test_429_activates_guard_and_blocks_immediate_retry():
     reset_guard()
     calls = []
 
-    def fail_once():
+    def fail_once(symbols=None):
         calls.append("request")
         raise http_error(429, "17")
 
-    with patch.object(shadow_main, "_original_fetch_24h_tickers", side_effect=fail_once):
+    with patch.object(shadow_main, "_BYBIT_MARKET_DATA_ENABLED", False),          patch.object(shadow_main, "_original_fetch_24h_tickers", side_effect=fail_once):
         assert shadow_main._guarded_fetch_24h_tickers() == {}
         assert shadow_main._guarded_fetch_24h_tickers() == {}
 
@@ -56,11 +56,11 @@ def test_429_activates_guard_and_blocks_immediate_retry():
 def test_418_uses_retry_after_and_increases_future_backoff():
     reset_guard()
 
-    with patch.object(
-        shadow_main,
-        "_original_fetch_24h_tickers",
-        side_effect=http_error(418, "120"),
-    ):
+    with patch.object(shadow_main, "_BYBIT_MARKET_DATA_ENABLED", False),          patch.object(
+            shadow_main,
+            "_original_fetch_24h_tickers",
+            side_effect=http_error(418, "120"),
+         ):
         assert shadow_main._guarded_fetch_24h_tickers() == {}
 
     assert shadow_main._binance_guard["status_code"] == 418

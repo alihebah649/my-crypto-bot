@@ -5,16 +5,17 @@ def test_ticker_cache_uses_fresh_snapshot_without_upstream_call(monkeypatch):
     original = {"BTCUSDT": {"lastPrice": "100.0"}}
     calls = {"count": 0}
 
-    def upstream():
+    def upstream(symbols=None):
         calls["count"] += 1
         return original
 
-    monkeypatch.setattr(shadow_main, "_paper_original_24h_tickers", upstream)
+    monkeypatch.setattr(shadow_main, "_guarded_fetch_24h_tickers", upstream)
     monkeypatch.setattr(shadow_main.time, "time", lambda: 1000.0)
     monkeypatch.setattr(shadow_main, "_ticker_cache", None)
     monkeypatch.setattr(shadow_main, "_ticker_cache_hits", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_misses", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_uses", 0)
+    monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
     # These tests target the legacy cache fallback contract in isolation.
     monkeypatch.setattr(shadow_main, "_market_data_manager", None)
 
@@ -32,11 +33,11 @@ def test_ticker_cache_uses_bounded_stale_snapshot_when_binance_returns_empty(mon
     calls = {"count": 0}
     now = {"value": 1000.0}
 
-    def upstream():
+    def upstream(symbols=None):
         calls["count"] += 1
         return original if calls["count"] == 1 else {}
 
-    monkeypatch.setattr(shadow_main, "_paper_original_24h_tickers", upstream)
+    monkeypatch.setattr(shadow_main, "_guarded_fetch_24h_tickers", upstream)
     monkeypatch.setattr(shadow_main.time, "time", lambda: now["value"])
     monkeypatch.setattr(shadow_main, "_ticker_cache", None)
     monkeypatch.setattr(shadow_main, "_ticker_cache_hits", 0)
@@ -44,6 +45,8 @@ def test_ticker_cache_uses_bounded_stale_snapshot_when_binance_returns_empty(mon
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_uses", 0)
     # Isolate the legacy fallback contract from the active manager aggregation.
     monkeypatch.setattr(shadow_main, "_market_data_manager", None)
+    monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
+    monkeypatch.setattr(shadow_main, "_ticker_cache_stale_active", False)
 
     assert shadow_main._guarded_fetch_24h_tickers_with_cache() == original
 

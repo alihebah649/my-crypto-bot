@@ -129,16 +129,17 @@ def _binance_get(path: str, params: Optional[dict] = None, timeout: float = 12.0
 _TICKER_SYMBOL_BATCH_SIZE = 20
 
 
-def fetch_24h_tickers() -> dict[str, dict]:
-    """Fetch all configured 24h tickers without crossing the multi-symbol weight tier.
-
-    Binance applies a much larger request weight once more than 20 symbols are
-    included in this endpoint's ``symbols`` parameter. Keep the strategy's
-    complete universe intact, but issue bounded batches of <=20 symbols.
-    """
+def fetch_24h_tickers(symbols: Optional[Iterable[str]] = None) -> dict[str, dict]:
+    """Fetch 24h tickers for a requested symbol subset using bounded Binance batches."""
+    requested = [
+        str(symbol).upper()
+        for symbol in (symbols if symbols is not None else TRADING_SYMBOLS)
+    ]
     tickers: dict[str, dict] = {}
-    for start in range(0, len(TRADING_SYMBOLS), _TICKER_SYMBOL_BATCH_SIZE):
-        batch = TRADING_SYMBOLS[start : start + _TICKER_SYMBOL_BATCH_SIZE]
+    for start in range(0, len(requested), _TICKER_SYMBOL_BATCH_SIZE):
+        batch = requested[start : start + _TICKER_SYMBOL_BATCH_SIZE]
+        if not batch:
+            continue
         symbols_json = json.dumps(batch, separators=(",", ":"))
         data = _binance_get("/api/v3/ticker/24hr", {"symbols": symbols_json})
         for item in data:
@@ -146,7 +147,6 @@ def fetch_24h_tickers() -> dict[str, dict]:
             if symbol in batch:
                 tickers[symbol] = item
     return tickers
-
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
     raw = _binance_get(
@@ -325,6 +325,7 @@ def score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m:
     signal = "BUY" if score >= BUY_SCORE_THRESHOLD else "HOLD"
     return {
         "symbol": symbol, "score": score, "signal": signal, "reasons": reasons,
+        "market_data_source": str(ticker.get("market_data_source", "BINANCE")).upper(),
         "price": price, "ema100": ema100, "rsi": rsi, "atr": atr,
         "lower_band": lower_band, "middle_band": middle_band, "upper_band": upper_band,
         "volume_ratio": current_volume / average_volume if average_volume else 0.0,
