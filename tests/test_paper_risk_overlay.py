@@ -10,6 +10,7 @@ from core.paper_risk_overlay import (
     btc_recovery_stop,
     loss_cooldown_remaining,
     paper_stop_fill_price,
+    profit_protection_snapshot,
     profit_protection_trigger,
     strong_bullish_btc_exception,
 )
@@ -26,19 +27,28 @@ def test_loss_cooldown_does_not_block_profitable_exit():
     assert loss_cooldown_remaining(closed, "BTCUSDT", now=1001.0) == 0.0
 
 
-def test_profit_protection_requires_profit_then_retrace():
+def test_profit_protection_uses_calibrated_floor_and_retrace():
     assert profit_protection_trigger(
         entry_price=100.0,
-        current_price=100.60,
-        highest_price=100.90,
-        max_profit_percent=0.90,
+        current_price=100.80,
+        highest_price=101.30,
+        max_profit_percent=1.30,
     ) is True
     assert profit_protection_trigger(
         entry_price=100.0,
-        current_price=99.80,
-        highest_price=100.90,
-        max_profit_percent=0.90,
+        current_price=100.50,
+        highest_price=101.30,
+        max_profit_percent=1.30,
     ) is False
+    snapshot = profit_protection_snapshot(
+        entry_price=100.0,
+        current_price=100.80,
+        highest_price=101.30,
+        max_profit_percent=1.30,
+    )
+    assert snapshot["triggered"] is True
+    assert snapshot["current_gain_percent"] == 0.8
+    assert snapshot["retrace_percent"] > 0.35
 
 
 def test_paper_stop_fill_uses_configured_stop_after_polling_breach():
