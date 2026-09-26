@@ -588,7 +588,7 @@ def _notify_closed_positions() -> int:
         message = (
             "=== PAPER SELL ===\n"
             f"Symbol: {position.symbol}\n"
-            f"Position ID: {position.position_id}\n"
+            f"Position ID: {getattr(position, \"position_id\", \"UNKNOWN\")}\n"
             f"Trade Type: {trade_mode}\n"
             f"Reason: {reason}\n"
             f"Quantity: {position.quantity:.12f}\n"
