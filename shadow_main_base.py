@@ -29,6 +29,7 @@ from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 from core.binance_market_stream import BinanceMarketStream
+from trade_manager.correlation_provider import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
 # currently pass the external Shariah screen used for this project. This is a
@@ -79,6 +80,13 @@ _market_data_manager = MarketDataManager(
 )
 _legacy.market_data_manager = _market_data_manager
 _legacy._market_data_manager_installed = True
+
+
+def _correlation_candle_loader(symbol: str):
+    """Read bounded-analysis 5m candles from the canonical MarketDataManager cache."""
+    key = f"5m:{str(symbol).upper()}:60"
+    snapshot = _market_data_manager.get_for_analysis("5m", key)
+    return snapshot.payload if snapshot is not None else []
 _legacy.logger.info(
     "[MARKET-DATA-CONFIG] owner=shadow_main_base ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
     len(_market_data_manager.ticker_groups()),
@@ -319,6 +327,19 @@ _legacy.score_symbol = _score_symbol_with_mtf
 _legacy.BUY_SCORE_THRESHOLD = BUY_SCORE_THRESHOLD
 app = _legacy.app
 runtime = _legacy.runtime
+runtime.correlation_provider = KlineCorrelationProvider(
+    runtime.repository,
+    _correlation_candle_loader,
+    lookback_candles=runtime.risk_config.correlation.lookback_candles,
+)
+runtime.risk_gateway.correlation_provider = runtime.correlation_provider
+_legacy.logger.info(
+    "[CORRELATION-CONFIG] enabled=%s threshold=%.2f lookback=%d provider=%s",
+    runtime.risk_config.options.enable_correlation_control and runtime.risk_config.correlation.enabled,
+    runtime.risk_config.correlation.maximum_correlation,
+    runtime.risk_config.correlation.lookback_candles,
+    type(runtime.correlation_provider).__name__,
+)
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
 # Diagnostic-only WebSocket shadow feed. It receives the same Spot ticker and
