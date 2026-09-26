@@ -129,12 +129,20 @@ def build_paper_outcome_evidence(
         "quantity": float(getattr(position, "quantity", 0.0) or 0.0),
         "entry_price": float(getattr(position, "entry_price", 0.0) or 0.0),
         "exit_price": float(exit_price or 0.0),
+        "highest_price": float(getattr(position, "highest_price", 0.0) or 0.0),
+        "max_profit_percent": float(getattr(position, "max_profit_percent", 0.0) or 0.0),
         "stop_loss": float(getattr(position, "stop_loss", 0.0) or 0.0),
         "entry_stop_loss": entry_stop_loss,
         "take_profit": getattr(position, "take_profit", None),
         "gross_pnl": float(getattr(position, "gross_pnl", 0.0) or 0.0),
         "realized_pnl": float(getattr(position, "realized_pnl", 0.0) or 0.0),
         "fees": float(getattr(position, "total_fees", 0.0) or 0.0),
+        "exit_protection": {
+            "paper_profit_protection": bool(exit_metadata.get("paper_profit_protection", False)),
+            "paper_profit_protection_detail": _safe(
+                exit_metadata.get("paper_profit_protection_detail")
+            ),
+        },
         "close_reason": getattr(
             getattr(position, "close_reason", None),
             "name",
