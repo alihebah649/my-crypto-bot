@@ -583,12 +583,20 @@ def _notify_closed_positions() -> int:
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
         paper_cash = position.exit_metadata.get("paper_cash_after", runtime.execution_adapter.balance.cash)
+        trade_mode = str(position.entry_metadata.get("trade_mode", "SWING")).upper()
         message = (
-            "=== PAPER SELL ===\n" f"Symbol: {position.symbol}\n" f"Reason: {reason}\n"
-            f"Quantity: {position.quantity:.12f}\n" f"Entry: {position.entry_price:.8f}\n"
-            f"Exit: {exit_price:.8f}\n" f"Gross P&L: {position.gross_pnl:+.4f}$\n"
-            f"P&L %: {pnl_pct:+.2f}%\n" f"Fees: {position.total_fees:.4f}$\n"
-            f"Net P&L: {position.realized_pnl:+.4f}$\n"
+            "=== PAPER SELL ===\n"
+            `Symbol: ${position.symbol}\n`
+            `Position ID: ${position.position_id}\n`
+            `Trade Type: ${trade_mode}\n`
+            `Reason: ${reason}\n`
+            `Quantity: ${position.quantity:.12f}\n`
+            `Entry: ${position.entry_price:.8f}\n`
+            `Exit: ${exit_price:.8f}\n`
+            `Gross P&L: ${position.gross_pnl:+.4f}$\n`
+            `P&L %: ${pnl_pct:+.2f}%\n`
+            `Fees: ${position.total_fees:.4f}$\n`
+            `Net P&L: ${position.realized_pnl:+.4f}$\n`
             + (f"Exit details: {exit_message}\n" if exit_message else "")
             + f"Paper cash: ${float(paper_cash):.2f}\nPAPER ONLY"
         )
