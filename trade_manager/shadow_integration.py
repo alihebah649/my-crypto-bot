@@ -95,19 +95,27 @@ class _MarketProvider:
 
 
 class _ExposureProvider:
-    def __init__(self, repository: PositionRepository, market: ShadowMarketState):
-        self.repository = repository; self.market = market
+    def __init__(self, repository: PositionRepository, market: ShadowMarketState, portfolio_provider: Any):
+        self.repository = repository
+        self.market = market
+        self.portfolio_provider = portfolio_provider
 
     def get_exposure(self, symbol: str) -> SymbolExposure:
         symbol = symbol.upper()
         active = {PositionStatus.OPEN, PositionStatus.HOLD, PositionStatus.REVIEW_REQUIRED, PositionStatus.PARTIALLY_CLOSED}
         positions = [p for p in self.repository.get_by_symbol(symbol) if p.status in active]
         total_value = sum(p.quantity * self.market.price.get(symbol, p.current_price) for p in positions)
+        equity = 0.0
+        try:
+            equity = float(self.portfolio_provider.snapshot().account_equity)
+        except Exception:
+            equity = 0.0
+        exposure_percent = (total_value / equity * 100.0) if equity > 0 else 0.0
         open_trade_modes = tuple(
             str(p.entry_metadata.get("trade_mode", "SWING")).upper()
             for p in positions
         )
-        return SymbolExposure(symbol=symbol, exposure_percent=0.0, open_positions=len(positions),
+        return SymbolExposure(symbol=symbol, exposure_percent=exposure_percent, open_positions=len(positions),
                               total_quantity=sum(p.quantity for p in positions), total_value=total_value,
                               open_trade_modes=open_trade_modes)
 
@@ -257,7 +265,7 @@ class ShadowTradeManagerRuntime:
         self.portfolio_provider = _PortfolioProvider(self.execution_adapter, self.repository, self.market)
         self.risk_gateway = CoreRiskGateway(controller=self.risk_controller, position_sizer=self.position_sizer,
                                             portfolio_provider=self.portfolio_provider, market_provider=_MarketProvider(self.market),
-                                            exposure_provider=_ExposureProvider(self.repository, self.market), quantity_normalizer=None)
+                                            exposure_provider=_ExposureProvider(self.repository, self.market, self.portfolio_provider), quantity_normalizer=None)
         self.execution_gateway = CoreExecutionGateway(
             self.execution_adapter,
             source=ExecutionSource.PAPER if self.execution_profile.is_paper else ExecutionSource.LIVE,
