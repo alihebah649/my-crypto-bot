@@ -27,3 +27,26 @@ def test_compare_paper_outcomes_by_source():
     assert result["sources"]["BYBIT"]["losses"] == 1
     assert result["sources"]["BYBIT"]["net_pnl"] == 0.2
     assert result["sources"]["BYBIT"]["avg_stop_distance_percent"] == 1.5
+
+
+def test_active_score_wrapper_carries_market_data_source():
+    import shadow_main
+
+    original = shadow_main.score_symbol
+
+    def fake_score(*args, **kwargs):
+        return {"score": 77, "signal": "BUY"}
+
+    try:
+        shadow_main.score_symbol = fake_score
+        shadow_main._mtf_candles["TESTUSDT"] = {"1h": [], "4h": []}
+        result = shadow_main._score_symbol_with_mtf(
+            "TESTUSDT",
+            {"lastPrice": 1.0, "market_data_source": "bybit"},
+            [],
+            [],
+        )
+        assert result["market_data_source"] == "BYBIT"
+    finally:
+        shadow_main.score_symbol = original
+        shadow_main._mtf_candles.pop("TESTUSDT", None)
