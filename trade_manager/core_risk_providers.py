@@ -61,8 +61,26 @@ class CallableSymbolExposureProvider:
         return self.loader(symbol)
 
 
+@dataclass(slots=True)
+class CallableCorrelationProvider:
+    """Explicit boundary for the existing correlation-risk calculation owner."""
+
+    loader: Callable[[str], float]
+
+    def get_score(self, symbol: str) -> float:
+        value = self.loader(symbol)
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not (-1.0 <= score <= 1.0):
+            raise ValueError("correlation score must be within [-1, 1]")
+        return score
+
+
 __all__ = [
     "CorePortfolioRiskProvider",
     "CallableMarketContextProvider",
     "CallableSymbolExposureProvider",
+    "CallableCorrelationProvider",
 ]
