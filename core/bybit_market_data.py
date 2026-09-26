@@ -28,7 +28,7 @@ class BybitMarketDataError(RuntimeError):
     """Raised when a Bybit public market-data request is unsuccessful."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class BybitMarketDataClient:
     """Minimal unauthenticated Bybit V5 Spot market-data client."""
 
