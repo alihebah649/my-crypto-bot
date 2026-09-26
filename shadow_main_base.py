@@ -243,7 +243,8 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
 
 def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
-    key = (str(symbol).upper(), str(interval), int(limit))
+    symbol = str(symbol).upper()
+    key = (symbol, str(interval), int(limit))
     now = time.time()
     ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
     manager = getattr(_legacy, "market_data_manager", None)
@@ -251,22 +252,18 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     if manager is not None:
         try:
             manager_cache = manager.cache.get(
-                f"{str(interval)}:{str(symbol).upper()}:{int(limit)}"
+                f"{str(interval)}:{symbol}:{int(limit)}"
             )
         except Exception:
             manager_cache = None
 
-    # Cache is checked before the shared-IP guard: a fresh closed-candle cache
-    # is safe to consume without making another Binance request.
+    # All venues share the same canonical cache/freshness boundary.
     with _kline_cache_lock:
         cached = _kline_cache.get(key)
         cached_age = None if cached is None else max(0.0, now - cached[0])
         if cached is not None and cached_age < ttl:
             return cached[1]
 
-    # The persistent MarketDataManager cache is the authoritative fallback
-    # across process restarts. Hydrate the in-memory cache when its snapshot is
-    # still fresh so the runtime and the entry-freshness audit share one clock.
     if manager_cache is not None:
         try:
             manager_age = max(0.0, now - float(manager_cache.fetched_at))
@@ -278,27 +275,11 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
         except (TypeError, ValueError):
             pass
 
-    if str(symbol).upper() in _BYBIT_MARKET_DATA_SYMBOL_SET:
-        if not _BYBIT_MARKET_DATA_ENABLED:
-            return []
-        try:
-            data = _bybit_client.fetch_klines(symbol, interval, limit)
-            return data
-        except BybitMarketDataError as exc:
-            _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
-            return []
-
-    if _binance_guard_active():
-        return []
-
-    # The market-data manager assigns one of three deterministic waves to each
-    # symbol per refresh slot. Fresh cache entries remain immediately usable;
-    # stale/missing entries outside the current wave are returned from bounded
-    # cache only, preventing a simultaneous REST burst. Entry freshness is
-    # still enforced separately before any paper order.
+    # The same wave scheduler applies to Binance and Bybit. This prevents the
+    # new venue from becoming an accidental second burst path.
     allowed_symbols = getattr(_legacy, "_market_data_kline_refresh_symbols", None)
     if manager is not None and isinstance(allowed_symbols, set):
-        if str(symbol).upper() not in allowed_symbols:
+        if symbol not in allowed_symbols:
             if manager_cache is None:
                 return cached[1] if cached is not None else []
             try:
@@ -310,6 +291,35 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
                 pass
             return cached[1] if cached is not None else []
 
+    if symbol in _BYBIT_MARKET_DATA_SYMBOL_SET:
+        if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
+            return cached[1] if cached is not None else []
+        try:
+            data = _bybit_client.fetch_klines(symbol, interval, limit)
+            fetched_at = time.time()
+            with _kline_cache_lock:
+                _kline_cache[key] = (fetched_at, data)
+            if manager is not None:
+                try:
+                    manager.cache.put(
+                        f"{str(interval)}:{symbol}:{int(limit)}",
+                        data,
+                        fetched_at=fetched_at,
+                    )
+                except Exception:
+                    _legacy.logger.exception(
+                        "MarketDataManager cache sync failed for Bybit %s %s",
+                        symbol,
+                        interval,
+                    )
+            return data
+        except BybitMarketDataError as exc:
+            _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
+            return cached[1] if cached is not None else []
+
+    if _binance_guard_active():
+        return cached[1] if cached is not None else []
+
     try:
         data = _original_fetch_klines(symbol, interval, limit)
         fetched_at = time.time()
@@ -318,7 +328,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
         if manager is not None:
             try:
                 manager.cache.put(
-                    f"{str(interval)}:{str(symbol).upper()}:{int(limit)}",
+                    f"{str(interval)}:{symbol}:{int(limit)}",
                     data,
                     fetched_at=fetched_at,
                 )
@@ -333,7 +343,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in {418, 429}:
             _set_binance_block(exc, f"/api/v3/klines:{symbol}:{interval}")
-            return []
+            return cached[1] if cached is not None else []
         raise
 
 
