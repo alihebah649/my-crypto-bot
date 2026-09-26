@@ -19,6 +19,7 @@ class CoreRiskGateway:
     portfolio_provider: PortfolioSnapshotProvider
     market_provider: MarketContextProvider
     exposure_provider: Optional[SymbolExposureProvider] = None
+    correlation_provider: Any = None
     quantity_normalizer: Any = None
 
     def approve(self, request: RiskSizingRequest) -> RiskSizingApproval:
@@ -30,15 +31,19 @@ class CoreRiskGateway:
             portfolio = self.portfolio_provider.snapshot()
             market = self.market_provider.get_context(request.symbol)
             exposure = self.exposure_provider.get_exposure(request.symbol) if self.exposure_provider is not None else None
+            correlation_score = 0.0
+            if self.correlation_provider is not None:
+                correlation_score = float(self.correlation_provider.get_score(request.symbol))
             gate = self.controller.evaluate(
                 account=portfolio,
                 symbol=request.symbol,
                 signal=request.trade_mode,
                 market=market,
                 symbol_exposure=exposure,
+                correlation_score=correlation_score,
             )
             if gate.decision is not RiskDecision.APPROVED:
-                return self._reject(gate.reject_reason.name, metadata=gate.metadata)
+                return self._reject(gate.reject_reason.name, metadata={**gate.metadata, "correlation_score": correlation_score})
 
             config = self.position_sizer.config.position_sizing
             sizing = self.position_sizer.calculate(
@@ -66,6 +71,7 @@ class CoreRiskGateway:
                 "risk_amount": float(sizing.risk_amount),
                 "stop_distance": float(sizing.stop_distance),
                 "trade_mode": request.trade_mode,
+                "correlation_score": correlation_score,
             }
             if prospective_exposure > max_exposure:
                 return self._reject(RiskRejectReason.MAX_PORTFOLIO_EXPOSURE.name, metadata={
@@ -95,6 +101,7 @@ class CoreRiskGateway:
                     "source": "TradeManager.Part6",
                     "estimated_fee": max(request.estimated_fee, 0.0),
                     "trade_mode": request.trade_mode,
+                    "correlation_score": correlation_score,
                 },
             )
         except Exception as exc:
