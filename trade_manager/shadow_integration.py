@@ -227,7 +227,8 @@ class ShadowTradeManagerRuntime:
                  execution_adapter: Optional[ExecutionAdapter] = None, risk_config: Optional[RiskConfig] = None,
                  persistence_dir: Optional[str] = None,
                  execution_profile: Optional[ExecutionProfile] = None,
-                 account_connection: Optional[AccountConnection] = None) -> None:
+                 account_connection: Optional[AccountConnection] = None,
+                 correlation_provider: Any = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
 
         if account_connection is not None:
@@ -245,6 +246,7 @@ class ShadowTradeManagerRuntime:
             raise ValueError("A non-Paper execution profile requires an explicit execution adapter")
         self.last_entry_diagnostics: Dict[str, dict] = {}
         self.last_exit_watchdog: Dict[str, Any] = {}
+        self.correlation_provider = correlation_provider
         position_state = paper_state = None
         if persistence_dir:
             os.makedirs(persistence_dir, exist_ok=True)
