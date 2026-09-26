@@ -6,11 +6,12 @@ or the Trade Manager implementation.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Iterable
 
 REENTRY_COOLDOWN_SECONDS = 2.0 * 60.0 * 60.0
-PROFIT_PROTECTION_MIN_GAIN_PERCENT = 0.35
-PROFIT_PROTECTION_MIN_RETRACE_PERCENT = 0.20
+PROFIT_PROTECTION_MIN_GAIN_PERCENT = float(os.getenv("PAPER_PROFIT_PROTECTION_MIN_GAIN_PERCENT", "0.60"))
+PROFIT_PROTECTION_MIN_RETRACE_PERCENT = float(os.getenv("PAPER_PROFIT_PROTECTION_MIN_RETRACE_PERCENT", "0.35"))
 BTC_RECOVERY_MAX_DRAWDOWN_PERCENT = 1.20
 
 
@@ -40,12 +41,61 @@ def strong_bullish_btc_exception(score: dict[str, Any]) -> bool:
     )
 
 
-def profit_protection_trigger(*, entry_price: float, current_price: float, highest_price: float, max_profit_percent: float, min_gain_percent: float = PROFIT_PROTECTION_MIN_GAIN_PERCENT, min_retrace_percent: float = PROFIT_PROTECTION_MIN_RETRACE_PERCENT) -> bool:
+def profit_protection_snapshot(
+    *,
+    entry_price: float,
+    current_price: float,
+    highest_price: float,
+    max_profit_percent: float,
+    min_gain_percent: float = PROFIT_PROTECTION_MIN_GAIN_PERCENT,
+    min_retrace_percent: float = PROFIT_PROTECTION_MIN_RETRACE_PERCENT,
+) -> dict[str, float | bool]:
     if entry_price <= 0 or current_price <= 0 or highest_price <= 0:
-        return False
+        return {
+            "triggered": False,
+            "current_gain_percent": 0.0,
+            "peak_gain_percent": float(max_profit_percent),
+            "retrace_percent": 0.0,
+            "min_gain_percent": float(min_gain_percent),
+            "min_retrace_percent": float(min_retrace_percent),
+        }
     current_gain = (current_price - entry_price) / entry_price * 100.0
     retrace = (highest_price - current_price) / highest_price * 100.0
-    return bool(max_profit_percent >= min_gain_percent and current_gain >= min_gain_percent and retrace >= min_retrace_percent and current_price < highest_price)
+    triggered = bool(
+        max_profit_percent >= min_gain_percent
+        and current_gain >= min_gain_percent
+        and retrace >= min_retrace_percent
+        and current_price < highest_price
+    )
+    return {
+        "triggered": triggered,
+        "current_gain_percent": round(current_gain, 6),
+        "peak_gain_percent": round(float(max_profit_percent), 6),
+        "retrace_percent": round(retrace, 6),
+        "min_gain_percent": float(min_gain_percent),
+        "min_retrace_percent": float(min_retrace_percent),
+    }
+
+
+def profit_protection_trigger(
+    *,
+    entry_price: float,
+    current_price: float,
+    highest_price: float,
+    max_profit_percent: float,
+    min_gain_percent: float = PROFIT_PROTECTION_MIN_GAIN_PERCENT,
+    min_retrace_percent: float = PROFIT_PROTECTION_MIN_RETRACE_PERCENT,
+) -> bool:
+    return bool(
+        profit_protection_snapshot(
+            entry_price=entry_price,
+            current_price=current_price,
+            highest_price=highest_price,
+            max_profit_percent=max_profit_percent,
+            min_gain_percent=min_gain_percent,
+            min_retrace_percent=min_retrace_percent,
+        )["triggered"]
+    )
 
 
 def btc_recovery_eligible(score: dict[str, Any], *, btc_crashing: bool, pnl_percent: float, max_drawdown_percent: float = BTC_RECOVERY_MAX_DRAWDOWN_PERCENT) -> bool:
