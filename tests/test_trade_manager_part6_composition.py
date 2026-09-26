@@ -146,3 +146,33 @@ def test_part6_rejects_spot_leverage_above_one():
 
     assert approval.approved is False
     assert approval.reason == "LEVERAGE_NOT_ALLOWED_SPOT"
+
+
+def test_symbol_exposure_provider_reports_real_percentage_and_triggers_part6_symbol_cap():
+    from types import SimpleNamespace
+
+    from trade_manager.shadow_integration import _ExposureProvider
+
+    position = SimpleNamespace(
+        symbol="BTCUSDT",
+        status=PositionStatus.OPEN,
+        quantity=2.5,
+        current_price=100.0,
+        entry_metadata={"trade_mode": "SCALP"},
+    )
+
+    class Repo:
+        def get_by_symbol(self, symbol):
+            return [position]
+
+    class Market:
+        price = {"BTCUSDT": 100.0}
+
+    class Portfolio:
+        def snapshot(self):
+            return SimpleNamespace(account_equity=1000.0)
+
+    exposure = _ExposureProvider(Repo(), Market(), Portfolio()).get_exposure("BTCUSDT")
+
+    assert exposure.total_value == pytest.approx(250.0)
+    assert exposure.exposure_percent == pytest.approx(25.0)
