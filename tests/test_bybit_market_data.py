@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -48,8 +47,7 @@ def test_bybit_ticker_normalization(monkeypatch):
         )
 
     monkeypatch.setattr(requests, "get", fake_get)
-    client = BybitMarketDataClient()
-    result = client.fetch_tickers(["FETUSDT"])
+    result = BybitMarketDataClient().fetch_tickers(["FETUSDT"])
 
     assert calls["url"].endswith("/v5/market/tickers")
     assert calls["params"] == {"category": "spot"}
@@ -111,7 +109,6 @@ def test_ticker_router_does_not_send_bybit_symbols_to_binance():
 
     binance_calls = []
     bybit_calls = []
-
     original_bybit_cache = shadow_main._BYBIT_TICKER_CACHE
     try:
         shadow_main._BYBIT_TICKER_CACHE = None
@@ -122,7 +119,10 @@ def test_ticker_router_does_not_send_bybit_symbols_to_binance():
 
         def fake_bybit(symbols):
             bybit_calls.append(list(symbols))
-            return {s: {"symbol": s, "lastPrice": 200.0, "market_data_source": "BYBIT"} for s in symbols}
+            return {
+                s: {"symbol": s, "lastPrice": 200.0, "market_data_source": "BYBIT"}
+                for s in symbols
+            }
 
         with patch.object(shadow_main, "_original_fetch_24h_tickers", side_effect=fake_binance),              patch.object(shadow_main._bybit_client, "fetch_tickers", side_effect=fake_bybit):
             result = shadow_main._guarded_fetch_24h_tickers()
