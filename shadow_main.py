@@ -207,6 +207,7 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         market_regime=market_view.regime,
         existing_position=active_position,
         capture_id=capture_id,
+        entry_v2_shadow=lane_capture,
     )
     record_dict = record.to_dict()
     trace = runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})
