@@ -29,7 +29,7 @@ from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 from core.binance_market_stream import BinanceMarketStream
-from trade_manager.correlation_provider import KlineCorrelationProvider
+from trade_manager.core_risk_providers import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
 # currently pass the external Shariah screen used for this project. This is a
