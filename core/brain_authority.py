@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from .brain_decision import BrainDecision, BrainDecisionEngine
 from .brain_market_regime import derive_market_regime
+from .entry_selective_gate import selective_entry_veto
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class GuardedBrainAuthority:
         risk_locked: bool = False,
         existing_position: bool = False,
         capture_id: str | None = None,
+        entry_v2_shadow: Mapping[str, Any] | None = None,
     ) -> BrainAuthorityRecord:
         lane = self._lane_strategy(strategy, trade_mode)
         symbol_view = derive_market_regime(lane)
@@ -102,6 +104,24 @@ class GuardedBrainAuthority:
             higher_timeframe_bearish=bool(symbol_view.higher_timeframe_bearish),
             symbol_regime=symbol_view.regime,
         )
+
+        selective_veto_reason = selective_entry_veto(
+            lane,
+            entry_v2_shadow,
+            trade_mode=str(trade_mode).upper(),
+        )
+        if selective_veto_reason:
+            decision = BrainDecision(
+                "HOLD",
+                float(decision.confidence),
+                selective_veto_reason,
+                metadata={
+                    **dict(decision.metadata),
+                    "authority": self.VERSION,
+                    "entry_v2_selective_veto": True,
+                    "entry_v2_failed_gate": str((entry_v2_shadow or {}).get("failed_gate") or ""),
+                },
+            )
 
         allowed = (
             decision.action.upper() == "BUY"
@@ -132,6 +152,8 @@ class GuardedBrainAuthority:
                 "trade_manager_must_still_pass": True,
                 "execution_must_still_pass": True,
                 "symbol_regime": symbol_view.to_dict(),
+                "entry_v2_shadow": dict(entry_v2_shadow or {}),
+                "selective_v2_veto": selective_veto_reason,
                 "brain_metadata": dict(decision.metadata),
             },
         )
