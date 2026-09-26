@@ -49,6 +49,7 @@ from core.paper_risk_overlay import (
     REENTRY_COOLDOWN_SECONDS,
     loss_cooldown_remaining,
     profit_protection_trigger,
+    profit_protection_snapshot,
     strong_bullish_btc_exception,
     btc_recovery_eligible,
     btc_recovery_stop,
@@ -781,11 +782,29 @@ def _apply_paper_exit_protection() -> None:
         current = float(position.current_price)
         if current <= 0 or position.entry_price <= 0:
             continue
-        if profit_protection_trigger(entry_price=position.entry_price, current_price=current, highest_price=position.highest_price, max_profit_percent=position.max_profit_percent):
-            decision = PositionExitDecision(True, PositionExitReason.TRAILING_STOP, current, "Paper Protection: profitable retracement before TP")
+        protection_snapshot = profit_protection_snapshot(
+            entry_price=position.entry_price,
+            current_price=current,
+            highest_price=position.highest_price,
+            max_profit_percent=position.max_profit_percent,
+        )
+        if protection_snapshot["triggered"]:
+            protection_detail = {
+                "position_id": str(position.position_id),
+                "symbol": str(position.symbol).upper(),
+                "trade_mode": str(position.entry_metadata.get("trade_mode", "UNKNOWN")).upper(),
+                **protection_snapshot,
+            }
+            position.metadata["paper_profit_protection_detail"] = protection_detail
+            _legacy.logger.info(
+                "PAPER PROFIT PROTECTION TRIGGER %s",
+                json.dumps(protection_detail, ensure_ascii=False, separators=(",", ":")),
+            )
+            decision = PositionExitDecision(True, PositionExitReason.TRAILING_STOP, current, "Paper Protection: calibrated profitable retracement before TP")
             result = runtime.facade.execute_decision(position.position_id, decision)
             if result is not None and result.status is PositionStatus.CLOSED:
                 result.exit_metadata["paper_profit_protection"] = True
+                result.exit_metadata["paper_profit_protection_detail"] = protection_detail
                 runtime.repository.update(result)
             continue
         if str(position.symbol).upper() != "BTCUSDT":
