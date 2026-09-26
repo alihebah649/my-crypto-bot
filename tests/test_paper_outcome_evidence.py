@@ -12,6 +12,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
         quantity=0.5,
         entry_price=700.0,
         current_price=708.0,
+        highest_price=710.0,
+        max_profit_percent=1.428571,
         stop_loss=693.0,
         take_profit=None,
         gross_pnl=4.0,
@@ -67,7 +69,11 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
                 "entry_freshness_5m": {"state": "FRESH"},
             }
         },
-        exit_metadata={"exit_price": 708.0},
+        exit_metadata={
+            "exit_price": 708.0,
+            "paper_profit_protection": True,
+            "paper_profit_protection_detail": {"current_gain_percent": 1.142857, "retrace_percent": 0.28169},
+        },
     )
 
     brain = {
@@ -90,6 +96,10 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["brain"]["capture_id"] == "cap-1"
     assert record["brain"]["action"] == "BUY"
     assert record["market_data_source"] == "BYBIT"
+    assert record["highest_price"] == 710.0
+    assert record["max_profit_percent"] == 1.428571
+    assert record["exit_protection"]["paper_profit_protection"] is True
+    assert record["exit_protection"]["paper_profit_protection_detail"]["retrace_percent"] == 0.28169
     assert record["strategy"]["market_data_source"] == "BYBIT"
     assert record["strategy"]["scalp_score"] == 87
     assert record["strategy"]["ema100"] == 704.0
