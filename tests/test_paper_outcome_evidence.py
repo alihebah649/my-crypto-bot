@@ -172,3 +172,32 @@ def test_paper_outcome_uses_frozen_entry_stop_after_protection_moves_stop():
     assert record["stop_loss"] == 66.1722122122
     assert record["entry_forensics"]["stop_distance_percent"] == 2.417671
     assert record["entry_forensics"]["stop_distance_source"] == "ENTRY_METADATA"
+
+
+
+def test_paper_outcome_marks_current_stop_at_or_above_entry_as_invalid_forensics():
+    position = SimpleNamespace(
+        position_id="POS-INVALID-STOP",
+        symbol="DOTUSDT",
+        opened_at=100.0,
+        closed_at=130.0,
+        quantity=1.0,
+        entry_price=1.196,
+        current_price=1.21,
+        stop_loss=1.1983943943943942,
+        take_profit=None,
+        gross_pnl=0.5,
+        realized_pnl=0.45,
+        total_fees=0.05,
+        close_reason=SimpleNamespace(name="TRAILING_STOP"),
+        entry_metadata={"trade_mode": "SCALP"},
+        exit_metadata={"exit_price": 1.21},
+        entry_context={"strategy_score": {}},
+    )
+
+    record = build_paper_outcome_evidence(position)
+
+    assert record["entry_forensics"]["stop_distance_percent"] == 0.0
+    assert record["entry_forensics"]["stop_distance_valid"] is False
+    assert record["entry_forensics"]["stop_distance_invalid_reason"] == "STOP_AT_OR_ABOVE_ENTRY"
+    assert record["entry_forensics"]["stop_distance_source"] == "POSITION_CURRENT_STOP_FALLBACK"

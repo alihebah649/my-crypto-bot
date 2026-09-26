@@ -59,14 +59,24 @@ def build_paper_outcome_evidence(
         entry_stop_value = getattr(position, "stop_loss", 0.0)
     entry_stop_loss = None
     stop_distance_percent = 0.0
+    stop_distance_valid = False
+    stop_distance_invalid_reason = None
     try:
         entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
         entry_stop_loss = float(entry_stop_value or 0.0)
-        if entry_price > 0 and entry_stop_loss > 0:
-            stop_distance_percent = max(0.0, (entry_price - entry_stop_loss) / entry_price * 100.0)
+        if entry_price <= 0:
+            stop_distance_invalid_reason = "INVALID_ENTRY_PRICE"
+        elif entry_stop_loss <= 0:
+            stop_distance_invalid_reason = "MISSING_OR_INVALID_STOP"
+        elif entry_stop_loss >= entry_price:
+            stop_distance_invalid_reason = "STOP_AT_OR_ABOVE_ENTRY"
+        else:
+            stop_distance_percent = (entry_price - entry_stop_loss) / entry_price * 100.0
+            stop_distance_valid = True
     except (TypeError, ValueError):
         entry_stop_loss = None
         stop_distance_percent = 0.0
+        stop_distance_invalid_reason = "NON_NUMERIC_STOP_OR_ENTRY"
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
     entry_decision_chain = entry_metadata.get("entry_decision_chain")
@@ -194,6 +204,8 @@ def build_paper_outcome_evidence(
             "mtf_net": strategy.get("mtf_net"),
             "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
             "stop_distance_percent": round(stop_distance_percent, 6),
+            "stop_distance_valid": stop_distance_valid,
+            "stop_distance_invalid_reason": stop_distance_invalid_reason,
             "stop_distance_source": entry_stop_source,
             "ema100": strategy.get("ema100"),
             "entry_vs_ema100_percent": _relative_to_entry(strategy.get("ema100"), float(getattr(position, "entry_price", 0.0) or 0.0)) if strategy.get("ema100") is not None else None,
