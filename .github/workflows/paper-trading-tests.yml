@@ -68,4 +68,16 @@ jobs:
         run: python -m pytest -q tests/test_paper_safety_guards.py tests/test_paper_market_data_safety.py
 
       - name: Run full Python regression suite
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q --tb=short 2>&1 | tee pytest-full.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload temporary full regression log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-full-regression-log
+          path: pytest-full.log
