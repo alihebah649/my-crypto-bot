@@ -325,6 +325,7 @@ def score_symbol(symbol: str, ticker: dict, candles_15m: list[dict], candles_5m:
     signal = "BUY" if score >= BUY_SCORE_THRESHOLD else "HOLD"
     return {
         "symbol": symbol, "score": score, "signal": signal, "reasons": reasons,
+        "market_data_source": str(ticker.get("market_data_source", "BINANCE")).upper(),
         "price": price, "ema100": ema100, "rsi": rsi, "atr": atr,
         "lower_band": lower_band, "middle_band": middle_band, "upper_band": upper_band,
         "volume_ratio": current_volume / average_volume if average_volume else 0.0,
