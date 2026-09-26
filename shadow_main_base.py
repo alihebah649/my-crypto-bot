@@ -583,11 +583,20 @@ def _notify_closed_positions() -> int:
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
         paper_cash = position.exit_metadata.get("paper_cash_after", runtime.execution_adapter.balance.cash)
+        entry_metadata = getattr(position, "entry_metadata", {}) or {}
+        trade_mode = str(entry_metadata.get("trade_mode", "SWING")).upper()
         message = (
-            "=== PAPER SELL ===\n" f"Symbol: {position.symbol}\n" f"Reason: {reason}\n"
-            f"Quantity: {position.quantity:.12f}\n" f"Entry: {position.entry_price:.8f}\n"
-            f"Exit: {exit_price:.8f}\n" f"Gross P&L: {position.gross_pnl:+.4f}$\n"
-            f"P&L %: {pnl_pct:+.2f}%\n" f"Fees: {position.total_fees:.4f}$\n"
+            "=== PAPER SELL ===\n"
+            f"Symbol: {position.symbol}\n"
+            f"Position ID: {getattr(position, 'position_id', 'UNKNOWN')}\n"
+            f"Trade Type: {trade_mode}\n"
+            f"Reason: {reason}\n"
+            f"Quantity: {position.quantity:.12f}\n"
+            f"Entry: {position.entry_price:.8f}\n"
+            f"Exit: {exit_price:.8f}\n"
+            f"Gross P&L: {position.gross_pnl:+.4f}$\n"
+            f"P&L %: {pnl_pct:+.2f}%\n"
+            f"Fees: {position.total_fees:.4f}$\n"
             f"Net P&L: {position.realized_pnl:+.4f}$\n"
             + (f"Exit details: {exit_message}\n" if exit_message else "")
             + f"Paper cash: ${float(paper_cash):.2f}\nPAPER ONLY"
@@ -747,7 +756,7 @@ async def _dual_mode_engine():
         f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
         f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
         f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
-        "Trade Manager: Parts 1-8\nBrain: SHADOW ONLY — no execution authority\nNo real exchange orders are submitted."
+        "Trade Manager: Parts 1-8\nBrain: GUARDED PAPER ENTRY GATE — Legacy remains execution authority\nNo real exchange orders are submitted."
     )
     _notify_closed_positions()
 
