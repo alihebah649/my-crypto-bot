@@ -9,12 +9,13 @@ def test_ticker_cache_uses_fresh_snapshot_without_upstream_call(monkeypatch):
         calls["count"] += 1
         return original
 
-    monkeypatch.setattr(shadow_main, "_paper_original_24h_tickers", upstream)
+    monkeypatch.setattr(shadow_main, "_guarded_fetch_24h_tickers", upstream)
     monkeypatch.setattr(shadow_main.time, "time", lambda: 1000.0)
     monkeypatch.setattr(shadow_main, "_ticker_cache", None)
     monkeypatch.setattr(shadow_main, "_ticker_cache_hits", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_misses", 0)
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_uses", 0)
+    monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
     # These tests target the legacy cache fallback contract in isolation.
     monkeypatch.setattr(shadow_main, "_market_data_manager", None)
 
