@@ -150,3 +150,69 @@ def test_normalize_cached_rest_snapshot_preserves_stale_snapshot_timestamp():
 
     assert candles[0]["open_time"] == 1000
     assert fetched_at == 1298.0
+
+
+def test_compare_rest_ws_no_rest_match_reports_window_context():
+    rest = [
+        {
+            "open_time": 2000,
+            "open": 20.0,
+            "high": 21.0,
+            "low": 19.0,
+            "close": 20.5,
+            "volume": 50.0,
+            "close_time": 2299,
+        },
+        {
+            "open_time": 3000,
+            "open": 30.0,
+            "high": 31.0,
+            "low": 29.0,
+            "close": 30.5,
+            "volume": 60.0,
+            "close_time": 3299,
+        },
+    ]
+    ws = {
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 25.0,
+        "close_time": 1299,
+        "is_closed": True,
+    }
+
+    result = compare_rest_ws_candle(
+        rest,
+        ws,
+        rest_snapshot_fetched_at=1_400.0,
+    )
+
+    assert result["status"] == "NO_REST_MATCH"
+    assert result["rest_candle_count"] == 2
+    assert result["rest_snapshot_fetched_at"] == 1_400.0
+    assert result["ws_close_time"] == 1299
+    assert result["rest_min_open_time"] == 2000
+    assert result["rest_max_open_time"] == 3000
+    assert result["rest_window_relation"] == "WS_OLDER_THAN_REST_WINDOW"
+
+
+def test_compare_rest_ws_no_rest_match_reports_empty_rest_window():
+    ws = {
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 25.0,
+        "close_time": 1299,
+        "is_closed": True,
+    }
+
+    result = compare_rest_ws_candle([], ws)
+
+    assert result["status"] == "NO_REST_MATCH"
+    assert result["rest_candle_count"] == 0
+    assert result["rest_window_relation"] == "REST_EMPTY"
