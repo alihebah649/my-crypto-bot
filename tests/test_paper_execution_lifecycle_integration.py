@@ -46,6 +46,11 @@ def test_buy_then_successful_sell_closes_position_and_realizes_pnl():
     assert closed.realized_pnl > 0.0
     assert runtime.execution_adapter.balance.assets.get("BTCUSDT", 0.0) == pytest.approx(0.0)
 
+    # A closed Position must not be executable a second time.
+    second_close = runtime.facade.close_position(position.position_id, 110.0)
+    assert second_close is None
+    assert runtime.execution_adapter.balance.assets.get("BTCUSDT", 0.0) == pytest.approx(0.0)
+
 
 def test_failed_sell_preserves_owned_position_and_does_not_create_closed_pnl():
     runtime = build_runtime()
