@@ -73,7 +73,6 @@ _BYBIT_GUARD = {
 }
 _BYBIT_TICKER_CACHE_TTL = 30.0
 _BYBIT_TICKER_CACHE: tuple[float, dict[str, dict]] | None = None
-_BYBIT_KLINE_CACHE_TTL = dict(_KLINE_CACHE_TTL)
 _bybit_client = BybitMarketDataClient(base_url=_BYBIT_MARKET_DATA_REST)
 
 _market_data_split = len(TRADING_SYMBOLS) // 2
