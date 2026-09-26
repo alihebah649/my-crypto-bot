@@ -101,6 +101,7 @@ class CoreRiskGateway:
                     "source": "TradeManager.Part6",
                     "estimated_fee": max(request.estimated_fee, 0.0),
                     "trade_mode": request.trade_mode,
+                    "correlation_score": correlation_score,
                 },
             )
         except Exception as exc:
