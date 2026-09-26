@@ -755,7 +755,7 @@ async def _dual_mode_engine():
         f"Universe: {len(TRADING_SYMBOLS)} Binance Spot USDT pairs\n"
         f"Scalp: 5m trigger + 15m setup + 1h/4h candle context | threshold {SCALP_SCORE_THRESHOLD} | max open 15\n"
         f"Swing: 15m macro + 5m confirmation | threshold {SWING_SCORE_THRESHOLD} | max open 10\n"
-        "Trade Manager: Parts 1-8\nBrain: SHADOW ONLY — no execution authority\nNo real exchange orders are submitted."
+        "Trade Manager: Parts 1-8\nBrain: GUARDED PAPER ENTRY GATE — Legacy remains execution authority\nNo real exchange orders are submitted."
     )
     _notify_closed_positions()
 
