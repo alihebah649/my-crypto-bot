@@ -365,6 +365,7 @@ _ticker_cache_hits = 0
 _ticker_cache_misses = 0
 _ticker_cache_stale_uses = 0
 _ticker_cache_stale_active = False
+_ticker_stale_symbols: set[str] = set()
 
 
 def _fetch_ticker_group_from_binance(symbols: list[str]) -> dict[str, dict]:
@@ -388,8 +389,11 @@ def _fetch_ticker_group_from_binance(symbols: list[str]) -> dict[str, dict]:
 
 
 def _guarded_fetch_24h_tickers_with_cache():
-    global _ticker_cache, _ticker_cache_hits, _ticker_cache_misses, _ticker_cache_stale_uses, _ticker_cache_stale_active
+    global _ticker_cache, _ticker_cache_hits, _ticker_cache_misses, _ticker_cache_stale_uses
+    global _ticker_cache_stale_active, _ticker_stale_symbols
+
     now = time.time()
+    expected_symbols = {str(symbol).upper() for symbol in TRADING_SYMBOLS}
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_CACHE_TTL:
@@ -398,37 +402,31 @@ def _guarded_fetch_24h_tickers_with_cache():
             return cached[1]
 
     _ticker_cache_misses += 1
-    manager = globals().get("_market_data_manager")
-    if manager is not None and not _binance_guard_active():
-        try:
-            manager.refresh_ticker_group(_fetch_ticker_group_from_binance, now=now)
-            data = manager.merged_ticker_snapshot()
-            if data:
-                with _ticker_cache_lock:
-                    _ticker_cache = (time.time(), dict(data))
-                    _ticker_cache_stale_active = False
-                return data
-        except Exception:
-            _legacy.logger.exception("MarketDataManager ticker refresh failed")
-
-    data = _paper_original_24h_tickers()
-    if data:
+    fresh_data = _guarded_fetch_24h_tickers(TRADING_SYMBOLS)
+    if fresh_data:
         with _ticker_cache_lock:
-            _ticker_cache = (time.time(), dict(data))
-            _ticker_cache_stale_active = False
-        return data
+            previous = dict(_ticker_cache[1]) if _ticker_cache is not None else {}
+            merged = dict(previous)
+            merged.update(fresh_data)
+            _ticker_cache = (time.time(), merged)
+            _ticker_stale_symbols = expected_symbols - set(fresh_data)
+            _ticker_cache_stale_active = bool(_ticker_stale_symbols)
+            if not _ticker_stale_symbols:
+                _ticker_cache_stale_active = False
+        return merged
 
-    # Binance can temporarily answer with 429/418; reuse only a bounded recent
-    # snapshot so the strategy is never fed invented data. New paper entries
-    # remain blocked while this fallback snapshot is stale.
+    # Both venues may temporarily be unavailable. Reuse the bounded old snapshot
+    # exactly as before, but mark every symbol stale so new entries are blocked.
     with _ticker_cache_lock:
         cached = _ticker_cache
         if cached is not None and now - cached[0] < _TICKER_STALE_MAX_AGE:
             _ticker_cache_stale_uses += 1
             _ticker_cache_stale_active = True
+            _ticker_stale_symbols = set(expected_symbols)
             return cached[1]
         _ticker_cache_stale_active = False
-    return data
+        _ticker_stale_symbols = set(expected_symbols)
+    return {}
 
 
 _legacy.fetch_24h_tickers = _guarded_fetch_24h_tickers_with_cache
@@ -543,7 +541,8 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         return None
     with _ticker_cache_lock:
         stale_active = _ticker_cache_stale_active
-    if stale_active:
+        stale_symbols = set(_ticker_stale_symbols)
+    if symbol.upper() in stale_symbols:
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_STALE_TICKER", "ticker_stale_active": True, "trade_mode": mode, "execution": "NOT_RUN"})
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_TICKER")
