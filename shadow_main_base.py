@@ -583,7 +583,8 @@ def _notify_closed_positions() -> int:
         entry_value = float(position.entry_price) * float(position.quantity)
         pnl_pct = (float(position.gross_pnl) / entry_value * 100.0) if entry_value else 0.0
         paper_cash = position.exit_metadata.get("paper_cash_after", runtime.execution_adapter.balance.cash)
-        trade_mode = str(position.entry_metadata.get("trade_mode", "SWING")).upper()
+        entry_metadata = getattr(position, "entry_metadata", {}) or {}
+        trade_mode = str(entry_metadata.get("trade_mode", "SWING")).upper()
         message = (
             "=== PAPER SELL ===\n"
             f"Symbol: {position.symbol}\n"
