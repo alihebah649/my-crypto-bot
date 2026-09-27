@@ -39,6 +39,7 @@ from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
+from core.execution_market_alignment import assess_execution_market_alignment
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
@@ -119,6 +120,68 @@ _legacy.logger.info(
     "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
     "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
 )
+
+
+_paper_original_score_symbol = _legacy.score_symbol
+
+
+def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_5m):
+    result = _paper_original_score_symbol(symbol, ticker, candles_15m, candles_5m)
+    if not isinstance(result, dict):
+        return result
+
+    source = str(
+        result.get("market_data_source")
+        or ticker.get("market_data_source", "UNKNOWN")
+    ).upper()
+    try:
+        if source == "BYBIT":
+            stream = getattr(_legacy, "binance_market_stream", None)
+            if stream is None:
+                result["market_data_alignment"] = {
+                    "schema_version": 1,
+                    "eligible": False,
+                    "status": "MISMATCH",
+                    "market_data_source": source,
+                    "execution_reference_source": "BINANCE",
+                    "reason": "BINANCE_REFERENCE_STREAM_MISSING",
+                }
+            else:
+                stream_snapshot = stream.snapshot()
+                result["market_data_alignment"] = assess_execution_market_alignment(
+                    market_data_source=source,
+                    source_ticker=ticker,
+                    source_5m_candles=candles_5m,
+                    source_15m_candles=candles_15m,
+                    binance_ticker=stream.get_latest_ticker(symbol),
+                    binance_5m_closed=stream.get_latest_closed_kline(symbol, "5m"),
+                    binance_15m_closed=stream.get_latest_closed_kline(symbol, "15m"),
+                    binance_stream_healthy=bool(
+                        stream_snapshot.get("event_stream_healthy")
+                    ),
+                )
+        else:
+            result["market_data_alignment"] = {
+                "schema_version": 1,
+                "eligible": True,
+                "status": "SAME_EXECUTION_VENUE",
+                "market_data_source": source,
+                "execution_reference_source": "BINANCE",
+                "reason": "SIGNAL_AND_EXECUTION_SAME_VENUE",
+            }
+    except Exception as exc:
+        result["market_data_alignment"] = {
+            "schema_version": 1,
+            "eligible": False,
+            "status": "MISMATCH",
+            "market_data_source": source,
+            "execution_reference_source": "BINANCE",
+            "reason": f"ALIGNMENT_CHECK_ERROR:{type(exc).__name__}",
+        }
+    return result
+
+
+_legacy.score_symbol = _score_symbol_with_execution_alignment
 
 
 def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
@@ -567,6 +630,97 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate=str(failed))
         return None
 
+    market_data_source = str(
+        candidate_strategy_snapshot.get("market_data_source", "UNKNOWN")
+    ).upper()
+    market_data_alignment = candidate_strategy_snapshot.get("market_data_alignment") or {}
+    execution_price = float(entry_price)
+    execution_stop_loss = float(stop_loss)
+
+    if market_data_source == "BYBIT":
+        if not isinstance(market_data_alignment, dict) or not bool(
+            market_data_alignment.get("eligible")
+        ):
+            reason = str(
+                market_data_alignment.get("reason")
+                if isinstance(market_data_alignment, dict)
+                else "MARKET_DATA_ALIGNMENT_UNAVAILABLE"
+            )
+            trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+            trace.update({
+                "result": "REJECTED_MARKET_DATA_SOURCE_MISMATCH",
+                "trade_mode": mode,
+                "execution": "NOT_RUN",
+                "market_data_source": market_data_source,
+                "market_data_alignment": market_data_alignment,
+                "market_data_alignment_reason": reason,
+            })
+            _record_chain(
+                final_approved=False,
+                execution_attempted=False,
+                position_opened=False,
+                failed_gate="MARKET_DATA_SOURCE_MISMATCH",
+            )
+            _legacy.logger.info(
+                "ENTRY BLOCKED %s: Bybit signal not aligned with Binance execution reference reason=%s mode=%s",
+                symbol,
+                reason,
+                mode,
+            )
+            return None
+
+        execution_reference_price = float(
+            market_data_alignment.get("binance_execution_price", 0.0) or 0.0
+        )
+        if execution_reference_price <= 0:
+            trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+            trace.update({
+                "result": "REJECTED_MARKET_DATA_SOURCE_MISMATCH",
+                "trade_mode": mode,
+                "execution": "NOT_RUN",
+                "market_data_source": market_data_source,
+                "market_data_alignment": market_data_alignment,
+                "market_data_alignment_reason": "INVALID_BINANCE_EXECUTION_PRICE",
+            })
+            _record_chain(
+                final_approved=False,
+                execution_attempted=False,
+                position_opened=False,
+                failed_gate="MARKET_DATA_SOURCE_MISMATCH",
+            )
+            return None
+
+        risk_distance = float(entry_price) - float(stop_loss)
+        if risk_distance <= 0 or execution_reference_price <= risk_distance:
+            trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+            trace.update({
+                "result": "REJECTED_MARKET_DATA_SOURCE_MISMATCH",
+                "trade_mode": mode,
+                "execution": "NOT_RUN",
+                "market_data_source": market_data_source,
+                "market_data_alignment": market_data_alignment,
+                "market_data_alignment_reason": "INVALID_REBASED_STOP",
+            })
+            _record_chain(
+                final_approved=False,
+                execution_attempted=False,
+                position_opened=False,
+                failed_gate="MARKET_DATA_SOURCE_MISMATCH",
+            )
+            return None
+
+        execution_price = execution_reference_price
+        execution_stop_loss = execution_reference_price - risk_distance
+
+    trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+    trace["market_data_source"] = market_data_source
+    trace["execution_market_data_source"] = "BINANCE"
+    trace["market_data_alignment"] = market_data_alignment
+    trace["signal_price"] = float(entry_price)
+    trace["execution_reference_price"] = float(execution_price)
+    trace["signal_stop_loss"] = float(stop_loss)
+    trace["execution_stop_loss"] = float(execution_stop_loss)
+
     # Snapshot the attribution inputs BEFORE downstream execution. The original
     # open-position path can mutate/reset runtime.last_entry_diagnostics, so
     # rebuilding the chain after execution can otherwise lose the Brain/V2
@@ -603,14 +757,19 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     if accepts_snapshot:
         position = _original_runtime_open_position(
             symbol,
-            entry_price,
-            stop_loss,
+            execution_price,
+            execution_stop_loss,
             trade_mode=mode,
             strategy_snapshot=candidate_strategy_snapshot,
             strategy_snapshot_captured_at=candidate_snapshot_captured_at,
         )
     else:
-        position = _original_runtime_open_position(symbol, entry_price, stop_loss, trade_mode=mode)
+        position = _original_runtime_open_position(
+            symbol,
+            execution_price,
+            execution_stop_loss,
+            trade_mode=mode,
+        )
 
     if position is not None:
         pre_execution_chain["final"] = {
@@ -622,10 +781,17 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
         position.entry_metadata["trade_mode"] = mode
+        position.entry_metadata["market_data_source"] = market_data_source
+        position.entry_metadata["execution_market_data_source"] = "BINANCE"
+        position.entry_metadata["signal_entry_price"] = float(entry_price)
+        position.entry_metadata["execution_reference_price"] = float(execution_price)
+        position.entry_metadata["market_data_alignment"] = deepcopy(market_data_alignment)
         # Preserve the stop requested at entry before any later protection/trailing
         # logic can mutate position.stop_loss. This is diagnostic-only attribution.
-        position.entry_metadata["entry_stop_loss"] = float(stop_loss)
+        position.entry_metadata["entry_stop_loss"] = float(execution_stop_loss)
         position.metadata["trade_mode"] = mode
+        position.metadata["market_data_source"] = market_data_source
+        position.metadata["execution_market_data_source"] = "BINANCE"
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
