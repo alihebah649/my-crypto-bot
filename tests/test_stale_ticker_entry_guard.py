@@ -3,6 +3,7 @@ import shadow_main
 
 def test_stale_ticker_blocks_new_entry(monkeypatch):
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_active", True)
+    monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
     monkeypatch.setattr(shadow_main, "_loss_cooldown", lambda symbol: 0.0)
     called = {"count": 0}
 
