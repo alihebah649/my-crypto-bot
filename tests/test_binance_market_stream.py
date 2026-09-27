@@ -40,7 +40,7 @@ def test_shadow_feed_parses_kline_and_ticker_without_strategy_side_effects():
     assert ticker["quoteVolume"] == 2500000.0
 
     snapshot = feed.snapshot()
-    assert snapshot["mode"] == "SHADOW_ONLY"
+    assert snapshot["mode"] == "PAPER_AUTHORITATIVE_BINANCE_WS"
     assert snapshot["kline_events"] == 1
     assert snapshot["ticker_events"] == 1
     assert snapshot["closed_kline_events"] == 1

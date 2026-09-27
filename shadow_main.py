@@ -471,7 +471,12 @@ def _guarded_fetch_24h_tickers_with_cache():
             return cached[1]
 
     _ticker_cache_misses += 1
-    fresh_data = _guarded_fetch_24h_tickers(TRADING_SYMBOLS)
+    # Use the active runtime ticker provider first. In Paper mode this is the
+    # Binance WebSocket-authoritative adapter installed by BinanceMarketStream,
+    # with REST retained only as its bounded cold-start/stale fallback. Calling
+    # _guarded_fetch_24h_tickers() directly here bypasses that adapter and turns
+    # every cache expiry into an unnecessary Binance REST ticker request.
+    fresh_data = _paper_original_24h_tickers(TRADING_SYMBOLS)
     if fresh_data:
         with _ticker_cache_lock:
             previous = dict(_ticker_cache[1]) if _ticker_cache is not None else {}

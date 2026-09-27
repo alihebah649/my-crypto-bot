@@ -174,6 +174,51 @@ def test_paper_market_data_uses_dedicated_public_market_data_endpoint(monkeypatc
     assert captured["url"] == "https://data-api.binance.vision/api/v3/klines"
     assert captured["url"] != "https://api.binance.com/api/v3/klines"
 
+def test_outer_ticker_cache_uses_active_ws_aware_provider_before_direct_rest():
+    reset_guard()
+    with shadow_main._ticker_cache_lock:
+        shadow_main._ticker_cache = None
+        shadow_main._ticker_cache_hits = 0
+        shadow_main._ticker_cache_misses = 0
+        shadow_main._ticker_cache_stale_uses = 0
+        shadow_main._ticker_cache_stale_active = False
+        shadow_main._ticker_stale_symbols = set()
+
+    symbols = tuple(shadow_main.TRADING_SYMBOLS)
+    calls = []
+
+    def active_provider(requested=None):
+        calls.append(tuple(requested or ()))
+        return {
+            symbol: {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "bidPrice": 99.9,
+                "askPrice": 100.1,
+                "quoteVolume": 1_000_000.0,
+                "market_data_source": "BINANCE",
+                "market_data_transport": "WEBSOCKET",
+            }
+            for symbol in symbols
+        }
+
+    with patch.object(
+        shadow_main,
+        "_paper_original_24h_tickers",
+        side_effect=active_provider,
+    ), patch.object(
+        shadow_main,
+        "_guarded_fetch_24h_tickers",
+        side_effect=AssertionError(
+            "outer ticker cache must not bypass the active provider"
+        ),
+    ):
+        result = shadow_main._guarded_fetch_24h_tickers_with_cache()
+
+    assert set(result) == set(symbols)
+    assert calls == [symbols]
+    assert shadow_main._ticker_cache_snapshot()["fresh"] is True
+
 
 def test_market_health_treats_expired_rate_limit_as_up_when_data_is_available(monkeypatch):
     shadow_main._MARKET_HEALTH_STATE = "UNKNOWN"
