@@ -82,6 +82,13 @@ def build_paper_outcome_evidence(
         or entry_context.get("market_data_source")
         or "UNKNOWN"
     ).upper()
+    execution_market_data_source = str(
+        entry_metadata.get("execution_market_data_source")
+        or "BINANCE"
+    ).upper()
+    market_data_alignment = entry_metadata.get("market_data_alignment")
+    if not isinstance(market_data_alignment, Mapping):
+        market_data_alignment = None
     timing_profile = derive_scalp_timing_profile(strategy)
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
     entry_decision_chain = entry_metadata.get("entry_decision_chain")
@@ -115,6 +122,10 @@ def build_paper_outcome_evidence(
         "position_id": str(getattr(position, "position_id", "")),
         "symbol": str(getattr(position, "symbol", "")).upper(),
         "market_data_source": market_data_source,
+        "execution_market_data_source": execution_market_data_source,
+        "signal_entry_price": entry_metadata.get("signal_entry_price"),
+        "execution_reference_price": entry_metadata.get("execution_reference_price"),
+        "market_data_alignment": _safe(market_data_alignment),
         "trade_mode": str(
             entry_metadata.get(
                 "trade_mode",
