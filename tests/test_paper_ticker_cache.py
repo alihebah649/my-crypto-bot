@@ -24,8 +24,8 @@ def test_ticker_cache_reuses_fresh_snapshot_without_exchange_request():
         return payload
 
     with patch.object(shadow_main, "_paper_original_24h_tickers", side_effect=succeed):
-        first = shadow_main._paper_original_24h_tickers_with_cache()
-        second = shadow_main._paper_original_24h_tickers_with_cache()
+        first = shadow_main._guarded_fetch_24h_tickers_with_cache()
+        second = shadow_main._guarded_fetch_24h_tickers_with_cache()
 
     assert first == second == payload
     assert calls == ["request"]
@@ -44,7 +44,7 @@ def test_expired_ticker_cache_does_not_bypass_binance_guard():
     with patch.object(shadow_main.time, "time", return_value=20_000.0), patch.object(
         shadow_main, "_paper_original_24h_tickers", return_value={}
     ) as fetch:
-        result = shadow_main._paper_original_24h_tickers_with_cache()
+        result = shadow_main._guarded_fetch_24h_tickers_with_cache()
 
     assert result == {}
     fetch.assert_called_once()
@@ -61,7 +61,7 @@ def test_ticker_cache_is_refreshed_after_expiry_when_binance_is_available():
     with patch.object(shadow_main.time, "time", return_value=20_000.0), patch.object(
         shadow_main, "_paper_original_24h_tickers", return_value=fresh
     ) as fetch:
-        result = shadow_main._paper_original_24h_tickers_with_cache()
+        result = shadow_main._guarded_fetch_24h_tickers_with_cache()
         snapshot = shadow_main._ticker_cache_snapshot()
 
     assert result == fresh
