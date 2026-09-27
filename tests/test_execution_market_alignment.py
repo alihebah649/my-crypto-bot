@@ -49,7 +49,7 @@ def test_price_divergence_blocks_cross_venue_entry():
 
 def test_5m_direction_mismatch_blocks_entry():
     kwargs = _aligned_inputs()
-    kwargs["binance_5m"] = _candle(999_700_000, 101.0, 101.5, 99.0, 99.5, 999_999_999)
+    kwargs["binance_5m_closed"] = _candle(999_700_000, 101.0, 101.5, 99.0, 99.5, 999_999_999)
     result = assess_execution_market_alignment(**kwargs)
     assert result["eligible"] is False
     assert result["reason"] == "5M_CANDLE_DIRECTION_MISMATCH"
@@ -57,7 +57,7 @@ def test_5m_direction_mismatch_blocks_entry():
 
 def test_15m_direction_mismatch_blocks_entry():
     kwargs = _aligned_inputs()
-    kwargs["binance_15m"] = _candle(999_100_000, 101.0, 101.5, 99.0, 100.0 - 0.3, 999_999_999)
+    kwargs["binance_15m_closed"] = _candle(999_100_000, 101.0, 101.5, 99.0, 100.0 - 0.3, 999_999_999)
     result = assess_execution_market_alignment(**kwargs)
     assert result["eligible"] is False
     assert result["reason"] == "15M_CANDLE_DIRECTION_MISMATCH"
