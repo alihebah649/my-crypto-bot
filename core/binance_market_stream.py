@@ -1,12 +1,9 @@
-"""Diagnostic-only Binance Spot WebSocket market feed.
+"""Binance Spot WebSocket market feed with Paper market-data integration.
 
-This module observes the configured Spot universe without changing strategy,
-risk, execution, persistence, or REST fallback behavior. It is the first stage
-of the REST -> WebSocket migration: one combined WebSocket connection receives
-ticker + kline updates so we can prove coverage/freshness before making the
-stream authoritative.
-
-Binance public market streams are used without API credentials.
+The stream remains isolated from strategy/risk/execution decisions, but when the
+Paper entrypoint is running it becomes the authoritative Binance ticker source
+and overlays the latest closed 5m/15m candle onto the canonical kline path.
+REST remains a cold-start/stale-data fallback only.
 """
 from __future__ import annotations
 
@@ -14,7 +11,6 @@ import asyncio
 import json
 import threading
 import time
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 import websockets
@@ -24,22 +20,8 @@ DEFAULT_BASE_URL = "wss://stream.binance.com:9443/stream"
 DEFAULT_INTERVALS = ("5m", "15m", "1h", "4h")
 
 
-@dataclass(frozen=True)
-class StreamHealth:
-    connected: bool
-    stream_count: int
-    last_event_age_seconds: float | None
-    events_total: int
-    kline_events: int
-    ticker_events: int
-    closed_kline_events: int
-    reconnects: int
-    parse_errors: int
-    last_error: str | None
-
-
 class BinanceMarketStream:
-    """Single-connection shadow observer for Spot ticker + Kline streams."""
+    """Binance Spot ticker + kline stream used by the Paper market-data layer."""
 
     def __init__(
         self,
@@ -61,7 +43,6 @@ class BinanceMarketStream:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-
         self._connected = False
         self._last_event_at: float | None = None
         self._events_total = 0
@@ -71,10 +52,13 @@ class BinanceMarketStream:
         self._reconnects = 0
         self._parse_errors = 0
         self._last_error: str | None = None
-
         self._latest_kline: dict[tuple[str, str], dict[str, Any]] = {}
         self._latest_closed_kline: dict[tuple[str, str], dict[str, Any]] = {}
         self._latest_ticker: dict[str, dict[str, Any]] = {}
+        self._runtime_ticker_ws_hits = 0
+        self._runtime_ticker_rest_fallbacks = 0
+        self._runtime_kline_ws_overlays = 0
+        self._runtime_integration_installed = False
 
     @property
     def stream_names(self) -> list[str]:
@@ -95,6 +79,7 @@ class BinanceMarketStream:
         return f"{self.base_url}?streams={streams}"
 
     def start(self) -> None:
+        self._install_runtime_integration()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -102,7 +87,7 @@ class BinanceMarketStream:
             self._thread = threading.Thread(
                 target=self._run_thread,
                 daemon=True,
-                name="binance-market-websocket-shadow",
+                name="binance-market-websocket-paper",
             )
             self._thread.start()
 
@@ -115,7 +100,6 @@ class BinanceMarketStream:
     async def _run_loop(self) -> None:
         backoff = self.reconnect_min_seconds
         first_connect = True
-
         while not self._stop.is_set():
             try:
                 async with websockets.connect(
@@ -132,7 +116,6 @@ class BinanceMarketStream:
                             self._reconnects += 1
                     first_connect = False
                     backoff = self.reconnect_min_seconds
-
                     async for message in websocket:
                         if self._stop.is_set():
                             break
@@ -155,13 +138,11 @@ class BinanceMarketStream:
             payload = raw.get("data", raw) if isinstance(raw, Mapping) else raw
             if not isinstance(payload, Mapping):
                 return
-
             event_type = str(payload.get("e") or "")
             now = time.time()
             with self._lock:
                 self._events_total += 1
                 self._last_event_at = now
-
             if event_type == "24hrTicker":
                 self._consume_ticker(payload, now)
             elif event_type == "kline":
@@ -184,6 +165,8 @@ class BinanceMarketStream:
             "priceChangePercent": _float(payload.get("P")),
             "event_time": payload.get("E"),
             "received_at": now,
+            "market_data_source": "BINANCE",
+            "market_data_transport": "WEBSOCKET",
         }
         with self._lock:
             self._ticker_events += 1
@@ -197,7 +180,6 @@ class BinanceMarketStream:
         interval = str(kline.get("i") or "")
         if interval not in self.intervals:
             return
-
         candle = {
             "open_time": _int(kline.get("t")),
             "close_time": _int(kline.get("T")),
@@ -210,6 +192,8 @@ class BinanceMarketStream:
             "is_closed": bool(kline.get("x")),
             "event_time": payload.get("E"),
             "received_at": now,
+            "market_data_source": "BINANCE",
+            "market_data_transport": "WEBSOCKET",
         }
         with self._lock:
             self._kline_events += 1
@@ -233,19 +217,108 @@ class BinanceMarketStream:
             value = self._latest_ticker.get(str(symbol).upper())
             return dict(value) if isinstance(value, Mapping) else None
 
+    def _fresh_ticker(self, symbol: str) -> dict[str, Any] | None:
+        ticker = self.get_latest_ticker(symbol)
+        if not ticker:
+            return None
+        received_at = _float(ticker.get("received_at"))
+        if received_at <= 0 or time.time() - received_at > self.stale_after_seconds:
+            return None
+        return ticker
+
+    def _install_runtime_integration(self) -> None:
+        """Install the smallest possible adapter into the existing Paper path."""
+        if self._runtime_integration_installed:
+            return
+        try:
+            import shadow_main_legacy as legacy
+        except Exception:
+            return
+
+        if getattr(legacy, "_binance_ws_market_data_integration_installed", False):
+            self._runtime_integration_installed = True
+            return
+
+        original_ticker_fetch = getattr(legacy, "fetch_24h_tickers", None)
+        original_kline_fetch = getattr(legacy, "fetch_klines", None)
+        if not callable(original_ticker_fetch) or not callable(original_kline_fetch):
+            return
+
+        binance_set = set(getattr(legacy, "_BINANCE_MARKET_DATA_SYMBOL_SET", ()))
+        if not binance_set:
+            split = len(self.symbols) // 2
+            binance_set = set(self.symbols[:split])
+        bybit_set = set(getattr(legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET", ()))
+
+        def fetch_tickers(symbols=None):
+            requested = [str(s).upper() for s in (symbols if symbols is not None else self.symbols)]
+            result: dict[str, dict] = {}
+            ws_symbols = [s for s in requested if s in binance_set]
+            fallback_symbols = []
+            for symbol in ws_symbols:
+                ticker = self._fresh_ticker(symbol)
+                if ticker is None:
+                    fallback_symbols.append(symbol)
+                else:
+                    result[symbol] = dict(ticker)
+                    with self._lock:
+                        self._runtime_ticker_ws_hits += 1
+            if fallback_symbols:
+                fallback = original_ticker_fetch(fallback_symbols)
+                for symbol, ticker in fallback.items():
+                    row = dict(ticker)
+                    row.setdefault("market_data_source", "BINANCE")
+                    row["market_data_transport"] = "REST_FALLBACK"
+                    result[symbol] = row
+                    with self._lock:
+                        self._runtime_ticker_rest_fallbacks += 1
+
+            bybit_symbols = [s for s in requested if s in bybit_set and s not in binance_set]
+            if bybit_symbols:
+                for symbol, ticker in original_ticker_fetch(bybit_symbols).items():
+                    result[symbol] = dict(ticker)
+            return {symbol: result[symbol] for symbol in requested if symbol in result}
+
+        def fetch_klines(symbol: str, interval: str, limit: int):
+            data = original_kline_fetch(symbol, interval, limit)
+            normalized_symbol = str(symbol).upper()
+            if normalized_symbol not in binance_set or str(interval) not in {"5m", "15m"}:
+                return data
+            closed = self.get_latest_closed_kline(normalized_symbol, str(interval))
+            if not closed:
+                return data
+            row = dict(closed)
+            row["market_data_source"] = "BINANCE"
+            row["market_data_transport"] = "WEBSOCKET_CLOSED_KLINE"
+            rows = [dict(item) for item in (data or []) if isinstance(item, Mapping)]
+            replaced = False
+            for index, item in enumerate(rows):
+                if _int(item.get("open_time")) == _int(row.get("open_time")):
+                    rows[index] = row
+                    replaced = True
+                    break
+            if not replaced:
+                rows.append(row)
+            rows.sort(key=lambda item: _int(item.get("open_time")))
+            with self._lock:
+                self._runtime_kline_ws_overlays += 1
+            return rows[-int(limit):] if limit and len(rows) > int(limit) else rows
+
+        legacy.fetch_24h_tickers = fetch_tickers
+        legacy.fetch_klines = fetch_klines
+        legacy._binance_ws_market_data_integration_installed = True
+        legacy.binance_market_stream = self
+        self._runtime_integration_installed = True
+
     def snapshot(self, *, now: float | None = None) -> dict[str, Any]:
         current = time.time() if now is None else float(now)
         with self._lock:
-            last_age = (
-                None
-                if self._last_event_at is None
-                else max(0.0, current - self._last_event_at)
-            )
+            last_age = None if self._last_event_at is None else max(0.0, current - self._last_event_at)
             latest_kline_count = len(self._latest_kline)
             latest_ticker_count = len(self._latest_ticker)
             return {
                 "available": True,
-                "mode": "SHADOW_ONLY",
+                "mode": "PAPER_AUTHORITATIVE_BINANCE_WS",
                 "connected": self._connected,
                 "stream_count": self.stream_count,
                 "symbol_count": len(self.symbols),
@@ -254,18 +327,10 @@ class BinanceMarketStream:
                 "expected_kline_streams": len(self.symbols) * len(self.intervals),
                 "tickers_with_latest": latest_ticker_count,
                 "expected_tickers": len(self.symbols),
-                "coverage_kline_percent": round(
-                    latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0,
-                    2,
-                ),
-                "coverage_ticker_percent": round(
-                    latest_ticker_count / float(max(1, len(self.symbols))) * 100.0,
-                    2,
-                ),
+                "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2),
+                "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2),
                 "last_event_age_seconds": None if last_age is None else round(last_age, 3),
-                "event_stream_healthy": bool(
-                    self._connected and last_age is not None and last_age <= self.stale_after_seconds
-                ),
+                "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds),
                 "stale_after_seconds": self.stale_after_seconds,
                 "events_total": self._events_total,
                 "kline_events": self._kline_events,
@@ -274,6 +339,12 @@ class BinanceMarketStream:
                 "reconnects": self._reconnects,
                 "parse_errors": self._parse_errors,
                 "last_error": self._last_error,
+                "runtime_integration": {
+                    "installed": self._runtime_integration_installed,
+                    "ticker_ws_hits": self._runtime_ticker_ws_hits,
+                    "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks,
+                    "kline_ws_overlays": self._runtime_kline_ws_overlays,
+                },
             }
 
 
@@ -291,4 +362,4 @@ def _int(value: Any) -> int:
         return 0
 
 
-__all__ = ["BinanceMarketStream", "StreamHealth"]
+__all__ = ["BinanceMarketStream"]
