@@ -22,11 +22,11 @@ def _aligned_inputs():
     return {
         "market_data_source": "BYBIT",
         "source_ticker": {"lastPrice": 100.00},
-        "source_5m": [_candle(five_open, 99.0, 101.0, 98.5, 100.0, five_close)],
-        "source_15m": [_candle(fifteen_open, 98.0, 101.0, 97.5, 100.0, fifteen_close)],
+        "source_5m_candles": [_candle(five_open, 99.0, 101.0, 98.5, 100.0, five_close)],
+        "source_15m_candles": [_candle(fifteen_open, 98.0, 101.0, 97.5, 100.0, fifteen_close)],
         "binance_ticker": {"lastPrice": 100.10, "received_at": 999_990.0},
-        "binance_5m": _candle(five_open, 99.1, 101.1, 98.6, 100.1, five_close),
-        "binance_15m": _candle(fifteen_open, 98.1, 101.1, 97.6, 100.1, fifteen_close),
+        "binance_5m_closed": _candle(five_open, 99.1, 101.1, 98.6, 100.1, five_close),
+        "binance_15m_closed": _candle(fifteen_open, 98.1, 101.1, 97.6, 100.1, fifteen_close),
         "binance_stream_healthy": True,
         "now": now,
     }
