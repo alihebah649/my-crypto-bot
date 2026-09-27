@@ -200,6 +200,13 @@ class BinanceMarketStream:
             split = len(self.symbols) // 2
             binance_set = set(self.symbols[:split])
         bybit_set = set(getattr(legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET", ()))
+        # shadow_main_base owns the venue split, but the legacy compatibility
+        # module does not expose its Bybit symbol set. When that compatibility
+        # attribute is absent, derive the complementary lane from the same
+        # symbol universe used to derive the Binance lane above. This keeps
+        # the WS adapter from silently dropping all Bybit tickers.
+        if not bybit_set:
+            bybit_set = set(self.symbols) - binance_set
 
         def fetch_tickers(symbols=None):
             requested = [str(s).upper() for s in (symbols if symbols is not None else self.symbols)]
