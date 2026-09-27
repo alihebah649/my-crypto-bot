@@ -89,3 +89,79 @@ def test_latest_closed_kline_survives_start_of_next_candle():
     assert latest_closed["is_closed"] is True
     assert latest_closed["open_time"] == 1000
     assert latest_closed["close"] == 101.0
+
+
+def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_is_absent():
+    import shadow_main_legacy as legacy
+
+    symbols = [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "LINKUSDT",
+    ]
+    binance_symbols = set(symbols[:2])
+    bybit_symbols = set(symbols[2:])
+
+    original_fetch = legacy.fetch_24h_tickers
+    original_kline_fetch = legacy.fetch_klines
+    original_flag = getattr(
+        legacy, "_binance_ws_market_data_integration_installed", None
+    )
+    legacy_bybit_attr = getattr(
+        legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET", None
+    )
+    had_bybit_attr = hasattr(legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET")
+
+    def fake_ticker_fetch(requested):
+        requested = list(requested)
+        return {
+            symbol: {
+                "symbol": symbol,
+                "lastPrice": 200.0,
+                "market_data_source": "BYBIT",
+            }
+            for symbol in requested
+        }
+
+    def fake_kline_fetch(symbol, interval, limit):
+        return []
+
+    try:
+        legacy.fetch_24h_tickers = fake_ticker_fetch
+        legacy.fetch_klines = fake_kline_fetch
+        legacy._binance_ws_market_data_integration_installed = False
+        if had_bybit_attr:
+            del legacy._BYBIT_MARKET_DATA_SYMBOL_SET
+
+        feed = BinanceMarketStream(symbols)
+
+        def fresh_ticker(symbol):
+            if symbol in binance_symbols:
+                return {
+                    "symbol": symbol,
+                    "lastPrice": 100.0,
+                    "market_data_source": "BINANCE",
+                    "market_data_transport": "WEBSOCKET",
+                }
+            return None
+
+        feed._fresh_ticker = fresh_ticker
+        feed._install_runtime_integration()
+
+        routed = legacy.fetch_24h_tickers(symbols)
+
+        assert set(routed) == set(symbols)
+        assert all(routed[s]["market_data_source"] == "BINANCE" for s in binance_symbols)
+        assert all(routed[s]["market_data_source"] == "BYBIT" for s in bybit_symbols)
+    finally:
+        legacy.fetch_24h_tickers = original_fetch
+        legacy.fetch_klines = original_kline_fetch
+        if original_flag is None:
+            legacy.__dict__.pop("_binance_ws_market_data_integration_installed", None)
+        else:
+            legacy._binance_ws_market_data_integration_installed = original_flag
+        if had_bybit_attr:
+            legacy._BYBIT_MARKET_DATA_SYMBOL_SET = legacy_bybit_attr
+        else:
+            legacy.__dict__.pop("_BYBIT_MARKET_DATA_SYMBOL_SET", None)
