@@ -19,7 +19,7 @@ def _aligned_inputs():
     five_close = 999_999_999
     fifteen_open = 999_100_000
     fifteen_close = 999_999_999
-    return now, {
+    return {
         "market_data_source": "BYBIT",
         "source_ticker": {"lastPrice": 100.00},
         "source_5m": [_candle(five_open, 99.0, 101.0, 98.5, 100.0, five_close)],
