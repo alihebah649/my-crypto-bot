@@ -49,6 +49,7 @@ class BinanceMarketStream:
         # live WebSocket candles keep the series current without repeated REST
         # refreshes.
         self._runtime_kline_history: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._runtime_kline_seeded: set[tuple[str, str]] = set()
         self._runtime_kline_seed_last_attempt: dict[tuple[str, str], float] = {}
         self._runtime_kline_rest_seed_count = 0
         self._runtime_kline_rest_retry_count = 0
@@ -216,6 +217,8 @@ class BinanceMarketStream:
         symbol: str,
         interval: str,
         candles: Iterable[Mapping[str, Any]],
+        *,
+        required_limit: int | None = None,
     ) -> int:
         key = (str(symbol).upper(), str(interval))
         normalized: dict[int, dict[str, Any]] = {}
@@ -237,6 +240,8 @@ class BinanceMarketStream:
             existing.update(normalized)
             rows = [existing[key] for key in sorted(existing)]
             self._runtime_kline_history[key] = rows[-500:]
+            if required_limit is None or len(self._runtime_kline_history[key]) >= int(required_limit):
+                self._runtime_kline_seeded.add(key)
         return len(rows)
 
     def _runtime_kline_snapshot_rows(
@@ -340,7 +345,10 @@ class BinanceMarketStream:
             # REST is a cold-start seed, not a periodic refresh. Once the
             # series has enough history, WebSocket updates replace/append the
             # current candle and each newly closed candle in-place.
-            if len(rows) < int(limit):
+            with self._lock:
+                seeded = key in self._runtime_kline_seeded
+
+            if not seeded:
                 with self._lock:
                     last_attempt = self._runtime_kline_seed_last_attempt.get(key, 0.0)
                     can_attempt = now - last_attempt >= 300.0
@@ -352,16 +360,17 @@ class BinanceMarketStream:
                         normalized_symbol,
                         normalized_interval,
                         data or [],
+                        required_limit=int(limit),
                     )
                     with self._lock:
-                        if seeded_count:
+                        if seeded_count and key in self._runtime_kline_seeded:
                             self._runtime_kline_rest_seed_count += 1
                         else:
                             self._runtime_kline_rest_retry_count += 1
                     rows = self._runtime_kline_snapshot_rows(
                         normalized_symbol,
                         normalized_interval,
-                        limit,
+                        limit
                     )
 
             if not rows:
