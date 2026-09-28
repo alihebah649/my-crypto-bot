@@ -132,6 +132,7 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
         first = legacy.fetch_klines("BTCUSDT", "5m", 3)
         assert len(calls) == 1
         assert [row["open_time"] for row in first] == [1000, 2000, 3000]
+        assert feed.snapshot()["runtime_integration"]["kline_rest_seeds"] == 1
 
         feed._consume_message(
             '{"data":{"e":"kline","E":3,"s":"BTCUSDT","k":'
