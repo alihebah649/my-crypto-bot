@@ -118,6 +118,7 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
         return [
             {"open_time": 1000, "open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 10},
             {"open_time": 2000, "open": 100.5, "high": 102, "low": 100, "close": 101.5, "volume": 12},
+            {"open_time": 3000, "open": 101.5, "high": 103, "low": 101, "close": 102.5, "volume": 14},
         ]
 
     try:
@@ -128,20 +129,20 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
         feed = BinanceMarketStream(symbols)
         feed._install_runtime_integration()
 
-        first = legacy.fetch_klines("BTCUSDT", "5m", 2)
+        first = legacy.fetch_klines("BTCUSDT", "5m", 3)
         assert len(calls) == 1
-        assert [row["open_time"] for row in first] == [1000, 2000]
+        assert [row["open_time"] for row in first] == [1000, 2000, 3000]
 
         feed._consume_message(
             '{"data":{"e":"kline","E":3,"s":"BTCUSDT","k":'
-            '{"t":3000,"T":3299999,"s":"BTCUSDT","i":"5m",'
-            '"o":"101.5","c":"102","h":"103","l":"101","v":"4","q":"408","x":false}}}'
+            '{"t":4000,"T":4299999,"s":"BTCUSDT","i":"5m",'
+            '"o":"102.5","c":"103","h":"104","l":"102","v":"4","q":"412","x":false}}}'
         )
-        second = legacy.fetch_klines("BTCUSDT", "5m", 2)
+        second = legacy.fetch_klines("BTCUSDT", "5m", 3)
 
         assert len(calls) == 1
-        assert [row["open_time"] for row in second] == [2000, 3000]
-        assert second[-1]["close"] == 102.0
+        assert [row["open_time"] for row in second] == [2000, 3000, 4000]
+        assert second[-1]["close"] == 103.0
     finally:
         legacy.fetch_24h_tickers = original_fetch
         legacy.fetch_klines = original_kline_fetch
