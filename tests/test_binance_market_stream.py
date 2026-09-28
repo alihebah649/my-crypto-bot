@@ -91,6 +91,66 @@ def test_latest_closed_kline_survives_start_of_next_candle():
     assert latest_closed["close"] == 101.0
 
 
+def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
+    import shadow_main_legacy as legacy
+
+    symbols = ["BTCUSDT"]
+    original_fetch = legacy.fetch_24h_tickers
+    original_kline_fetch = legacy.fetch_klines
+    original_flag = getattr(
+        legacy, "_binance_ws_market_data_integration_installed", None
+    )
+
+    calls = []
+
+    def fake_ticker_fetch(requested):
+        return {
+            symbol: {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "market_data_source": "BINANCE",
+            }
+            for symbol in requested
+        }
+
+    def fake_kline_fetch(symbol, interval, limit):
+        calls.append((symbol, interval, limit))
+        return [
+            {"open_time": 1000, "open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 10},
+            {"open_time": 2000, "open": 100.5, "high": 102, "low": 100, "close": 101.5, "volume": 12},
+        ]
+
+    try:
+        legacy.fetch_24h_tickers = fake_ticker_fetch
+        legacy.fetch_klines = fake_kline_fetch
+        legacy._binance_ws_market_data_integration_installed = False
+
+        feed = BinanceMarketStream(symbols)
+        feed._install_runtime_integration()
+
+        first = legacy.fetch_klines("BTCUSDT", "5m", 2)
+        assert len(calls) == 1
+        assert [row["open_time"] for row in first] == [1000, 2000]
+
+        feed._consume_message(
+            '{"data":{"e":"kline","E":3,"s":"BTCUSDT","k":'
+            '{"t":3000,"T":3299999,"s":"BTCUSDT","i":"5m",'
+            '"o":"101.5","c":"102","h":"103","l":"101","v":"4","q":"408","x":false}}}'
+        )
+        second = legacy.fetch_klines("BTCUSDT", "5m", 2)
+
+        assert len(calls) == 1
+        assert [row["open_time"] for row in second] == [2000, 3000]
+        assert second[-1]["close"] == 102.0
+    finally:
+        legacy.fetch_24h_tickers = original_fetch
+        legacy.fetch_klines = original_kline_fetch
+        if original_flag is None:
+            legacy.__dict__.pop("_binance_ws_market_data_integration_installed", None)
+        else:
+            legacy._binance_ws_market_data_integration_installed = original_flag
+
+
 def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_is_absent():
     import shadow_main_legacy as legacy
 
