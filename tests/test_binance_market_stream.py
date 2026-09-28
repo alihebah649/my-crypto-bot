@@ -100,6 +100,9 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
     original_flag = getattr(
         legacy, "_binance_ws_market_data_integration_installed", None
     )
+    original_kline_wave_symbols = getattr(
+        legacy, "_market_data_kline_refresh_symbols", None
+    )
 
     calls = []
 
@@ -125,6 +128,7 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
         legacy.fetch_24h_tickers = fake_ticker_fetch
         legacy.fetch_klines = fake_kline_fetch
         legacy._binance_ws_market_data_integration_installed = False
+        legacy._market_data_kline_refresh_symbols = None
 
         feed = BinanceMarketStream(symbols)
         feed._install_runtime_integration()
@@ -151,6 +155,10 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
             legacy.__dict__.pop("_binance_ws_market_data_integration_installed", None)
         else:
             legacy._binance_ws_market_data_integration_installed = original_flag
+        if original_kline_wave_symbols is None:
+            legacy.__dict__.pop("_market_data_kline_refresh_symbols", None)
+        else:
+            legacy._market_data_kline_refresh_symbols = original_kline_wave_symbols
 
 
 def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_is_absent():
