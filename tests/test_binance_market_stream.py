@@ -92,18 +92,10 @@ def test_latest_closed_kline_survives_start_of_next_candle():
 
 
 def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
-    import shadow_main_legacy as legacy
+    import sys
+    import types
 
     symbols = ["BTCUSDT"]
-    original_fetch = legacy.fetch_24h_tickers
-    original_kline_fetch = legacy.fetch_klines
-    original_flag = getattr(
-        legacy, "_binance_ws_market_data_integration_installed", None
-    )
-    original_kline_wave_symbols = getattr(
-        legacy, "_market_data_kline_refresh_symbols", None
-    )
-
     calls = []
 
     def fake_ticker_fetch(requested):
@@ -124,16 +116,23 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
             {"open_time": 3000, "open": 101.5, "high": 103, "low": 101, "close": 102.5, "volume": 14},
         ]
 
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = fake_ticker_fetch
+    fake_legacy.fetch_klines = fake_kline_fetch
+    fake_legacy.fetch_strategy_data = lambda: None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = {"BTCUSDT"}
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._market_data_kline_refresh_symbols = None
+    fake_legacy._binance_ws_market_data_integration_installed = False
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
     try:
-        legacy.fetch_24h_tickers = fake_ticker_fetch
-        legacy.fetch_klines = fake_kline_fetch
-        legacy._binance_ws_market_data_integration_installed = False
-        legacy._market_data_kline_refresh_symbols = None
+        sys.modules["shadow_main_legacy"] = fake_legacy
 
         feed = BinanceMarketStream(symbols)
         feed._install_runtime_integration()
 
-        first = legacy.fetch_klines("BTCUSDT", "5m", 3)
+        first = fake_legacy.fetch_klines("BTCUSDT", "5m", 3)
         assert len(calls) == 1
         assert [row["open_time"] for row in first] == [1000, 2000, 3000]
         assert feed.snapshot()["runtime_integration"]["kline_rest_seeds"] == 1
@@ -143,22 +142,16 @@ def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
             '{"t":4000,"T":4299999,"s":"BTCUSDT","i":"5m",'
             '"o":"102.5","c":"103","h":"104","l":"102","v":"4","q":"412","x":false}}}'
         )
-        second = legacy.fetch_klines("BTCUSDT", "5m", 3)
+        second = fake_legacy.fetch_klines("BTCUSDT", "5m", 3)
 
         assert len(calls) == 1
         assert [row["open_time"] for row in second] == [2000, 3000, 4000]
         assert second[-1]["close"] == 103.0
     finally:
-        legacy.fetch_24h_tickers = original_fetch
-        legacy.fetch_klines = original_kline_fetch
-        if original_flag is None:
-            legacy.__dict__.pop("_binance_ws_market_data_integration_installed", None)
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
         else:
-            legacy._binance_ws_market_data_integration_installed = original_flag
-        if original_kline_wave_symbols is None:
-            legacy.__dict__.pop("_market_data_kline_refresh_symbols", None)
-        else:
-            legacy._market_data_kline_refresh_symbols = original_kline_wave_symbols
+            sys.modules["shadow_main_legacy"] = previous_legacy
 
 
 def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_is_absent():
