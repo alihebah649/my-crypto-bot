@@ -44,6 +44,15 @@ class BinanceMarketStream:
         self._latest_kline: dict[tuple[str, str], dict[str, Any]] = {}
         self._latest_closed_kline: dict[tuple[str, str], dict[str, Any]] = {}
         self._latest_ticker: dict[str, dict[str, Any]] = {}
+        # Per-process Binance kline history. REST is used only to seed a
+        # series when history is missing/insufficient; after that, closed and
+        # live WebSocket candles keep the series current without repeated REST
+        # refreshes.
+        self._runtime_kline_history: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._runtime_kline_seeded: set[tuple[str, str]] = set()
+        self._runtime_kline_seed_last_attempt: dict[tuple[str, str], float] = {}
+        self._runtime_kline_rest_seed_count = 0
+        self._runtime_kline_rest_retry_count = 0
         self._runtime_ticker_ws_hits = 0
         self._runtime_ticker_rest_fallbacks = 0
         self._runtime_kline_ws_overlays = 0
@@ -152,6 +161,7 @@ class BinanceMarketStream:
         with self._lock:
             self._kline_events += 1
             self._latest_kline[(symbol, interval)] = candle
+            self._merge_runtime_kline_locked(symbol, interval, candle)
             if candle["is_closed"]:
                 self._closed_kline_events += 1
                 self._latest_closed_kline[(symbol, interval)] = candle
@@ -179,6 +189,74 @@ class BinanceMarketStream:
         if received_at <= 0 or time.time() - received_at > self.stale_after_seconds:
             return None
         return ticker
+
+    def _merge_runtime_kline_locked(
+        self,
+        symbol: str,
+        interval: str,
+        candle: Mapping[str, Any],
+    ) -> None:
+        key = (str(symbol).upper(), str(interval))
+        open_time = _int(candle.get("open_time"))
+        if open_time <= 0:
+            return
+        history = self._runtime_kline_history.setdefault(key, [])
+        replacement = dict(candle)
+        for index, existing in enumerate(history):
+            if _int(existing.get("open_time")) == open_time:
+                history[index] = replacement
+                break
+        else:
+            history.append(replacement)
+        history.sort(key=lambda item: _int(item.get("open_time")))
+        if len(history) > 500:
+            del history[:-500]
+
+    def _seed_runtime_kline_history(
+        self,
+        symbol: str,
+        interval: str,
+        candles: Iterable[Mapping[str, Any]],
+        *,
+        required_limit: int | None = None,
+    ) -> int:
+        key = (str(symbol).upper(), str(interval))
+        normalized: dict[int, dict[str, Any]] = {}
+        for item in candles:
+            if not isinstance(item, Mapping):
+                continue
+            open_time = _int(item.get("open_time"))
+            if open_time <= 0:
+                continue
+            normalized[open_time] = dict(item)
+        if not normalized:
+            return 0
+        with self._lock:
+            existing = {
+                _int(item.get("open_time")): dict(item)
+                for item in self._runtime_kline_history.get(key, [])
+                if _int(item.get("open_time")) > 0
+            }
+            existing.update(normalized)
+            rows = [existing[key] for key in sorted(existing)]
+            self._runtime_kline_history[key] = rows[-500:]
+            if required_limit is None or len(self._runtime_kline_history[key]) >= int(required_limit):
+                self._runtime_kline_seeded.add(key)
+        return len(rows)
+
+    def _runtime_kline_snapshot_rows(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        key = (str(symbol).upper(), str(interval))
+        with self._lock:
+            rows = self._runtime_kline_history.get(key, [])
+            if not rows:
+                return []
+            result = [dict(row) for row in rows]
+        return result[-int(limit):] if limit and len(result) > int(limit) else result
 
     def _install_runtime_integration(self) -> None:
         """Install the smallest possible adapter into the existing Paper path."""
@@ -237,29 +315,70 @@ class BinanceMarketStream:
             return {symbol: result[symbol] for symbol in requested if symbol in result}
 
         def fetch_klines(symbol: str, interval: str, limit: int):
-            data = original_kline_fetch(symbol, interval, limit)
             normalized_symbol = str(symbol).upper()
-            if normalized_symbol not in binance_set or str(interval) not in {"5m", "15m"}:
-                return data
-            closed = self.get_latest_closed_kline(normalized_symbol, str(interval))
-            if not closed:
-                return data
-            row = dict(closed)
-            row["market_data_source"] = "BINANCE"
-            row["market_data_transport"] = "WEBSOCKET_CLOSED_KLINE"
-            rows = [dict(item) for item in (data or []) if isinstance(item, Mapping)]
-            replaced = False
-            for index, item in enumerate(rows):
-                if _int(item.get("open_time")) == _int(row.get("open_time")):
-                    rows[index] = row
-                    replaced = True
-                    break
-            if not replaced:
-                rows.append(row)
-            rows.sort(key=lambda item: _int(item.get("open_time")))
+            normalized_interval = str(interval)
+            if normalized_symbol not in binance_set or normalized_interval not in self.intervals:
+                return original_kline_fetch(symbol, interval, limit)
+
+            key = (normalized_symbol, normalized_interval)
+            now = time.time()
+            rows = self._runtime_kline_snapshot_rows(normalized_symbol, normalized_interval, limit)
+
+            # Preserve the existing Paper kline wave scheduler for cold starts.
+            # A symbol outside the claimed wave waits for its scheduler slot
+            # rather than creating a startup REST burst.
+            allowed_symbols = None
+            try:
+                import shadow_main_legacy as legacy_runtime
+                candidate = getattr(
+                    legacy_runtime, "_market_data_kline_refresh_symbols", None
+                )
+                if isinstance(candidate, set):
+                    allowed_symbols = candidate
+            except Exception:
+                allowed_symbols = None
+
+            if len(rows) < int(limit) and allowed_symbols is not None:
+                if normalized_symbol not in allowed_symbols:
+                    return rows
+
+            # REST is a cold-start seed, not a periodic refresh. Once the
+            # series has enough history, WebSocket updates replace/append the
+            # current candle and each newly closed candle in-place.
+            with self._lock:
+                seeded = key in self._runtime_kline_seeded
+
+            if not seeded:
+                with self._lock:
+                    last_attempt = self._runtime_kline_seed_last_attempt.get(key, 0.0)
+                    can_attempt = now - last_attempt >= 300.0
+                    if can_attempt:
+                        self._runtime_kline_seed_last_attempt[key] = now
+                if can_attempt:
+                    data = original_kline_fetch(symbol, interval, limit)
+                    seeded_count = self._seed_runtime_kline_history(
+                        normalized_symbol,
+                        normalized_interval,
+                        data or [],
+                        required_limit=int(limit),
+                    )
+                    with self._lock:
+                        if seeded_count and key in self._runtime_kline_seeded:
+                            self._runtime_kline_rest_seed_count += 1
+                        else:
+                            self._runtime_kline_rest_retry_count += 1
+                    rows = self._runtime_kline_snapshot_rows(
+                        normalized_symbol,
+                        normalized_interval,
+                        limit
+                    )
+
+            if not rows:
+                return []
+
             with self._lock:
                 self._runtime_kline_ws_overlays += 1
-            return rows[-int(limit):] if limit and len(rows) > int(limit) else rows
+            return rows
 
         legacy.fetch_24h_tickers = fetch_tickers
         legacy.fetch_klines = fetch_klines
@@ -284,7 +403,9 @@ class BinanceMarketStream:
             last_age = None if self._last_event_at is None else max(0.0, current - self._last_event_at)
             latest_kline_count = len(self._latest_kline)
             latest_ticker_count = len(self._latest_ticker)
-            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "kline_ws_overlays": self._runtime_kline_ws_overlays}}
+            history_key_count = len(self._runtime_kline_history)
+            history_rows = sum(len(rows) for rows in self._runtime_kline_history.values())
+            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
 
 
 def _float(value: Any) -> float:

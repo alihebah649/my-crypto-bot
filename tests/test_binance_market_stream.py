@@ -91,6 +91,69 @@ def test_latest_closed_kline_survives_start_of_next_candle():
     assert latest_closed["close"] == 101.0
 
 
+def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
+    import sys
+    import types
+
+    symbols = ["BTCUSDT"]
+    calls = []
+
+    def fake_ticker_fetch(requested):
+        return {
+            symbol: {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "market_data_source": "BINANCE",
+            }
+            for symbol in requested
+        }
+
+    def fake_kline_fetch(symbol, interval, limit):
+        calls.append((symbol, interval, limit))
+        return [
+            {"open_time": 1000, "open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 10},
+            {"open_time": 2000, "open": 100.5, "high": 102, "low": 100, "close": 101.5, "volume": 12},
+            {"open_time": 3000, "open": 101.5, "high": 103, "low": 101, "close": 102.5, "volume": 14},
+        ]
+
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = fake_ticker_fetch
+    fake_legacy.fetch_klines = fake_kline_fetch
+    fake_legacy.fetch_strategy_data = lambda: None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = {"BTCUSDT"}
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._market_data_kline_refresh_symbols = None
+    fake_legacy._binance_ws_market_data_integration_installed = False
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+
+        feed = BinanceMarketStream(symbols)
+        feed._install_runtime_integration()
+
+        first = fake_legacy.fetch_klines("BTCUSDT", "5m", 3)
+        assert len(calls) == 1
+        assert [row["open_time"] for row in first] == [1000, 2000, 3000]
+        assert feed.snapshot()["runtime_integration"]["kline_rest_seeds"] == 1
+
+        feed._consume_message(
+            '{"data":{"e":"kline","E":3,"s":"BTCUSDT","k":'
+            '{"t":4000,"T":4299999,"s":"BTCUSDT","i":"5m",'
+            '"o":"102.5","c":"103","h":"104","l":"102","v":"4","q":"412","x":false}}}'
+        )
+        second = fake_legacy.fetch_klines("BTCUSDT", "5m", 3)
+
+        assert len(calls) == 1
+        assert [row["open_time"] for row in second] == [2000, 3000, 4000]
+        assert second[-1]["close"] == 103.0
+    finally:
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous_legacy
+
+
 def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_is_absent():
     import shadow_main_legacy as legacy
 
