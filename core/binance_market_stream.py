@@ -319,6 +319,24 @@ class BinanceMarketStream:
             now = time.time()
             rows = self._runtime_kline_snapshot_rows(normalized_symbol, normalized_interval, limit)
 
+            # Preserve the existing Paper kline wave scheduler for cold starts.
+            # A symbol outside the claimed wave waits for its scheduler slot
+            # rather than creating a startup REST burst.
+            allowed_symbols = None
+            try:
+                import shadow_main_legacy as legacy_runtime
+                candidate = getattr(
+                    legacy_runtime, "_market_data_kline_refresh_symbols", None
+                )
+                if isinstance(candidate, set):
+                    allowed_symbols = candidate
+            except Exception:
+                allowed_symbols = None
+
+            if len(rows) < int(limit) and allowed_symbols is not None:
+                if normalized_symbol not in allowed_symbols:
+                    return rows
+
             # REST is a cold-start seed, not a periodic refresh. Once the
             # series has enough history, WebSocket updates replace/append the
             # current candle and each newly closed candle in-place.
