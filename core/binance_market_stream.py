@@ -311,12 +311,11 @@ class BinanceMarketStream:
                 rows = [dict(row) for row in self._runtime_kline_history.get(key, [])]
             if not rows:
                 return
-            cache_key = f"{key[1]}:{key[0]}:{len(rows) if len(rows) < 60 else 60}"
-            # The active strategy/MTF callers use a 60-candle canonical cache
-            # key. Keep a full 60-row payload when available.
-            if len(rows) >= 60:
-                rows = rows[-60:]
-                cache_key = f"{key[1]}:{key[0]}:60"
+            canonical_limit = 150 if key[1] == "15m" else 60
+            if len(rows) < canonical_limit:
+                return
+            rows = rows[-canonical_limit:]
+            cache_key = f"{key[1]}:{key[0]}:{canonical_limit}"
             manager.cache.put(cache_key, rows, fetched_at=time.time())
             with self._lock:
                 self._runtime_kline_manager_cache_writes += 1
