@@ -91,6 +91,61 @@ def test_latest_closed_kline_survives_start_of_next_candle():
     assert latest_closed["close"] == 101.0
 
 
+def test_runtime_kline_adapter_hydrates_from_manager_cache_before_rest():
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    symbols = ["BTCUSDT"]
+    calls = []
+
+    def fake_kline_fetch(symbol, interval, limit):
+        calls.append((symbol, interval, limit))
+        return []
+
+    class FakeCache:
+        def get(self, key):
+            if key == "5m:BTCUSDT:3":
+                return SimpleNamespace(
+                    payload=[
+                        {"open_time": 1000, "open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 10},
+                        {"open_time": 2000, "open": 100.5, "high": 102, "low": 100, "close": 101.5, "volume": 12},
+                        {"open_time": 3000, "open": 101.5, "high": 103, "low": 101, "close": 102.5, "volume": 14},
+                    ]
+                )
+            return None
+
+        def put(self, key, payload, fetched_at=None):
+            return None
+
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = lambda requested: {}
+    fake_legacy.fetch_klines = fake_kline_fetch
+    fake_legacy.fetch_strategy_data = lambda: None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = {"BTCUSDT"}
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._market_data_kline_refresh_symbols = {"BTCUSDT"}
+    fake_legacy._binance_ws_market_data_integration_installed = False
+    fake_legacy.market_data_manager = SimpleNamespace(cache=FakeCache())
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+        feed = BinanceMarketStream(symbols)
+        feed._install_runtime_integration()
+
+        rows = fake_legacy.fetch_klines("BTCUSDT", "5m", 3)
+
+        assert len(calls) == 0
+        assert [row["open_time"] for row in rows] == [1000, 2000, 3000]
+        assert feed.snapshot()["runtime_integration"]["kline_manager_cache_seeds"] == 1
+    finally:
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous_legacy
+
+
 def test_runtime_kline_adapter_uses_rest_only_for_cold_start_seed():
     import sys
     import types
