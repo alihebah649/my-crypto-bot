@@ -53,6 +53,8 @@ class BinanceMarketStream:
         self._runtime_kline_seed_last_attempt: dict[tuple[str, str], float] = {}
         self._runtime_kline_rest_seed_count = 0
         self._runtime_kline_rest_retry_count = 0
+        self._runtime_kline_manager_cache_seeds = 0
+        self._runtime_kline_manager_cache_writes = 0
         self._runtime_ticker_ws_hits = 0
         self._runtime_ticker_rest_fallbacks = 0
         self._runtime_kline_ws_overlays = 0
@@ -162,9 +164,12 @@ class BinanceMarketStream:
             self._kline_events += 1
             self._latest_kline[(symbol, interval)] = candle
             self._merge_runtime_kline_locked(symbol, interval, candle)
-            if candle["is_closed"]:
+            is_closed = bool(candle["is_closed"])
+            if is_closed:
                 self._closed_kline_events += 1
                 self._latest_closed_kline[(symbol, interval)] = candle
+        if is_closed:
+            self._persist_runtime_kline_to_manager_cache(symbol, interval)
 
     def get_latest_kline(self, symbol: str, interval: str) -> dict[str, Any] | None:
         with self._lock:
@@ -258,6 +263,69 @@ class BinanceMarketStream:
             result = [dict(row) for row in rows]
         return result[-int(limit):] if limit and len(result) > int(limit) else result
 
+    def _hydrate_runtime_kline_from_manager_cache(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int,
+    ) -> bool:
+        key = (str(symbol).upper(), str(interval))
+        try:
+            import shadow_main_legacy as legacy_runtime
+            manager = getattr(legacy_runtime, "market_data_manager", None)
+            if manager is None or not hasattr(manager, "cache"):
+                return False
+            cache_key = f"{key[1]}:{key[0]}:{int(limit)}"
+            snapshot = manager.cache.get(cache_key)
+            if snapshot is None:
+                return False
+            payload = snapshot.payload
+            if not isinstance(payload, list):
+                return False
+            seeded_count = self._seed_runtime_kline_history(
+                key[0],
+                key[1],
+                payload,
+                required_limit=int(limit),
+            )
+            if seeded_count <= 0:
+                return False
+            with self._lock:
+                self._runtime_kline_manager_cache_seeds += 1
+            return key in self._runtime_kline_seeded
+        except Exception:
+            return False
+
+    def _persist_runtime_kline_to_manager_cache(
+        self,
+        symbol: str,
+        interval: str,
+    ) -> None:
+        key = (str(symbol).upper(), str(interval))
+        try:
+            import shadow_main_legacy as legacy_runtime
+            manager = getattr(legacy_runtime, "market_data_manager", None)
+            if manager is None or not hasattr(manager, "cache"):
+                return
+            with self._lock:
+                rows = [dict(row) for row in self._runtime_kline_history.get(key, [])]
+            if not rows:
+                return
+            cache_key = f"{key[1]}:{key[0]}:{len(rows) if len(rows) < 60 else 60}"
+            # The active strategy/MTF callers use a 60-candle canonical cache
+            # key. Keep a full 60-row payload when available.
+            if len(rows) >= 60:
+                rows = rows[-60:]
+                cache_key = f"{key[1]}:{key[0]}:60"
+            manager.cache.put(cache_key, rows, fetched_at=time.time())
+            with self._lock:
+                self._runtime_kline_manager_cache_writes += 1
+        except Exception:
+            # Cache persistence is an optimization/data-continuity aid; never
+            # make the WebSocket consumer fail because the local cache cannot
+            # be written.
+            return
+
     def _install_runtime_integration(self) -> None:
         """Install the smallest possible adapter into the existing Paper path."""
         if self._runtime_integration_installed:
@@ -323,6 +391,21 @@ class BinanceMarketStream:
             key = (normalized_symbol, normalized_interval)
             now = time.time()
             rows = self._runtime_kline_snapshot_rows(normalized_symbol, normalized_interval, limit)
+
+            # Prefer the existing canonical MarketDataManager cache as the
+            # historical seed. This lets Binance WebSocket become the live
+            # updater even when Binance REST is blocked by an IP-level guard.
+            if len(rows) < int(limit) and key not in self._runtime_kline_seeded:
+                if self._hydrate_runtime_kline_from_manager_cache(
+                    normalized_symbol,
+                    normalized_interval,
+                    int(limit),
+                ):
+                    rows = self._runtime_kline_snapshot_rows(
+                        normalized_symbol,
+                        normalized_interval,
+                        limit,
+                    )
 
             # Preserve the existing Paper kline wave scheduler for cold starts.
             # A symbol outside the claimed wave waits for its scheduler slot
@@ -405,7 +488,7 @@ class BinanceMarketStream:
             latest_ticker_count = len(self._latest_ticker)
             history_key_count = len(self._runtime_kline_history)
             history_rows = sum(len(rows) for rows in self._runtime_kline_history.values())
-            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
+            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
 
 
 def _float(value: Any) -> float:
