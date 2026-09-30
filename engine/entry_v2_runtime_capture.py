@@ -333,7 +333,7 @@ class EntryV2RuntimeCapture:
         if len(self._history) > self.max_history:
             del self._history[:-self.max_history]
 
-        summary = self.summary(cycle_records)
+        summary = self.summary(cycle_records, include_historical=False)
         summary["persisted_records"] = len(self._cycle_persisted_keys)
         summary["persistent_total_records"] = (
             self.capture_store.count() if self.capture_store is not None else 0
@@ -390,7 +390,12 @@ class EntryV2RuntimeCapture:
             shadow_report = {"schema_version": 1, "error": f"{type(exc).__name__}: {exc}"}
         return {"historical_outcomes": outcomes, "shadow_report": shadow_report}
 
-    def summary(self, cycle_records: Mapping[str, EntryV2ShadowCapture] | None = None) -> dict[str, Any]:
+    def summary(
+        self,
+        cycle_records: Mapping[str, EntryV2ShadowCapture] | None = None,
+        *,
+        include_historical: bool = False,
+    ) -> dict[str, Any]:
         records = (
             list(cycle_records.values())
             if cycle_records is not None
@@ -399,7 +404,11 @@ class EntryV2RuntimeCapture:
         legacy_rows = list((getattr(self.legacy, "latest_scores", {}) or {}).values())
         approved = sum(1 for item in records if item.v2_decision.get("approved") is True)
         rejected = sum(1 for item in records if item.v2_decision.get("approved") is False)
-        historical = self._historical_analysis()
+        historical = (
+            self._historical_analysis()
+            if include_historical
+            else {"historical_outcomes": None, "shadow_report": None}
+        )
 
         def _compact(item: EntryV2ShadowCapture) -> dict[str, Any]:
             return {
@@ -453,6 +462,10 @@ class EntryV2RuntimeCapture:
                 for (symbol, mode), item in self._latest_by_mode.items()
             },
         }
+
+    def historical_analysis(self) -> dict[str, Any]:
+        """Run the expensive historical join/report only when explicitly requested."""
+        return self._historical_analysis()
 
     def latest_capture_id(self, symbol: str, trade_mode: str | None = None) -> str | None:
         normalized = str(symbol).upper()
