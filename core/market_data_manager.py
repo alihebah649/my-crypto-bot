@@ -60,12 +60,25 @@ class PersistentMarketDataCache:
             json.dump(self._data, handle, ensure_ascii=False, separators=(",", ":"))
         os.replace(temporary, self.path)
 
-    def put(self, key: str, payload: Any, *, fetched_at: float | None = None) -> None:
+    def put(
+        self,
+        key: str,
+        payload: Any,
+        *,
+        fetched_at: float | None = None,
+        persist: bool = True,
+    ) -> None:
         with self._lock:
             self._data[str(key)] = {
                 "fetched_at": float(time.time() if fetched_at is None else fetched_at),
                 "payload": payload,
             }
+            if persist:
+                self._save()
+
+    def flush(self) -> None:
+        """Persist the current in-memory cache snapshot atomically."""
+        with self._lock:
             self._save()
 
     def get(self, key: str) -> CacheSnapshot | None:
