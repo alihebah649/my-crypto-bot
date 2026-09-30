@@ -212,6 +212,48 @@ class PostgresEvidenceStore:
         records = self.read_all()
         return records[-int(limit):]
 
+    def read_time_range(
+        self,
+        timestamp_field: str,
+        start_utc: str,
+        end_utc: str,
+    ) -> list[dict[str, Any]]:
+        """Read only JSON records whose timestamp field falls in a UTC range."""
+        field = str(timestamp_field or "").strip()
+        if not field:
+            return []
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    rows = self._connect().execute(
+                        """
+                        SELECT payload
+                        FROM paper_evidence
+                        WHERE evidence_type = %s
+                          AND payload ? %s
+                          AND ((payload ->> %s)::timestamptz) >= %s::timestamptz
+                          AND ((payload ->> %s)::timestamptz) < %s::timestamptz
+                        ORDER BY id ASC
+                        """,
+                        (
+                            self.evidence_type,
+                            field,
+                            field,
+                            str(start_utc),
+                            field,
+                            str(end_utc),
+                        ),
+                    ).fetchall()
+                    self.last_error = None
+                    return [dict(row[0]) for row in rows if isinstance(row[0], Mapping)]
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    if attempt == 1:
+                        return []
+        return []
     def count(self) -> int:
         """Return the record count without loading JSON payloads into memory."""
         with self._lock:
