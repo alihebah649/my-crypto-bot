@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -360,16 +360,43 @@ def _closed_positions_for_local_date(date_key: str):
     return positions
 
 
+def _durable_paper_outcomes_for_local_date(date_key: str) -> list[dict]:
+    store = globals().get("_paper_outcome_store")
+    if store is None or not hasattr(store, "read_time_range"):
+        return []
+    try:
+        local_start = datetime.strptime(date_key, "%Y-%m-%d").replace(tzinfo=REPORT_TIMEZONE)
+        local_end = local_start + timedelta(days=1)
+        start_utc = local_start.astimezone(timezone.utc).isoformat()
+        end_utc = local_end.astimezone(timezone.utc).isoformat()
+        return list(store.read_time_range("closed_at_utc", start_utc, end_utc) or [])
+    except Exception:
+        logger.exception("Durable Paper daily report query failed")
+        return []
+
+
 def build_daily_report(date_key: str | None = None) -> str:
     date_key = date_key or datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d")
-    closed = _closed_positions_for_local_date(date_key)
+    durable_outcomes = _durable_paper_outcomes_for_local_date(date_key)
+    use_durable = bool(durable_outcomes) or globals().get("_paper_outcome_store") is not None
+    closed = _closed_positions_for_local_date(date_key) if not use_durable else []
     by_coin: Dict[str, dict] = {}
-    for position in closed:
-        coin = position.symbol.upper().replace("USDT", "")
-        row = by_coin.setdefault(coin, {"wins": 0, "losses": 0, "net": 0.0})
-        pnl = float(position.realized_pnl)
-        row["wins" if pnl > 0 else "losses"] += 1
-        row["net"] += pnl
+    if use_durable:
+        for record in durable_outcomes:
+            coin = str(record.get("symbol", "")).upper().replace("USDT", "")
+            if not coin:
+                continue
+            row = by_coin.setdefault(coin, {"wins": 0, "losses": 0, "net": 0.0})
+            pnl = float(record.get("realized_pnl", 0.0) or 0.0)
+            row["wins" if pnl > 0 else "losses"] += 1
+            row["net"] += pnl
+    else:
+        for position in closed:
+            coin = position.symbol.upper().replace("USDT", "")
+            row = by_coin.setdefault(coin, {"wins": 0, "losses": 0, "net": 0.0})
+            pnl = float(position.realized_pnl)
+            row["wins" if pnl > 0 else "losses"] += 1
+            row["net"] += pnl
     lines = [
         "📊 حصاد اليوم الشامل (PAPER TRADING)", f"📅 التاريخ المنتهي: {date_key}", "", "```",
         f"{'COIN':<8} | {'WIN':<3} | {'LOSS':<4} | {'NET (FEES)':<10}",
@@ -381,7 +408,13 @@ def build_daily_report(date_key: str | None = None) -> str:
         lines.append(f"{coin:<8} | {row['wins']:<3} | {row['losses']:<4} | {row['net']:+.2f}$")
     lines.extend([
         "---------------------------------", f"{'TOTAL':<8} | {total_wins:<3} | {total_losses:<4} | {total_net:+.2f}$",
-        "```", "📄 Paper Trading — لا توجد أوامر حقيقية" if not closed else "📄 Paper Trading — أوامر محاكاة فقط",
+        "```",
+        (
+            "📄 Paper Trading — لا توجد أوامر حقيقية"
+            if not by_coin
+            else "📄 Paper Trading — أوامر محاكاة فقط"
+        ),
+        "📚 Closed P&L source: Postgres PAPER_OUTCOME" if use_durable else "📚 Closed P&L source: local runtime state",
         f"💵 Paper cash: ${runtime.execution_adapter.balance.cash:.2f}",
         f"📦 Open positions: {len(runtime.repository.get_open_positions())}",
     ])
