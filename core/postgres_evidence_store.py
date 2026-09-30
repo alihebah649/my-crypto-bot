@@ -213,7 +213,24 @@ class PostgresEvidenceStore:
         return records[-int(limit):]
 
     def count(self) -> int:
-        return len(self.read_all())
+        """Return the record count without loading JSON payloads into memory."""
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    row = self._connect().execute(
+                        "SELECT COUNT(*) FROM paper_evidence WHERE evidence_type = %s",
+                        (self.evidence_type,),
+                    ).fetchone()
+                    self.last_error = None
+                    return int(row[0]) if row else 0
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    if attempt == 1:
+                        return 0
+        return 0
 
     def summary(self) -> dict[str, Any]:
         records = self.read_all()
