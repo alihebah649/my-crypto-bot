@@ -154,3 +154,17 @@ def test_local_bear_scalp_can_buy_only_with_structural_confirmation():
     assert d.metadata["countertrend"] is True
     assert d.metadata["market_regime"] == "BULL"
     assert d.metadata["symbol_regime"] == "BEAR"
+
+
+def test_local_bear_swing_is_not_changed_by_scalp_only_gate():
+    d = BrainDecisionEngine().decide_entry(
+        85,
+        "BUY",
+        True,
+        market_regime="BULL",
+        symbol_regime="BEAR",
+        trade_mode="SWING",
+        swing_score=85,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "BUY"

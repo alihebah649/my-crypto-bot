@@ -76,9 +76,7 @@ class BrainDecisionEngine:
         # a 5m reversal bypass the same structural protections used in Bear.
         # This closes the gap where a symbol with negative MTF balance could pass
         # through the generic SCALP branch because only the broad regime was Bear.
-        if local_regime == "BEAR":
-            if mode != "SCALP":
-                return BrainDecision("HOLD", 95.0, "BEAR_SWING_DISABLED")
+        if local_regime == "BEAR" and mode == "SCALP":
             lane_score = scalp_score if scalp_score is not None else score
             if lane_score < 65.0:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_SCALP_SCORE_BELOW_THRESHOLD")
@@ -102,6 +100,9 @@ class BrainDecisionEngine:
                     "scalp_recovery_confirmation": bool(scalp_recovery_confirmation),
                 },
             )
+
+        if regime == "BEAR" and local_regime == "BEAR" and mode == "SWING":
+            return BrainDecision("HOLD", 95.0, "BEAR_SWING_DISABLED")
 
         if regime == "BEAR" and local_regime == "BULL" and mode == "SWING":
             lane_score = swing_score if swing_score is not None else score
