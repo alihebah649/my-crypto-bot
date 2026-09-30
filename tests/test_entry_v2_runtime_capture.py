@@ -267,4 +267,4 @@ def test_capture_cycle_skips_expensive_historical_analysis(tmp_path, monkeypatch
 
     assert summary["historical_outcomes"] is None
     assert summary["shadow_report"] is None
-    assert bridge.historical_analysis.__call__ is not None
+    assert callable(bridge.historical_analysis)
