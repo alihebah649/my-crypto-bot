@@ -283,3 +283,52 @@ def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_
             legacy._BYBIT_MARKET_DATA_SYMBOL_SET = legacy_bybit_attr
         else:
             legacy.__dict__.pop("_BYBIT_MARKET_DATA_SYMBOL_SET", None)
+
+
+def test_runtime_kline_cache_writes_are_coalesced(tmp_path):
+    import sys
+    import time
+    import types
+
+    flushes = []
+    puts = []
+
+    class FakeCache:
+        def put(self, key, payload, fetched_at=None, persist=True):
+            puts.append((key, len(payload), persist))
+
+        def flush(self):
+            flushes.append(time.time())
+
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.market_data_manager = types.SimpleNamespace(cache=FakeCache())
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+        feed = BinanceMarketStream(["BTCUSDT"])
+        feed._runtime_kline_history[("BTCUSDT", "5m")] = [
+            {
+                "open_time": index,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 1.0,
+            }
+            for index in range(60)
+        ]
+
+        feed._persist_runtime_kline_to_manager_cache("BTCUSDT", "5m")
+        feed._runtime_kline_history[("BTCUSDT", "5m")][-1]["close"] = 101.0
+        feed._persist_runtime_kline_to_manager_cache("BTCUSDT", "5m")
+
+        assert [item[2] for item in puts] == [False, False]
+        assert len(flushes) == 1
+        assert feed.snapshot()["runtime_integration"]["kline_manager_cache_writes"] == 2
+        assert feed.snapshot()["runtime_integration"]["kline_manager_cache_flushes"] == 1
+    finally:
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous_legacy
