@@ -165,3 +165,64 @@ def test_strategy_uses_latest_closed_5m_candle(monkeypatch):
     assert seen_lengths[0] == 130
     assert seen_lengths[1] == 30
     assert result["scalp_signal"] in {"BUY", "HOLD"}
+
+
+def test_scalp_confirmed_5m_reversal_is_blocked_by_full_bearish_stack(monkeypatch):
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 40.0)
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "calculate_bollinger",
+        lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0),
+    )
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "bullish_pattern",
+        lambda candles: (True, "BULLISH_ENGULFING", True),
+    )
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "analyze_multi_timeframe_context",
+        lambda candles_by_timeframe: {
+            "available": True,
+            "bias": "BEARISH",
+            "net": -25,
+            "weighted_bull": 0,
+            "weighted_bear": 25,
+            "higher_timeframes_bearish": True,
+            "higher_timeframes_bullish": False,
+            "weak_countertrend_recovery": False,
+            "aligned_bullish": False,
+            "frames": {
+                "5m": {"bias": "BULLISH", "strength": 4, "patterns": []},
+                "15m": {"bias": "BEARISH", "strength": 4, "patterns": []},
+                "1h": {"bias": "BEARISH", "strength": 5, "patterns": []},
+                "4h": {"bias": "BEARISH", "strength": 5, "patterns": []},
+            },
+        },
+    )
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
+
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_confirmed_reversal"] is True
+    assert result["mtf_strong_bearish_stack"] is True
+    assert result["mtf_countertrend_veto"] is True
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert "MTF_STRONG_COUNTERTREND_VETO" in result["scalp_gate_reasons"]
+
+
+def test_scalp_can_still_trigger_in_partial_bear_context():
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    result = score_symbol(
+        "TESTUSDT",
+        {"lastPrice": "100.0"},
+        candles_15m,
+        candles_5m,
+        candles_1h=rising_series(30, 100.0),
+        candles_4h=rising_series(30, 100.0),
+    )
+    assert result["scalp_signal"] in {"BUY", "HOLD"}
