@@ -123,3 +123,32 @@ def test_postgres_store_separates_evidence_types():
 
     assert captures.read_all() == [{"capture_id": "CAP-1", "symbol": "ETHUSDT"}]
     assert outcomes.read_all() == [{"position_id": "POS-1", "symbol": "ETHUSDT", "realized_pnl": -0.5}]
+
+
+def test_count_does_not_load_payload_rows():
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="ENTRY_V2_CAPTURE",
+        connect_factory=connect,
+    )
+    assert store.append({"capture_id": "CAP-1", "symbol": "BTCUSDT"}) is True
+    assert store.append({"capture_id": "CAP-2", "symbol": "ETHUSDT"}) is True
+
+    original_execute = _FakeConnection.execute
+
+    def guarded_execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split()).upper()
+        if normalized.startswith("SELECT PAYLOAD"):
+            raise AssertionError("count() must not select payload rows")
+        return original_execute(self, sql, params)
+
+    _FakeConnection.execute = guarded_execute
+    try:
+        assert store.count() == 2
+    finally:
+        _FakeConnection.execute = original_execute
