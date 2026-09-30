@@ -71,10 +71,12 @@ class BrainDecisionEngine:
         if signal != "BUY":
             return BrainDecision("HOLD", 90.0, "SIGNAL_NOT_BUY")
 
-        # A true downtrend (broad Bear + local Bear) does not authorize normal
-        # long entries. The Brain can recognize only a short-lived counter-trend
-        # scalp when structural reversal quality is confirmed.
-        if regime == "BEAR" and local_regime == "BEAR":
+        # A local Bear regime is already a countertrend long setup, even when
+        # the broader market breadth is temporarily BULL/TRANSITION. Do not let
+        # a 5m reversal bypass the same structural protections used in Bear.
+        # This closes the gap where a symbol with negative MTF balance could pass
+        # through the generic SCALP branch because only the broad regime was Bear.
+        if local_regime == "BEAR":
             if mode != "SCALP":
                 return BrainDecision("HOLD", 95.0, "BEAR_SWING_DISABLED")
             lane_score = scalp_score if scalp_score is not None else score
@@ -94,7 +96,8 @@ class BrainDecisionEngine:
                 "BEAR_COUNTERTREND_SCALP_CONFIRMED",
                 metadata={
                     "trade_mode": "SCALP",
-                    "market_regime": "BEAR",
+                    "market_regime": regime,
+                    "symbol_regime": "BEAR",
                     "countertrend": True,
                     "scalp_recovery_confirmation": bool(scalp_recovery_confirmation),
                 },
