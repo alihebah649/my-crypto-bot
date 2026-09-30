@@ -69,3 +69,19 @@ def test_cache_survives_reload_and_stale_data_is_not_entry_safe(tmp_path: Path):
     assert not manager.entry_data_is_fresh("ticker", "ticker:BTCUSDT", now=1250.0)
     assert manager.entry_data_is_fresh("ticker", "ticker:BTCUSDT", now=1050.0)
     assert manager.entry_data_is_fresh("1h", "1h:BTCUSDT", now=1500.0)
+
+
+def test_cache_deferred_persistence_flushes_on_demand(tmp_path: Path):
+    path = tmp_path / "market_cache.json"
+    cache = PersistentMarketDataCache(path)
+
+    cache.put("5m:BTCUSDT:60", [{"close": 100}], fetched_at=1000.0, persist=False)
+
+    assert not path.exists()
+    assert cache.get("5m:BTCUSDT:60").payload[0]["close"] == 100
+
+    cache.flush()
+
+    assert path.exists()
+    reloaded = PersistentMarketDataCache(path)
+    assert reloaded.get("5m:BTCUSDT:60").payload[0]["close"] == 100
