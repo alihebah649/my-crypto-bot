@@ -43,8 +43,11 @@ def test_strong_higher_timeframe_bearish_context_can_veto_weak_scalp_recovery(mo
     assert "MTF_STRONG_COUNTERTREND_VETO" in result["scalp_gate_reasons"]
 
 
-def test_confirmed_5m_reversal_is_not_blocked_by_higher_timeframe_context(monkeypatch):
+def test_confirmed_5m_reversal_is_blocked_by_full_bearish_context(monkeypatch):
     monkeypatch.setattr("dual_mode_strategy.bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr("dual_mode_strategy.calculate_rsi", lambda prices, period=14: 40.0)
+    monkeypatch.setattr("dual_mode_strategy.calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr("dual_mode_strategy._volume_ratio", lambda candles, window=20: 1.20)
     c15 = bearish(130)
     c5 = rising(30, 100.0)
     c1h = bearish(60)
@@ -53,4 +56,7 @@ def test_confirmed_5m_reversal_is_not_blocked_by_higher_timeframe_context(monkey
     result = score_symbol("TESTUSDT", {"lastPrice": "106.0"}, c15, c5, c1h, c4h)
 
     assert result["mtf_higher_timeframes_bearish"] is True
-    assert result["mtf_countertrend_veto"] is False
+    assert result["mtf_strong_bearish_stack"] is True
+    assert result["mtf_countertrend_veto"] is True
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"

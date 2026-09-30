@@ -197,6 +197,14 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
     mtf_frames = mtf.get("frames", {})
     mtf_bearish = bool(mtf.get("weak_countertrend_recovery"))
     mtf_bullish = bool(mtf.get("aligned_bullish"))
+    # A 5m bullish pattern must not override a fully bearish 15m/1h/4h stack.
+    # This keeps SCALP as a 5m lane while preventing a single short-term candle
+    # from authorizing a countertrend entry during a confirmed higher-timeframe
+    # downtrend.
+    mtf_strong_bearish_stack = bool(
+        mtf.get("higher_timeframes_bearish")
+        and str(mtf_frames.get("15m", {}).get("bias", "UNKNOWN")).upper() == "BEARISH"
+    )
 
     swing = 0
     swing_reasons = []
@@ -308,10 +316,9 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         and not mtf_bearish
     )
 
-    # Strong higher-timeframe bearish alignment vetoes only a weak recovery.
-    # A confirmed 5m reversal remains eligible so the scalp lane is not turned
-    # into a hidden swing strategy.
-    mtf_countertrend_veto = bool(mtf_bearish and not confirmed_reversal)
+    # Do not let a single confirmed 5m reversal bypass a fully bearish
+    # 15m/1h/4h stack. Outside that stack, the normal 5m scalp lane is unchanged.
+    mtf_countertrend_veto = bool(mtf_strong_bearish_stack)
     gate = bool(
         macro_points > 0
         and r5 <= SCALP_MAX_RSI
@@ -394,6 +401,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "mtf_higher_timeframes_bearish": bool(mtf.get("higher_timeframes_bearish")),
         "mtf_higher_timeframes_bullish": bool(mtf.get("higher_timeframes_bullish")),
         "mtf_countertrend_warning": mtf_bearish,
+        "mtf_strong_bearish_stack": mtf_strong_bearish_stack,
         "mtf_countertrend_veto": mtf_countertrend_veto,
         "mtf_aligned_bullish": mtf_bullish,
         "mtf_timeframe_bias": frame_bias,
