@@ -332,3 +332,23 @@ def test_runtime_kline_cache_writes_are_coalesced(tmp_path):
             sys.modules.pop("shadow_main_legacy", None)
         else:
             sys.modules["shadow_main_legacy"] = previous_legacy
+
+
+def test_runtime_kline_history_uses_strategy_required_depth():
+    feed = BinanceMarketStream(["BTCUSDT"])
+
+    feed._seed_runtime_kline_history(
+        "BTCUSDT",
+        "5m",
+        [{"open_time": index, "close": 100.0} for index in range(100)],
+        required_limit=60,
+    )
+    feed._seed_runtime_kline_history(
+        "BTCUSDT",
+        "15m",
+        [{"open_time": index, "close": 100.0} for index in range(200)],
+        required_limit=150,
+    )
+
+    assert len(feed._runtime_kline_history[("BTCUSDT", "5m")]) == 60
+    assert len(feed._runtime_kline_history[("BTCUSDT", "15m")]) == 150
