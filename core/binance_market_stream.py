@@ -17,6 +17,7 @@ import websockets
 
 DEFAULT_BASE_URL = "wss://stream.binance.com:9443/stream"
 DEFAULT_INTERVALS = ("5m", "15m", "1h", "4h")
+_RUNTIME_KLINE_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
 
 
 class BinanceMarketStream:
@@ -218,8 +219,9 @@ class BinanceMarketStream:
         else:
             history.append(replacement)
         history.sort(key=lambda item: _int(item.get("open_time")))
-        if len(history) > 500:
-            del history[:-500]
+        history_limit = int(_RUNTIME_KLINE_HISTORY_LIMITS.get(str(interval), 60))
+        if len(history) > history_limit:
+            del history[:-history_limit]
 
     def _seed_runtime_kline_history(
         self,
@@ -248,7 +250,8 @@ class BinanceMarketStream:
             }
             existing.update(normalized)
             rows = [existing[key] for key in sorted(existing)]
-            self._runtime_kline_history[key] = rows[-500:]
+            history_limit = int(_RUNTIME_KLINE_HISTORY_LIMITS.get(str(interval), 60))
+            self._runtime_kline_history[key] = rows[-history_limit:]
             if required_limit is None or len(self._runtime_kline_history[key]) >= int(required_limit):
                 self._runtime_kline_seeded.add(key)
         return len(rows)
