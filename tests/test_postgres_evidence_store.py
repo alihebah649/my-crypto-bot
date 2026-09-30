@@ -49,6 +49,18 @@ class _FakeConnection:
             return _FakeResult(rows=[(count,)])
         if normalized.startswith("SELECT PAYLOAD"):
             evidence_type = params[0]
+            if "PAYLOAD ?" in normalized:
+                field = params[1]
+                start = str(params[3])
+                end = str(params[5])
+                rows = []
+                for (kind, _), payload in self.db.rows.items():
+                    if kind != evidence_type or field not in payload:
+                        continue
+                    value = str(payload[field])
+                    if start <= value < end:
+                        rows.append((payload,))
+                return _FakeResult(rows=rows)
             rows = [(payload,) for (kind, _), payload in self.db.rows.items() if kind == evidence_type]
             return _FakeResult(rows=rows)
         if normalized.startswith("DELETE FROM PAPER_EVIDENCE"):
@@ -152,3 +164,42 @@ def test_count_does_not_load_payload_rows():
         assert store.count() == 2
     finally:
         _FakeConnection.execute = original_execute
+
+
+
+def test_read_time_range_returns_only_records_in_requested_window():
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="PAPER_OUTCOME",
+        connect_factory=connect,
+    )
+    assert store.append({
+        "position_id": "POS-1",
+        "closed_at_utc": "2026-09-29T23:30:00+00:00",
+        "symbol": "BTCUSDT",
+        "realized_pnl": 0.25,
+    }) is True
+    assert store.append({
+        "position_id": "POS-2",
+        "closed_at_utc": "2026-09-30T00:30:00+00:00",
+        "symbol": "ETHUSDT",
+        "realized_pnl": -0.25,
+    }) is True
+
+    rows = store.read_time_range(
+        "closed_at_utc",
+        "2026-09-29T00:00:00+00:00",
+        "2026-09-30T00:00:00+00:00",
+    )
+
+    assert rows == [{
+        "position_id": "POS-1",
+        "closed_at_utc": "2026-09-29T23:30:00+00:00",
+        "symbol": "BTCUSDT",
+        "realized_pnl": 0.25,
+    }]
