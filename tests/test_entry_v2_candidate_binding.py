@@ -197,7 +197,8 @@ def test_runtime_summary_exposes_historical_outcomes_and_shadow_report_for_bound
     )
     runtime.repository.add(position)
 
-    summary = bridge.capture_cycle()
+    bridge.capture_cycle()
+    summary = bridge.summary(include_historical=True)
     outcomes = summary["historical_outcomes"]
     report = summary["shadow_report"]
     assert outcomes["matched_position_count"] == 1
