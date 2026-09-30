@@ -233,3 +233,38 @@ def test_runtime_capture_separates_dual_lane_candidates_and_position_identity():
     assert scalp_position.entry_metadata["entry_v2_shadow_capture_id"] == scalp["capture_id"]
     assert swing_position.entry_metadata["entry_v2_shadow_capture_id"] == swing["capture_id"]
 
+
+
+def test_capture_cycle_skips_expensive_historical_analysis(tmp_path, monkeypatch):
+    class Legacy:
+        latest_scores = {}
+
+        def fetch_strategy_data(self):
+            return ({}, {}, {})
+
+    class Runtime:
+        def __init__(self):
+            self.persistence_dir = str(tmp_path)
+            self.last_entry_diagnostics = {}
+
+    bridge = install(
+        legacy=Legacy(),
+        runtime=Runtime(),
+        mtf_candles={},
+        trading_symbols=[],
+    )
+
+    monkeypatch.setattr(
+        bridge,
+        "_historical_analysis",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("historical analysis must not run inside capture_cycle")
+        ),
+    )
+
+    bridge.legacy.fetch_strategy_data()
+    summary = bridge.capture_cycle()
+
+    assert summary["historical_outcomes"] is None
+    assert summary["shadow_report"] is None
+    assert callable(bridge.historical_analysis)
