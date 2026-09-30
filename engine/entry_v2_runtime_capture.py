@@ -394,7 +394,7 @@ class EntryV2RuntimeCapture:
         self,
         cycle_records: Mapping[str, EntryV2ShadowCapture] | None = None,
         *,
-        include_historical: bool = False,
+        include_historical: bool = True,
     ) -> dict[str, Any]:
         records = (
             list(cycle_records.values())
