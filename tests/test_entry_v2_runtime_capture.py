@@ -233,3 +233,52 @@ def test_runtime_capture_separates_dual_lane_candidates_and_position_identity():
     assert scalp_position.entry_metadata["entry_v2_shadow_capture_id"] == scalp["capture_id"]
     assert swing_position.entry_metadata["entry_v2_shadow_capture_id"] == swing["capture_id"]
 
+
+
+def test_capture_cycle_does_not_rebuild_historical_report_every_cycle(tmp_path, monkeypatch):
+    legacy = _legacy()
+    class Runtime:
+        def __init__(self):
+            self.last_entry_diagnostics = {}
+    runtime = Runtime()
+
+    bridge = install(
+        legacy=legacy,
+        runtime=runtime,
+        mtf_candles={"TESTUSDT": {"1h": [_candle(200 + i) for i in range(12)], "4h": [_candle(300 + i) for i in range(12)]}},
+        trading_symbols=["TESTUSDT"],
+    )
+
+    calls = {"count": 0}
+
+    def forbidden_historical():
+        calls["count"] += 1
+        raise AssertionError("historical analysis must not run inside live capture_cycle")
+
+    monkeypatch.setattr(bridge, "_historical_analysis", forbidden_historical)
+    bridge.legacy.fetch_strategy_data()
+    summary = bridge.capture_cycle()
+
+    assert calls["count"] == 0
+    assert summary["historical_outcomes"] is None
+    assert summary["shadow_report"] is None
+
+
+def test_historical_analysis_remains_explicit(tmp_path, monkeypatch):
+    legacy = _legacy()
+    class Runtime:
+        def __init__(self):
+            self.last_entry_diagnostics = {}
+    runtime = Runtime()
+
+    bridge = install(
+        legacy=legacy,
+        runtime=runtime,
+        mtf_candles={"TESTUSDT": {"1h": [_candle(200 + i) for i in range(12)], "4h": [_candle(300 + i) for i in range(12)]}},
+        trading_symbols=["TESTUSDT"],
+    )
+
+    expected = {"historical_outcomes": {"ok": True}, "shadow_report": {"ok": True}}
+    monkeypatch.setattr(bridge, "_historical_analysis", lambda: expected)
+
+    assert bridge.historical_analysis() == expected
