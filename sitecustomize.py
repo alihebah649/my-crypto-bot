@@ -96,19 +96,24 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
         _BINANCE_METRICS_PATH_COUNTS[path] = _BINANCE_METRICS_PATH_COUNTS.get(path, 0) + 1
 
         delta = None
+        weight_reset = False
         if not synthetic and weight_1m is not None:
             previous = _BINANCE_METRICS_LAST_WEIGHT_1M
-            if previous is None or weight_1m >= previous:
-                delta = weight_1m if previous is None else weight_1m - previous
-            else:
-                # The one-minute counter rolled/reset, so treat the new raw
-                # value as the observed delta for this response.
-                delta = weight_1m
-            delta = max(0, int(delta))
-            _BINANCE_METRICS_WEIGHT_DELTA_SUM += delta
-            _BINANCE_METRICS_PATH_WEIGHT_DELTA[path] = _BINANCE_METRICS_PATH_WEIGHT_DELTA.get(path, 0) + delta
+            if previous is not None and weight_1m >= previous:
+                # This is the observed change in Binance's IP-wide counter
+                # since the previous response. It is not necessarily caused by
+                # this process, so it is diagnostic rather than an own-request
+                # weight measurement.
+                delta = max(0, int(weight_1m - previous))
+            elif previous is not None and weight_1m < previous:
+                # The one-minute IP counter rolled over/reset. The new raw
+                # value is not attributable to this request.
+                weight_reset = True
             _BINANCE_METRICS_LAST_WEIGHT_1M = weight_1m
             _BINANCE_METRICS_LAST_WEIGHT_AT = time.time()
+            if delta is not None:
+                _BINANCE_METRICS_WEIGHT_DELTA_SUM += delta
+                _BINANCE_METRICS_PATH_WEIGHT_DELTA[path] = _BINANCE_METRICS_PATH_WEIGHT_DELTA.get(path, 0) + delta
 
         event = {
             "at": time.time(),
@@ -120,6 +125,8 @@ def _record_binance_request(*, method: str, url: str, response, synthetic: bool,
             "elapsed_ms": round(float(elapsed_ms), 1),
             "weight_1m": weight_1m,
             "weight_delta_from_previous_response": delta,
+            "weight_reset_detected": bool(weight_reset),
+            "estimated_request_weight": _BINANCE_KNOWN_ENDPOINT_WEIGHTS.get(path),
         }
         _BINANCE_METRICS_EVENTS.append(event)
 

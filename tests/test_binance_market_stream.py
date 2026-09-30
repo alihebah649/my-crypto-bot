@@ -352,3 +352,14 @@ def test_runtime_kline_history_uses_strategy_required_depth():
 
     assert len(feed._runtime_kline_history[("BTCUSDT", "5m")]) == 60
     assert len(feed._runtime_kline_history[("BTCUSDT", "15m")]) == 150
+
+
+def test_custom_paper_stream_keeps_only_5m_and_15m_high_frequency_intervals():
+    feed = BinanceMarketStream(["BTCUSDT", "ETHUSDT"], intervals=("5m", "15m"))
+
+    assert feed.stream_count == 6
+    assert "btcusdt@kline_5m" in feed.stream_names
+    assert "btcusdt@kline_15m" in feed.stream_names
+    assert "btcusdt@kline_1h" not in feed.stream_names
+    assert "btcusdt@kline_4h" not in feed.stream_names
+    assert "ethusdt@ticker" in feed.stream_names

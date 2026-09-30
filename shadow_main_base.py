@@ -471,11 +471,13 @@ _legacy.logger.info(
 )
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
-# Diagnostic-only WebSocket shadow feed. It receives the same Spot ticker and
-# Kline streams that we plan to make authoritative after validation, but it does
-# not feed strategy, risk, or execution yet. This lets us validate continuity
-# while REST remains the authoritative source during the migration stage.
-_binance_market_stream = BinanceMarketStream(TRADING_SYMBOLS)
+# Paper WebSocket feed: keep the high-frequency execution timeframes (5m/15m)
+# on WS. 1h/4h remain available through the existing bounded REST/cache MTF
+# path, which avoids carrying another 44 live streams in the 512 MiB service.
+_binance_market_stream = BinanceMarketStream(
+    TRADING_SYMBOLS,
+    intervals=("5m", "15m"),
+)
 if globals().get("_SHADOW_MAIN_EMBEDDED", False):
     _binance_market_stream.start()
 _legacy.binance_market_stream = _binance_market_stream
