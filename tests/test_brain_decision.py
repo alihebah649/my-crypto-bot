@@ -116,3 +116,41 @@ def test_bear_market_can_keep_a_strong_local_bull_swing():
         higher_timeframe_bearish=False,
     )
     assert d.action == "BUY"
+
+
+def test_local_bear_scalp_is_blocked_even_when_broad_market_is_bull():
+    d = BrainDecisionEngine().decide_entry(
+        71,
+        "BUY",
+        True,
+        market_regime="BULL",
+        symbol_regime="BEAR",
+        trade_mode="SCALP",
+        scalp_score=71,
+        volume_ratio_5m=1.5,
+        seller_failure_confirmed=False,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "HOLD"
+    assert d.reason == "BEAR_SELLER_FAILURE_NOT_CONFIRMED"
+
+
+def test_local_bear_scalp_can_buy_only_with_structural_confirmation():
+    d = BrainDecisionEngine().decide_entry(
+        71,
+        "BUY",
+        True,
+        market_regime="BULL",
+        symbol_regime="BEAR",
+        trade_mode="SCALP",
+        scalp_score=71,
+        scalp_recovery_confirmation=True,
+        volume_ratio_5m=1.25,
+        seller_failure_confirmed=True,
+        higher_timeframe_bearish=False,
+    )
+    assert d.action == "BUY"
+    assert d.reason == "BEAR_COUNTERTREND_SCALP_CONFIRMED"
+    assert d.metadata["countertrend"] is True
+    assert d.metadata["market_regime"] == "BULL"
+    assert d.metadata["symbol_regime"] == "BEAR"
