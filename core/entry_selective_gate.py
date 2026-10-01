@@ -66,7 +66,7 @@ def selective_entry_veto(
                 return "V2_SWING_STRUCTURE_RSI_PRESSURE"
 
     # Narrow Paper-only promotion for the remaining SCALP loophole found in
-    # HBAR evidence: Entry v2 says seller pressure is still invalidated, while
+    # HBAR evidence: Entry v2 says seller pressure is still not invalidated, while
     # the adaptive SCALP shadow sees a bearish regime and bearish 5m bias.
     # Volume < 1.0 deliberately reuses Entry v2's existing SCALP volume gate;
     # it is not a new score/strategy threshold.
