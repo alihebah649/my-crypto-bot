@@ -86,6 +86,10 @@ _paper_outcome_store = (
     if _evidence_database_url
     else None
 )
+# The daily report loop lives in shadow_main_legacy.py. That module has its own
+# global namespace, so the active durable store must be explicitly bound there;
+# otherwise the report silently falls back to process-local runtime positions.
+_legacy._paper_outcome_store = _paper_outcome_store
 runtime.brain_authority = brain_authority
 runtime.brain_authority_store = _brain_authority_store
 
