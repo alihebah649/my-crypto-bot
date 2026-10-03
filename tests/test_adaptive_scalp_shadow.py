@@ -157,3 +157,36 @@ def test_maturity_experiment_does_not_change_execution_facing_classification():
     assert result["classification"] == "NORMAL_SCALP"
     assert result["advisory_action"] == "PASSIVE_SHADOW"
     assert result["maturity_experiment"]["shadow_only"] is True
+
+
+
+def test_neutral_low_score_experiment_marks_scoped_scalp_candidate_without_gating():
+    result = classify_adaptive_scalp(
+        _legacy(mtf_bias="NEUTRAL", mtf_net=0, scalp_score=65)
+    )
+
+    experiment = result["neutral_low_score_experiment"]
+    assert experiment["rule_version"] == 1
+    assert experiment["shadow_only"] is True
+    assert experiment["gate_pass"] is False
+    assert experiment["would_be_action"] == "WOULD_BLOCK"
+    assert experiment["mtf_bias"] == "NEUTRAL"
+    assert experiment["scalp_score"] == 65.0
+
+
+def test_neutral_low_score_experiment_allows_scores_outside_65_to_69():
+    result = classify_adaptive_scalp(
+        _legacy(mtf_bias="NEUTRAL", mtf_net=0, scalp_score=70)
+    )
+
+    assert result["neutral_low_score_experiment"]["gate_pass"] is True
+    assert result["neutral_low_score_experiment"]["would_be_action"] == "WOULD_ALLOW"
+
+
+def test_neutral_low_score_experiment_is_not_applicable_to_swing():
+    result = classify_adaptive_scalp(
+        _legacy(trade_mode="SWING", mtf_bias="NEUTRAL", mtf_net=0, scalp_score=65)
+    )
+
+    assert result["classification"] == "NOT_APPLICABLE"
+    assert result["neutral_low_score_experiment"]["would_be_action"] == "NOT_APPLICABLE"

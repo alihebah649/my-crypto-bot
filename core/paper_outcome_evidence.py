@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from engine.adaptive_scalp_shadow import derive_scalp_timing_profile
+from engine.adaptive_scalp_shadow import classify_adaptive_scalp, derive_scalp_timing_profile
 
 
 def _safe(value: Any) -> Any:
@@ -90,6 +90,14 @@ def build_paper_outcome_evidence(
     if not isinstance(market_data_alignment, Mapping):
         market_data_alignment = None
     timing_profile = derive_scalp_timing_profile(strategy)
+    experiment_input = dict(strategy)
+    experiment_input.setdefault(
+        "trade_mode",
+        str(entry_metadata.get("trade_mode", getattr(position, "trade_mode", "UNKNOWN"))).upper(),
+    )
+    neutral_low_score_experiment = classify_adaptive_scalp(
+        experiment_input
+    ).get("neutral_low_score_experiment")
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
     entry_decision_chain = entry_metadata.get("entry_decision_chain")
 
