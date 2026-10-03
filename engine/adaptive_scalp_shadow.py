@@ -18,6 +18,9 @@ RULE_VERSION = 2
 SCALP_SCORE_THRESHOLD = 65.0
 SCALP_MIN_VOLUME_RATIO = 0.75
 STRONG_BEAR_NET_GAP = 25.0
+NEUTRAL_LOW_SCORE_RULE_VERSION = 1
+NEUTRAL_LOW_SCORE_MIN = 65.0
+NEUTRAL_LOW_SCORE_MAX = 69.0
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -65,6 +68,37 @@ def derive_scalp_timing_profile(legacy_result: Mapping[str, Any]) -> dict[str, s
     }
 
 
+def _neutral_low_score_experiment(legacy: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    """Evaluate the evidence-backed SCALP shadow experiment without gating execution."""
+    if mode != "SCALP":
+        return {
+            "rule_version": NEUTRAL_LOW_SCORE_RULE_VERSION,
+            "shadow_only": True,
+            "gate_pass": False,
+            "would_be_action": "NOT_APPLICABLE",
+            "reasons": ["SCALP_LANE_ONLY"],
+        }
+
+    score = _float(legacy.get("scalp_score", legacy.get("score")))
+    mtf_bias = _norm(legacy.get("mtf_bias"))
+    qualifies = mtf_bias == "NEUTRAL" and NEUTRAL_LOW_SCORE_MIN <= score <= NEUTRAL_LOW_SCORE_MAX
+    reasons: list[str] = []
+    if mtf_bias == "NEUTRAL":
+        reasons.append("SCALP_MTF_NEUTRAL")
+    if NEUTRAL_LOW_SCORE_MIN <= score <= NEUTRAL_LOW_SCORE_MAX:
+        reasons.append("SCALP_SCORE_65_TO_69")
+
+    return {
+        "rule_version": NEUTRAL_LOW_SCORE_RULE_VERSION,
+        "shadow_only": True,
+        "gate_pass": not qualifies,
+        "would_be_action": "WOULD_BLOCK" if qualifies else "WOULD_ALLOW",
+        "reasons": reasons or ["SHADOW_CONDITION_NOT_MET"],
+        "mtf_bias": mtf_bias,
+        "scalp_score": score,
+    }
+
+
 def _regime(legacy: Mapping[str, Any]) -> tuple[str, bool, bool]:
     """Return (regime, strong_bear, htf_bearish) from captured MTF facts."""
     frame_bias = _mapping(legacy.get("mtf_timeframe_bias"))
@@ -104,6 +138,7 @@ def classify_adaptive_scalp(
     mode = _norm(legacy.get("trade_mode") or scenario_map.get("trade_mode"))
 
     timing_profile = derive_scalp_timing_profile(legacy)
+    neutral_low_score_experiment = _neutral_low_score_experiment(legacy, mode)
 
     base: dict[str, Any] = {
         "rule_version": RULE_VERSION,
@@ -117,6 +152,7 @@ def classify_adaptive_scalp(
         "advisory_action": "NO_ACTION",
         "reasons": [],
         "timing_profile": timing_profile,
+        "neutral_low_score_experiment": neutral_low_score_experiment,
     }
 
     if mode != "SCALP":
