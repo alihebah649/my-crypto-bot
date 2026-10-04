@@ -56,6 +56,11 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
                 "pattern_confirmed": True,
                 "rsi5m": 39.8,
                 "volume_ratio_5m": 1.9,
+                "source_parity_shadow": {
+                    "schema_version": 1,
+                    "diagnostic_only": True,
+                    "status": "READY",
+                },
                 "ema100": 704.0,
                 "atr": 3.5,
                 "lower_band": 695.0,
@@ -102,6 +107,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["exit_protection"]["paper_profit_protection_detail"]["retrace_percent"] == 0.28169
     assert record["strategy"]["market_data_source"] == "BYBIT"
     assert record["strategy"]["scalp_score"] == 87
+    assert record["entry_forensics"]["source_parity_shadow"]["diagnostic_only"] is True
+    assert record["entry_forensics"]["source_parity_shadow"]["status"] == "READY"
     assert record["strategy"]["ema100"] == 704.0
     assert record["entry_forensics"]["entry_vs_ema100_percent"] < 0
     assert record["entry_forensics"]["atr_percent_of_entry"] == 0.5

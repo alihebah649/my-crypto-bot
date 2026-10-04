@@ -234,6 +234,7 @@ def build_paper_outcome_evidence(
             "recovery_trigger_count": strategy.get("scalp_recovery_trigger_count"),
             "recovery_trigger_reasons": list(strategy.get("scalp_recovery_trigger_reasons", []) or []),
             "volume_ratio_5m": strategy.get("volume_ratio_5m"),
+            "source_parity_shadow": _safe(strategy.get("source_parity_shadow")),
             "mtf_bias": strategy.get("mtf_bias"),
             "mtf_net": strategy.get("mtf_net"),
             "neutral_low_score_shadow": _safe(neutral_low_score_experiment),

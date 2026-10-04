@@ -39,6 +39,7 @@ from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
+from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
@@ -163,6 +164,17 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
                     binance_stream_healthy=bool(
                         stream_snapshot.get("event_stream_healthy")
                     ),
+                )
+                # Diagnostic-only: compare the same 5m/15m feature inputs on
+                # Bybit and the already-local Binance WS reference. This field
+                # never participates in scoring, Brain, risk, or execution.
+                result["source_parity_shadow"] = build_source_parity_shadow(
+                    source_ticker=ticker,
+                    source_15m_candles=candles_15m,
+                    source_5m_candles=candles_5m,
+                    binance_ticker=stream.get_latest_ticker(symbol),
+                    binance_15m_candles=stream.get_kline_history(symbol, "15m", 150),
+                    binance_5m_candles=stream.get_kline_history(symbol, "5m", 60),
                 )
         else:
             result["market_data_alignment"] = {
