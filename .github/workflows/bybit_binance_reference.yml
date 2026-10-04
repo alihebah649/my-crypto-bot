@@ -1,0 +1,281 @@
+name: Bybit-Binance Reference Probe
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - "diagnostic/bybit-binance-reference"
+  pull_request:
+    paths:
+      - ".github/workflows/bybit_binance_reference.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bybit-binance-reference
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BYBIT_SYMBOLS: "AVAXUSDT ALGOUSDT ATOMUSDT FETUSDT LTCUSDT XRPUSDT XLMUSDT HBARUSDT SUIUSDT BCHUSDT TRXUSDT"
+    steps:
+      - name: Probe Binance and Bybit from the same GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          symbols = os.environ["BYBIT_SYMBOLS"].split()
+          intervals = {"5m": 5 * 60 * 1000, "15m": 15 * 60 * 1000}
+          binance_hosts = {
+              "api": "https://api.binance.com/api/v3/klines",
+              "data": "https://data-api.binance.vision/api/v3/klines",
+          }
+          bybit_url = "https://api.bybit.com/v5/market/kline"
+
+          def get_json(url, params):
+              query = urllib.parse.urlencode(params)
+              request = urllib.request.Request(
+                  url + "?" + query,
+                  headers={"User-Agent": "my-crypto-bot/bybit-binance-reference-probe"},
+              )
+              started = time.monotonic()
+              try:
+                  with urllib.request.urlopen(request, timeout=12) as response:
+                      raw = response.read()
+                      headers = {k.lower(): v for k, v in response.headers.items()}
+                      return {
+                          "status": response.status,
+                          "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                          "retry_after": headers.get("retry-after"),
+                          "used_weight_1m": headers.get("x-mbx-used-weight-1m"),
+                          "payload": json.loads(raw.decode("utf-8")),
+                      }
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", "replace")
+                  headers = {k.lower(): v for k, v in exc.headers.items()}
+                  return {
+                      "status": exc.code,
+                      "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                      "retry_after": headers.get("retry-after"),
+                      "used_weight_1m": headers.get("x-mbx-used-weight-1m"),
+                      "error_body": body[:500],
+                  }
+              except Exception as exc:
+                  return {
+                      "status": None,
+                      "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                      "error": f"{type(exc).__name__}: {exc}",
+                  }
+
+          def latest_closed_binance(result, interval_ms):
+              payload = result.get("payload")
+              if not isinstance(payload, list):
+                  return None
+              now_ms = int(time.time() * 1000)
+              rows = []
+              for row in payload:
+                  if not isinstance(row, list) or len(row) < 6:
+                      continue
+                  open_time = int(row[0])
+                  close_time = open_time + interval_ms - 1
+                  if close_time < now_ms:
+                      rows.append({
+                          "open_time": open_time,
+                          "close_time": close_time,
+                          "open": float(row[1]),
+                          "high": float(row[2]),
+                          "low": float(row[3]),
+                          "close": float(row[4]),
+                          "volume": float(row[5]),
+                      })
+              return rows[-1] if rows else None
+
+          def latest_closed_bybit(result, interval_ms, bybit_interval):
+              payload = result.get("payload", {})
+              rows = ((payload.get("result") or {}).get("list") or []) if isinstance(payload, dict) else []
+              now_ms = int(time.time() * 1000)
+              normalized = []
+              for row in rows:
+                  if not isinstance(row, list) or len(row) < 6:
+                      continue
+                  open_time = int(row[0])
+                  close_time = open_time + interval_ms - 1
+                  if close_time < now_ms:
+                      normalized.append({
+                          "open_time": open_time,
+                          "close_time": close_time,
+                          "open": float(row[1]),
+                          "high": float(row[2]),
+                          "low": float(row[3]),
+                          "close": float(row[4]),
+                          "volume": float(row[5]),
+                          "interval": bybit_interval,
+                      })
+              return normalized[0] if normalized else None
+
+          def relative_diff(left, right):
+              denominator = max(abs(float(right)), 1e-12)
+              return abs(float(left) - float(right)) / denominator * 100.0
+
+          egress_req = urllib.request.Request(
+              "https://api.ipify.org",
+              headers={"User-Agent": "my-crypto-bot/bybit-binance-reference-probe"},
+          )
+          with urllib.request.urlopen(egress_req, timeout=10) as response:
+              egress_ip = response.read().decode("utf-8").strip()
+
+          print("=== BYBIT <-> BINANCE REFERENCE PROBE ===")
+          print("github_egress_ip=", egress_ip)
+          print("runner_timestamp_utc=", datetime.now(timezone.utc).isoformat())
+          print("symbols=", ",".join(symbols))
+
+          report = {
+              "at": datetime.now(timezone.utc).isoformat(),
+              "github_egress_ip": egress_ip,
+              "symbols": symbols,
+              "intervals": {},
+              "summary": {
+                  "binance_api_status": {},
+                  "binance_data_status": {},
+                  "bybit_status": {},
+                  "aligned_samples_api": 0,
+                  "aligned_samples_data": 0,
+                  "price_divergence_api_max": 0.0,
+                  "price_divergence_data_max": 0.0,
+              },
+          }
+
+          bybit_intervals = {"5m": "5", "15m": "15"}
+
+          for interval, interval_ms in intervals.items():
+              report["intervals"][interval] = {}
+              for symbol in symbols:
+                  b_api = get_json(
+                      binance_hosts["api"],
+                      {"symbol": symbol, "interval": interval, "limit": 3},
+                  )
+                  b_data = get_json(
+                      binance_hosts["data"],
+                      {"symbol": symbol, "interval": interval, "limit": 3},
+                  )
+                  bybit = get_json(
+                      bybit_url,
+                      {
+                          "category": "spot",
+                          "symbol": symbol,
+                          "interval": bybit_intervals[interval],
+                          "limit": 3,
+                      },
+                  )
+
+                  for bucket, result in (
+                      ("binance_api", b_api),
+                      ("binance_data", b_data),
+                      ("bybit", bybit),
+                  ):
+                      status_key = str(result.get("status", "error"))
+                      report["summary"][f"{bucket}_status"][status_key] = (
+                          report["summary"][f"{bucket}_status"].get(status_key, 0) + 1
+                      )
+
+                  api_candle = latest_closed_binance(b_api, interval_ms)
+                  data_candle = latest_closed_binance(b_data, interval_ms)
+                  bybit_candle = latest_closed_bybit(bybit, interval_ms, bybit_intervals[interval])
+
+                  row = {
+                      "binance_api_status": b_api.get("status"),
+                      "binance_api_used_weight_1m": b_api.get("used_weight_1m"),
+                      "binance_api_retry_after": b_api.get("retry_after"),
+                      "binance_data_status": b_data.get("status"),
+                      "binance_data_used_weight_1m": b_data.get("used_weight_1m"),
+                      "binance_data_retry_after": b_data.get("retry_after"),
+                      "bybit_status": bybit.get("status"),
+                      "bybit_candle_open_time": None if bybit_candle is None else bybit_candle["open_time"],
+                      "binance_api_candle_open_time": None if api_candle is None else api_candle["open_time"],
+                      "binance_data_candle_open_time": None if data_candle is None else data_candle["open_time"],
+                      "api_divergence_percent": None,
+                      "data_divergence_percent": None,
+                      "api_open_time_match": False,
+                      "data_open_time_match": False,
+                  }
+
+                  if api_candle and bybit_candle:
+                      row["api_open_time_match"] = abs(api_candle["open_time"] - bybit_candle["open_time"]) <= 1000
+                      if row["api_open_time_match"]:
+                          row["api_divergence_percent"] = round(
+                              max(
+                                  relative_diff(api_candle["open"], bybit_candle["open"]),
+                                  relative_diff(api_candle["high"], bybit_candle["high"]),
+                                  relative_diff(api_candle["low"], bybit_candle["low"]),
+                                  relative_diff(api_candle["close"], bybit_candle["close"]),
+                              ),
+                              6,
+                          )
+                          report["summary"]["aligned_samples_api"] += 1
+                          report["summary"]["price_divergence_api_max"] = max(
+                              report["summary"]["price_divergence_api_max"],
+                              row["api_divergence_percent"],
+                          )
+
+                  if data_candle and bybit_candle:
+                      row["data_open_time_match"] = abs(data_candle["open_time"] - bybit_candle["open_time"]) <= 1000
+                      if row["data_open_time_match"]:
+                          row["data_divergence_percent"] = round(
+                              max(
+                                  relative_diff(data_candle["open"], bybit_candle["open"]),
+                                  relative_diff(data_candle["high"], bybit_candle["high"]),
+                                  relative_diff(data_candle["low"], bybit_candle["low"]),
+                                  relative_diff(data_candle["close"], bybit_candle["close"]),
+                              ),
+                              6,
+                          )
+                          report["summary"]["aligned_samples_data"] += 1
+                          report["summary"]["price_divergence_data_max"] = max(
+                              report["summary"]["price_divergence_data_max"],
+                              row["data_divergence_percent"],
+                          )
+
+                  report["intervals"][interval][symbol] = row
+                  print(
+                      json.dumps(
+                          {
+                              "interval": interval,
+                              "symbol": symbol,
+                              **row,
+                          },
+                          sort_keys=True,
+                      )
+                  )
+
+              print(
+                  "INTERVAL_SUMMARY",
+                  interval,
+                  json.dumps(report["summary"], sort_keys=True),
+              )
+
+          with open("reference_probe.json", "w", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+
+          print("FINAL_SUMMARY", json.dumps(report["summary"], sort_keys=True))
+          PY
+
+      - name: Upload reference probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bybit-binance-reference-${{ github.run_id }}
+          path: reference_probe.json
+          retention-days: 3
