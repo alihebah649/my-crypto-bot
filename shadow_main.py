@@ -68,10 +68,11 @@ _paper_outcome_evidence_logged_ids: set[str] = set()
 # mandatory downstream authorities.
 brain_authority = GuardedBrainAuthority()
 _evidence_database_url = database_url_from_env()
+_EVIDENCE_NAMESPACE = "" if PAPER_VENUE_MODE == "MIXED" else f"_{PAPER_VENUE_MODE}"
 if _evidence_database_url:
     _brain_authority_store = PostgresEvidenceStore(
         _evidence_database_url,
-        evidence_type="BRAIN_AUTHORITY",
+        evidence_type=f"BRAIN_AUTHORITY{_EVIDENCE_NAMESPACE}",
         max_records=50_000,
     )
 else:
@@ -81,7 +82,7 @@ else:
 _paper_outcome_store = (
     PostgresEvidenceStore(
         _evidence_database_url,
-        evidence_type="PAPER_OUTCOME",
+        evidence_type=f"PAPER_OUTCOME{_EVIDENCE_NAMESPACE}",
         max_records=50_000,
     )
     if _evidence_database_url
@@ -140,7 +141,7 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
         or ticker.get("market_data_source", "UNKNOWN")
     ).upper()
     try:
-        if source == "BYBIT":
+        if source == "BYBIT" and PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
             stream = getattr(_legacy, "binance_market_stream", None)
             if stream is None:
                 result["market_data_alignment"] = {
@@ -165,10 +166,11 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
                         stream_snapshot.get("event_stream_healthy")
                     ),
                 )
-                # Diagnostic-only: compare the same 5m/15m feature inputs on
+                # Diagnostic-only in the mixed architecture: compare the same 5m/15m feature inputs on
                 # Bybit and the already-local Binance WS reference. This field
                 # never participates in scoring, Brain, risk, or execution.
-                result["source_parity_shadow"] = build_source_parity_shadow(
+                if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+                    result["source_parity_shadow"] = build_source_parity_shadow(
                     source_ticker=ticker,
                     source_15m_candles=candles_15m,
                     source_5m_candles=candles_5m,
@@ -182,8 +184,10 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
                 "eligible": True,
                 "status": "SAME_EXECUTION_VENUE",
                 "market_data_source": source,
-                "execution_reference_source": "BINANCE",
-                "reason": "SIGNAL_AND_EXECUTION_SAME_VENUE",
+                "execution_reference_source": source,
+                "reason": "SIGNAL_AND_EXECUTION_SAME_VENUE"
+                if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"
+                else "SIGNAL_AND_EXECUTION_SAME_VENUE",
             }
     except Exception as exc:
         result["market_data_alignment"] = {
