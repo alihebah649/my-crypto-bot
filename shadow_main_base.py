@@ -107,6 +107,7 @@ _kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _kline_cache_lock = threading.RLock()
 _LAB_TICKER_FALLBACK_CACHE: tuple[float, dict[str, dict]] | None = None
 _LAB_TICKER_FALLBACK_TTL = 300.0
+_BINANCE_LAB_WARMUP_LOGGED: set[tuple[str, str]] = set()
 
 # Activate the staggered Kline scheduler in the live Paper runtime. The
 # scheduler is intentionally independent of strategy/risk decisions; it only
@@ -224,27 +225,9 @@ def _lab_ticker_fallback(symbols: list[str]) -> dict[str, dict]:
 
     fallback: dict[str, dict] = {}
     if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
-        if _binance_guard_active():
-            return {}
-        try:
-            raw = _original_fetch_24h_tickers(symbols)
-            for symbol, ticker in raw.items():
-                row = dict(ticker)
-                row["market_data_source"] = "BINANCE"
-                row["market_data_transport"] = "REST_COLD_START"
-                fallback[symbol] = row
-            _binance_guard.update({
-                "state": "READY",
-                "status_code": None,
-                "last_error": None,
-                "last_path": None,
-            })
-        except requests.HTTPError as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status in {418, 429}:
-                _set_binance_block(exc, "/api/v3/ticker/24hr")
-            else:
-                raise
+        # Binance Lab is intentionally REST-free. It waits for its own
+        # WebSocket ticker stream instead of touching the shared Render egress.
+        return {}
     elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
         if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
             return {}
@@ -381,16 +364,19 @@ def _lab_kline_cold_start(
 ) -> list[dict]:
     data: list[dict] = []
     if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
-        if _binance_guard_active():
-            return []
-        try:
-            data = _original_fetch_klines(symbol, interval, limit)
-        except requests.HTTPError as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status in {418, 429}:
-                _set_binance_block(exc, f"/api/v3/klines:{symbol}:{interval}")
-                return []
-            raise
+        # Binance Lab is fully WS-only. There is deliberately no REST
+        # cold-start path here, because any REST call would reintroduce the
+        # shared-IP problem we are trying to isolate. The runtime warms its
+        # historical window from closed WebSocket candles.
+        warmup_key = (symbol, str(interval))
+        if warmup_key not in _BINANCE_LAB_WARMUP_LOGGED:
+            _BINANCE_LAB_WARMUP_LOGGED.add(warmup_key)
+            _legacy.logger.info(
+                "BINANCE LAB WS WARMUP symbol=%s interval=%s waiting_for_closed_ws_history",
+                symbol,
+                interval,
+            )
+        return []
     elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
         if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
             return []
