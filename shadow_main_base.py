@@ -31,6 +31,7 @@ from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 from core.binance_market_stream import BinanceMarketStream
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
+from core.bybit_market_stream import BybitMarketStream
 from trade_manager.core_risk_providers import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
@@ -60,6 +61,10 @@ _binance_backoff_seconds = 300.0
 # venue so a candle series is internally consistent. This affects public data
 # acquisition only; fees, risk, execution, and order venues remain unchanged.
 _BYBIT_MARKET_DATA_ENABLED = os.getenv("BYBIT_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+PAPER_VENUE_MODE = os.getenv("PAPER_VENUE_MODE", "MIXED").strip().upper()
+if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+    raise ValueError(f"Unsupported PAPER_VENUE_MODE: {PAPER_VENUE_MODE}")
+PAPER_VENUE_LAB = PAPER_VENUE_MODE != "MIXED"
 _BYBIT_MARKET_DATA_REST = os.getenv("BYBIT_MARKET_DATA_REST_URL", "https://api.bybit.com").strip()
 _BYBIT_BACKOFF_SECONDS = 300.0
 _BYBIT_BLOCK_UNTIL = 0.0
@@ -76,8 +81,15 @@ _BYBIT_TICKER_CACHE: tuple[float, dict[str, dict]] | None = None
 _bybit_client = BybitMarketDataClient(base_url=_BYBIT_MARKET_DATA_REST)
 
 _market_data_split = len(TRADING_SYMBOLS) // 2
-_BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
-_BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
+if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+    _BYBIT_MARKET_DATA_SYMBOLS = ()
+elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = ()
+    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+else:
+    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
+    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
 _binance_guard = {
@@ -115,7 +127,8 @@ def _correlation_candle_loader(symbol: str):
     snapshot = _market_data_manager.get_for_analysis("5m", key)
     return snapshot.payload if snapshot is not None else []
 _legacy.logger.info(
-    "[MARKET-DATA-CONFIG] owner=shadow_main_base ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    "[MARKET-DATA-CONFIG] owner=shadow_main_base venue_mode=%s ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    PAPER_VENUE_MODE,
     len(_market_data_manager.ticker_groups()),
     _market_data_manager.ticker_batch_size,
     _market_data_manager.ticker_group_interval_seconds,
@@ -386,9 +399,20 @@ def _market_data_guard_snapshot() -> dict:
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
+    lab_stream = _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" else (
+        _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else None
+    )
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
     for symbol in TRADING_SYMBOLS:
         for timeframe in ("1h", "4h"):
+            if lab_stream is not None:
+                try:
+                    ws_rows = lab_stream.get_kline_history(symbol, timeframe, 60)
+                except Exception:
+                    ws_rows = []
+                if len(ws_rows) >= 60:
+                    result[symbol][timeframe] = ws_rows
+                    continue
             cached = _mtf_cache.get(symbol, timeframe)
             if cached is not None:
                 result[symbol][timeframe] = cached
@@ -471,20 +495,46 @@ _legacy.logger.info(
 )
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
-# Paper WebSocket feed: keep the high-frequency execution timeframes (5m/15m)
-# on WS. 1h/4h remain available through the existing bounded REST/cache MTF
-# path, which avoids carrying another 44 live streams in the 512 MiB service.
-_binance_market_stream = BinanceMarketStream(
-    TRADING_SYMBOLS,
-    intervals=("5m", "15m"),
-)
-if globals().get("_SHADOW_MAIN_EMBEDDED", False):
-    _binance_market_stream.start()
-_legacy.binance_market_stream = _binance_market_stream
+# Venue Lab WebSocket feed.
+# MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
+# Each isolated lab uses all four strategy timeframes from its own venue so
+# 1h/4h context does not silently fall back to the other exchange.
+_binance_market_stream = None
+_bybit_market_stream = None
+if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+    _binance_ws_intervals = ("5m", "15m", "1h", "4h") if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else ("5m", "15m")
+    _binance_market_stream = BinanceMarketStream(
+        TRADING_SYMBOLS,
+        intervals=_binance_ws_intervals,
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _binance_market_stream.start()
+    _legacy.binance_market_stream = _binance_market_stream
+else:
+    _legacy.binance_market_stream = None
+
+if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+    _bybit_market_stream = BybitMarketStream(
+        TRADING_SYMBOLS,
+        intervals=("5m", "15m", "1h", "4h"),
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _bybit_market_stream.start()
+    _legacy.bybit_market_stream = _bybit_market_stream
+else:
+    _legacy.bybit_market_stream = None
 
 
 def _binance_ws_health():
+    if _binance_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
     return jsonify(_binance_market_stream.snapshot()), 200
+
+
+def _bybit_ws_health():
+    if _bybit_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
+    return jsonify(_bybit_market_stream.snapshot()), 200
 
 
 if "binance_ws_health" not in app.view_functions:
@@ -492,6 +542,12 @@ if "binance_ws_health" not in app.view_functions:
         "/binance-ws-health",
         endpoint="binance_ws_health",
         view_func=_binance_ws_health,
+    )
+if "bybit_ws_health" not in app.view_functions:
+    app.add_url_rule(
+        "/bybit-ws-health",
+        endpoint="bybit_ws_health",
+        view_func=_bybit_ws_health,
     )
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
