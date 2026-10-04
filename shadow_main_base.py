@@ -107,6 +107,7 @@ _kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _kline_cache_lock = threading.RLock()
 _LAB_TICKER_FALLBACK_CACHE: tuple[float, dict[str, dict]] | None = None
 _LAB_TICKER_FALLBACK_TTL = 300.0
+_BINANCE_LAB_WARMUP_LOGGED: set[tuple[str, str]] = set()
 
 # Activate the staggered Kline scheduler in the live Paper runtime. The
 # scheduler is intentionally independent of strategy/risk decisions; it only
@@ -367,11 +368,14 @@ def _lab_kline_cold_start(
         # cold-start path here, because any REST call would reintroduce the
         # shared-IP problem we are trying to isolate. The runtime warms its
         # historical window from closed WebSocket candles.
-        _legacy.logger.info(
-            "BINANCE LAB WS WARMUP symbol=%s interval=%s available_history_only",
-            symbol,
-            interval,
-        )
+        warmup_key = (symbol, str(interval))
+        if warmup_key not in _BINANCE_LAB_WARMUP_LOGGED:
+            _BINANCE_LAB_WARMUP_LOGGED.add(warmup_key)
+            _legacy.logger.info(
+                "BINANCE LAB WS WARMUP symbol=%s interval=%s waiting_for_closed_ws_history",
+                symbol,
+                interval,
+            )
         return []
     elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
         if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
