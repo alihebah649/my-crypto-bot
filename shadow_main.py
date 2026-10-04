@@ -120,7 +120,8 @@ threading.Thread(
 ).start()
 
 _legacy.logger.info(
-    "PAPER EVIDENCE STORAGE backend=%s paper_outcome=%s brain_authority=%s brain_shadow=%s",
+    "PAPER EVIDENCE STORAGE mode=%s backend=%s paper_outcome=%s brain_authority=%s brain_shadow=%s",
+    PAPER_VENUE_MODE,
     "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
     "POSTGRES" if _paper_outcome_store is not None else "LOCAL_LOG_ONLY",
     "POSTGRES" if _evidence_database_url else "LOCAL_JSONL",
@@ -171,13 +172,13 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
                 # never participates in scoring, Brain, risk, or execution.
                 if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
                     result["source_parity_shadow"] = build_source_parity_shadow(
-                    source_ticker=ticker,
-                    source_15m_candles=candles_15m,
-                    source_5m_candles=candles_5m,
-                    binance_ticker=stream.get_latest_ticker(symbol),
-                    binance_15m_candles=stream.get_kline_history(symbol, "15m", 150),
-                    binance_5m_candles=stream.get_kline_history(symbol, "5m", 60),
-                )
+                        source_ticker=ticker,
+                        source_15m_candles=candles_15m,
+                        source_5m_candles=candles_5m,
+                        binance_ticker=stream.get_latest_ticker(symbol),
+                        binance_15m_candles=stream.get_kline_history(symbol, "15m", 150),
+                        binance_5m_candles=stream.get_kline_history(symbol, "5m", 60),
+                    )
         else:
             result["market_data_alignment"] = {
                 "schema_version": 1,
