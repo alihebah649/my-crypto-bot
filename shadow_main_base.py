@@ -817,6 +817,22 @@ def _net_only_daily_report(date_key=None) -> str:
 _legacy.build_daily_report = _net_only_daily_report
 
 _current_trade_mode = {"value": "SWING"}
+
+_PAPER_BOT_IDENTITY = {
+    "MIXED": ("MAIN BOT", "MIXED / 22-SYMBOL SHARDED"),
+    "BINANCE_ONLY_LAB": ("BINANCE LAB", "BINANCE ONLY / 22 SYMBOLS"),
+    "BYBIT_ONLY_LAB": ("BYBIT LAB", "BYBIT ONLY / 22 SYMBOLS"),
+}.get(
+    PAPER_VENUE_MODE,
+    ("UNKNOWN BOT", PAPER_VENUE_MODE),
+)
+
+
+def _telegram_identity_header() -> str:
+    name, venue = _PAPER_BOT_IDENTITY
+    return f"🤖 BOT: {name}\n🏷️ VENUE: {venue}"
+
+
 _original_controller_evaluate = runtime.risk_controller.evaluate
 _original_controller_has_position = runtime.controller.has_position
 _original_portfolio_snapshot = runtime.portfolio_provider.snapshot
@@ -912,7 +928,14 @@ runtime.open_position = _open_position_with_selected_mode
 
 
 def _send_telegram_with_trade_type(message: str) -> bool:
-    if message.startswith("=== PAPER BUY ==="):
+    # Every Telegram message is explicitly tagged with the source bot and venue.
+    # This makes BUY/SELL/health/report messages unambiguous when all three
+    # Paper processes share the same Telegram chat.
+    identity_header = _telegram_identity_header()
+    if not message.startswith("🤖 BOT: "):
+        message = f"{identity_header}\n{message}"
+
+    if message.startswith("🤖 BOT: ") and "=== PAPER BUY ===" in message:
         symbol = ""
         for line in message.splitlines():
             if line.startswith("Symbol:"):
