@@ -186,6 +186,10 @@ class BinanceMarketStream:
             value = self._latest_closed_kline.get((str(symbol).upper(), str(interval)))
             return dict(value) if isinstance(value, Mapping) else None
 
+    def get_kline_history(self, symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+        """Return a bounded copy of the locally buffered Binance kline history."""
+        return self._runtime_kline_snapshot_rows(str(symbol).upper(), str(interval), int(limit))
+
     def get_latest_ticker(self, symbol: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._latest_ticker.get(str(symbol).upper())
