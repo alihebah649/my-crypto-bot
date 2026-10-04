@@ -88,7 +88,7 @@ def test_bybit_stream_seeded_rest_history_is_exposed_to_runtime():
                 "market_data_source": "BYBIT",
                 "market_data_transport": "REST_COLD_START",
             }
-            for i in range(60)
+            for i in range(1, 61)
         ],
     )
 
