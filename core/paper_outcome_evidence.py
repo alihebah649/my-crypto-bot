@@ -236,6 +236,7 @@ def build_paper_outcome_evidence(
             "volume_ratio_5m": strategy.get("volume_ratio_5m"),
             "mtf_bias": strategy.get("mtf_bias"),
             "mtf_net": strategy.get("mtf_net"),
+            "neutral_low_score_shadow": _safe(neutral_low_score_experiment),
             "decision_candle_age_seconds": _safe((strategy.get("entry_freshness_5m") or {}).get("decision_candle_age_seconds")) if isinstance(strategy.get("entry_freshness_5m"), Mapping) else None,
             "stop_distance_percent": round(stop_distance_percent, 6),
             "stop_distance_valid": stop_distance_valid,
