@@ -190,6 +190,21 @@ class BinanceMarketStream:
         """Return a bounded copy of the locally buffered Binance kline history."""
         return self._runtime_kline_snapshot_rows(str(symbol).upper(), str(interval), int(limit))
 
+    def seed_kline_history(
+        self,
+        symbol: str,
+        interval: str,
+        candles: Iterable[Mapping[str, Any]],
+    ) -> int:
+        """Seed local history from a cold-start REST response."""
+        return self._seed_runtime_kline_history(
+            str(symbol).upper(),
+            str(interval),
+            candles,
+            required_limit=_RUNTIME_KLINE_HISTORY_LIMITS.get(str(interval), 60),
+        )
+
+
     def get_latest_ticker(self, symbol: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._latest_ticker.get(str(symbol).upper())

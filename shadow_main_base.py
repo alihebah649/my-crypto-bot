@@ -31,6 +31,7 @@ from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 from core.binance_market_stream import BinanceMarketStream
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
+from core.bybit_market_stream import BybitMarketStream
 from trade_manager.core_risk_providers import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
@@ -60,6 +61,10 @@ _binance_backoff_seconds = 300.0
 # venue so a candle series is internally consistent. This affects public data
 # acquisition only; fees, risk, execution, and order venues remain unchanged.
 _BYBIT_MARKET_DATA_ENABLED = os.getenv("BYBIT_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+PAPER_VENUE_MODE = os.getenv("PAPER_VENUE_MODE", "MIXED").strip().upper()
+if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+    raise ValueError(f"Unsupported PAPER_VENUE_MODE: {PAPER_VENUE_MODE}")
+PAPER_VENUE_LAB = PAPER_VENUE_MODE != "MIXED"
 _BYBIT_MARKET_DATA_REST = os.getenv("BYBIT_MARKET_DATA_REST_URL", "https://api.bybit.com").strip()
 _BYBIT_BACKOFF_SECONDS = 300.0
 _BYBIT_BLOCK_UNTIL = 0.0
@@ -76,8 +81,15 @@ _BYBIT_TICKER_CACHE: tuple[float, dict[str, dict]] | None = None
 _bybit_client = BybitMarketDataClient(base_url=_BYBIT_MARKET_DATA_REST)
 
 _market_data_split = len(TRADING_SYMBOLS) // 2
-_BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
-_BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
+if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+    _BYBIT_MARKET_DATA_SYMBOLS = ()
+elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = ()
+    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+else:
+    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
+    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
 _binance_guard = {
@@ -93,6 +105,8 @@ _original_fetch_klines = _legacy.fetch_klines
 _KLINE_CACHE_TTL = {"5m": 310.0, "15m": 910.0, "1h": 3610.0, "4h": 14410.0}
 _kline_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _kline_cache_lock = threading.RLock()
+_LAB_TICKER_FALLBACK_CACHE: tuple[float, dict[str, dict]] | None = None
+_LAB_TICKER_FALLBACK_TTL = 300.0
 
 # Activate the staggered Kline scheduler in the live Paper runtime. The
 # scheduler is intentionally independent of strategy/risk decisions; it only
@@ -115,7 +129,8 @@ def _correlation_candle_loader(symbol: str):
     snapshot = _market_data_manager.get_for_analysis("5m", key)
     return snapshot.payload if snapshot is not None else []
 _legacy.logger.info(
-    "[MARKET-DATA-CONFIG] owner=shadow_main_base ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    "[MARKET-DATA-CONFIG] owner=shadow_main_base venue_mode=%s ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    PAPER_VENUE_MODE,
     len(_market_data_manager.ticker_groups()),
     _market_data_manager.ticker_batch_size,
     _market_data_manager.ticker_group_interval_seconds,
@@ -192,15 +207,119 @@ def _set_bybit_block(exc: Exception, path: str) -> None:
     )
 
 
+def _lab_stream_for_mode():
+    if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+        return _binance_market_stream
+    if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+        return _bybit_market_stream
+    return None
+
+
+def _lab_ticker_fallback(symbols: list[str]) -> dict[str, dict]:
+    global _LAB_TICKER_FALLBACK_CACHE
+    now = time.time()
+    cached = _LAB_TICKER_FALLBACK_CACHE
+    if cached is not None and now - cached[0] < _LAB_TICKER_FALLBACK_TTL:
+        return {s: dict(cached[1][s]) for s in symbols if s in cached[1]}
+
+    fallback: dict[str, dict] = {}
+    if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+        if _binance_guard_active():
+            return {}
+        try:
+            raw = _original_fetch_24h_tickers(symbols)
+            for symbol, ticker in raw.items():
+                row = dict(ticker)
+                row["market_data_source"] = "BINANCE"
+                row["market_data_transport"] = "REST_COLD_START"
+                fallback[symbol] = row
+            _binance_guard.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {418, 429}:
+                _set_binance_block(exc, "/api/v3/ticker/24hr")
+            else:
+                raise
+    elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+        if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
+            return {}
+        try:
+            raw = _bybit_client.fetch_tickers(symbols)
+            for symbol, ticker in raw.items():
+                row = dict(ticker)
+                row["market_data_source"] = "BYBIT"
+                row["market_data_transport"] = "REST_COLD_START"
+                fallback[symbol] = row
+            _BYBIT_GUARD.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except BybitMarketDataError as exc:
+            _set_bybit_block(exc, "/v5/market/tickers")
+            return {}
+
+    if fallback:
+        _LAB_TICKER_FALLBACK_CACHE = (now, dict(fallback))
+    return fallback
+
+
 def _guarded_fetch_24h_tickers(symbols=None):
     global _binance_backoff_seconds, _BYBIT_TICKER_CACHE
-    requested = [str(symbol).upper() for symbol in (symbols if symbols is not None else TRADING_SYMBOLS)]
-    requested_set = set(requested)
+    requested = [
+        str(symbol).upper()
+        for symbol in (symbols if symbols is not None else TRADING_SYMBOLS)
+    ]
     result: dict[str, dict] = {}
 
-    binance_symbols = [symbol for symbol in requested if symbol in _BINANCE_MARKET_DATA_SYMBOL_SET]
-    bybit_symbols = [symbol for symbol in requested if symbol in _BYBIT_MARKET_DATA_SYMBOL_SET]
+    binance_symbols = [
+        symbol for symbol in requested if symbol in _BINANCE_MARKET_DATA_SYMBOL_SET
+    ]
+    bybit_symbols = [
+        symbol for symbol in requested if symbol in _BYBIT_MARKET_DATA_SYMBOL_SET
+    ]
 
+    # Isolated venue labs consume ticker snapshots from their own WebSocket.
+    # REST is a bounded cold-start fallback, never a polling path.
+    if PAPER_VENUE_MODE in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+        stream = _lab_stream_for_mode()
+        missing: list[str] = []
+        if stream is not None:
+            for symbol in requested:
+                try:
+                    ticker = stream.get_latest_ticker(symbol)
+                    received_at = float((ticker or {}).get("received_at", 0.0) or 0.0)
+                    stale_after = float(
+                        getattr(stream, "stale_after_seconds", 30.0)
+                    )
+                except Exception:
+                    ticker = None
+                    received_at = 0.0
+                    stale_after = 30.0
+                if (
+                    isinstance(ticker, dict)
+                    and received_at > 0.0
+                    and time.time() - received_at <= stale_after
+                ):
+                    result[symbol] = dict(ticker)
+                else:
+                    missing.append(symbol)
+        else:
+            missing = list(requested)
+
+        if missing:
+            fallback = _lab_ticker_fallback(missing)
+            result.update(fallback)
+
+        return {symbol: result[symbol] for symbol in requested if symbol in result}
+
+    # Existing mixed-lane Paper behavior remains unchanged below.
     if binance_symbols and not _binance_guard_active():
         try:
             data = _original_fetch_24h_tickers(binance_symbols)
@@ -208,7 +327,12 @@ def _guarded_fetch_24h_tickers(symbols=None):
                 row = dict(ticker)
                 row["market_data_source"] = "BINANCE"
                 result[symbol] = row
-            _binance_guard.update({"state": "READY", "status_code": None, "last_error": None, "last_path": None})
+            _binance_guard.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
             _binance_backoff_seconds = 300.0
         except requests.HTTPError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -226,7 +350,12 @@ def _guarded_fetch_24h_tickers(symbols=None):
             try:
                 bybit_data = _bybit_client.fetch_tickers(bybit_symbols)
                 _BYBIT_TICKER_CACHE = (now, bybit_data)
-                _BYBIT_GUARD.update({"state": "READY", "status_code": None, "last_error": None, "last_path": None})
+                _BYBIT_GUARD.update({
+                    "state": "READY",
+                    "status_code": None,
+                    "last_error": None,
+                    "last_path": None,
+                })
             except BybitMarketDataError as exc:
                 _set_bybit_block(exc, "/v5/market/tickers")
                 bybit_data = {}
@@ -236,9 +365,62 @@ def _guarded_fetch_24h_tickers(symbols=None):
             if symbol in bybit_symbols:
                 result[symbol] = dict(ticker)
 
-    # No cross-venue price substitution is performed here. A symbol must keep
-    # its assigned venue so its ticker and candle series remain coherent.
+    # No cross-venue price substitution is performed here.
     return {symbol: result[symbol] for symbol in requested if symbol in result}
+
+
+def _lab_kline_cold_start(
+    symbol: str,
+    interval: str,
+    limit: int,
+    *,
+    stream,
+    key: tuple[str, str, int],
+    cache_key: str,
+    manager,
+) -> list[dict]:
+    data: list[dict] = []
+    if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+        if _binance_guard_active():
+            return []
+        try:
+            data = _original_fetch_klines(symbol, interval, limit)
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {418, 429}:
+                _set_binance_block(exc, f"/api/v3/klines:{symbol}:{interval}")
+                return []
+            raise
+    elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+        if not _BYBIT_MARKET_DATA_ENABLED or _bybit_guard_active():
+            return []
+        try:
+            data = _bybit_client.fetch_klines(symbol, interval, limit)
+        except BybitMarketDataError as exc:
+            _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
+            return []
+
+    if not data:
+        return []
+    fetched_at = time.time()
+    with _kline_cache_lock:
+        _kline_cache[key] = (fetched_at, data)
+    if manager is not None:
+        try:
+            manager.cache.put(cache_key, data, fetched_at=fetched_at)
+        except Exception:
+            _legacy.logger.exception(
+                "MarketDataManager cache sync failed for lab %s %s",
+                symbol,
+                interval,
+            )
+    if stream is not None:
+        try:
+            stream.seed_kline_history(symbol, interval, data)
+            return stream.get_kline_history(symbol, interval, limit)
+        except Exception:
+            pass
+    return data
 
 
 def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
@@ -255,26 +437,71 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
         except Exception:
             manager_cache = None
 
-    # All venues share the same canonical cache/freshness boundary.
     with _kline_cache_lock:
         cached = _kline_cache.get(key)
         cached_age = None if cached is None else max(0.0, now - cached[0])
         if cached is not None and cached_age < ttl:
+            if PAPER_VENUE_LAB:
+                stream = _lab_stream_for_mode()
+                if stream is not None:
+                    try:
+                        stream.seed_kline_history(symbol, interval, cached[1])
+                        ws_rows = stream.get_kline_history(symbol, interval, limit)
+                        if len(ws_rows) >= int(limit):
+                            return ws_rows
+                    except Exception:
+                        pass
             return cached[1]
 
     if manager_cache is not None:
         try:
             manager_age = max(0.0, now - float(manager_cache.fetched_at))
+            payload = manager_cache.payload
             if manager_age < ttl:
-                payload = manager_cache.payload
+                if PAPER_VENUE_LAB:
+                    stream = _lab_stream_for_mode()
+                    if stream is not None:
+                        try:
+                            stream.seed_kline_history(symbol, interval, payload)
+                            ws_rows = stream.get_kline_history(symbol, interval, limit)
+                            if len(ws_rows) >= int(limit):
+                                return ws_rows
+                        except Exception:
+                            pass
                 with _kline_cache_lock:
                     _kline_cache[key] = (float(manager_cache.fetched_at), payload)
                 return payload
         except (TypeError, ValueError):
             pass
 
-    # The same wave scheduler applies to Binance and Bybit. This prevents the
-    # new venue from becoming an accidental second burst path.
+    if PAPER_VENUE_LAB:
+        stream = _lab_stream_for_mode()
+        if stream is not None:
+            try:
+                ws_rows = stream.get_kline_history(symbol, interval, limit)
+            except Exception:
+                ws_rows = []
+            if len(ws_rows) >= int(limit):
+                return ws_rows
+
+        # REST cold-start is also wave-gated. A symbol waits for its scheduler
+        # slot so startup cannot create a 22x4 burst.
+        allowed_symbols = getattr(_legacy, "_market_data_kline_refresh_symbols", None)
+        if manager is not None and isinstance(allowed_symbols, set):
+            if symbol not in allowed_symbols:
+                return ws_rows if 'ws_rows' in locals() else []
+
+        return _lab_kline_cold_start(
+            symbol,
+            interval,
+            limit,
+            stream=stream,
+            key=key,
+            cache_key=cache_key,
+            manager=manager,
+        )
+
+    # Existing mixed-lane Paper behavior remains unchanged.
     allowed_symbols = getattr(_legacy, "_market_data_kline_refresh_symbols", None)
     if manager is not None and isinstance(allowed_symbols, set):
         if symbol not in allowed_symbols:
@@ -282,7 +509,9 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
                 return cached[1] if cached is not None else []
             try:
                 stale_age = max(0.0, now - float(manager_cache.fetched_at))
-                stale_max = float(manager.policies[str(interval)].stale_max_age_seconds)
+                stale_max = float(
+                    manager.policies[str(interval)].stale_max_age_seconds
+                )
                 if stale_age <= stale_max:
                     return manager_cache.payload
             except (KeyError, TypeError, ValueError, AttributeError):
@@ -344,7 +573,6 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
             return cached[1] if cached is not None else []
         raise
 
-
 _legacy.fetch_24h_tickers = _guarded_fetch_24h_tickers
 _legacy.fetch_klines = _guarded_fetch_klines
 
@@ -363,6 +591,7 @@ def _market_data_guard_snapshot() -> dict:
         "blocked_for_seconds": round(bybit_remaining, 1),
         "symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
     }
+    snapshot["venue_mode"] = PAPER_VENUE_MODE
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
         "bybit_symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
@@ -386,9 +615,20 @@ def _market_data_guard_snapshot() -> dict:
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
+    lab_stream = _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" else (
+        _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else None
+    )
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
     for symbol in TRADING_SYMBOLS:
         for timeframe in ("1h", "4h"):
+            if lab_stream is not None:
+                try:
+                    ws_rows = lab_stream.get_kline_history(symbol, timeframe, 60)
+                except Exception:
+                    ws_rows = []
+                if len(ws_rows) >= 60:
+                    result[symbol][timeframe] = ws_rows
+                    continue
             cached = _mtf_cache.get(symbol, timeframe)
             if cached is not None:
                 result[symbol][timeframe] = cached
@@ -471,20 +711,46 @@ _legacy.logger.info(
 )
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
-# Paper WebSocket feed: keep the high-frequency execution timeframes (5m/15m)
-# on WS. 1h/4h remain available through the existing bounded REST/cache MTF
-# path, which avoids carrying another 44 live streams in the 512 MiB service.
-_binance_market_stream = BinanceMarketStream(
-    TRADING_SYMBOLS,
-    intervals=("5m", "15m"),
-)
-if globals().get("_SHADOW_MAIN_EMBEDDED", False):
-    _binance_market_stream.start()
-_legacy.binance_market_stream = _binance_market_stream
+# Venue Lab WebSocket feed.
+# MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
+# Each isolated lab uses all four strategy timeframes from its own venue so
+# 1h/4h context does not silently fall back to the other exchange.
+_binance_market_stream = None
+_bybit_market_stream = None
+if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+    _binance_ws_intervals = ("5m", "15m", "1h", "4h") if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else ("5m", "15m")
+    _binance_market_stream = BinanceMarketStream(
+        TRADING_SYMBOLS,
+        intervals=_binance_ws_intervals,
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _binance_market_stream.start()
+    _legacy.binance_market_stream = _binance_market_stream
+else:
+    _legacy.binance_market_stream = None
+
+if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+    _bybit_market_stream = BybitMarketStream(
+        TRADING_SYMBOLS,
+        intervals=("5m", "15m", "1h", "4h"),
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _bybit_market_stream.start()
+    _legacy.bybit_market_stream = _bybit_market_stream
+else:
+    _legacy.bybit_market_stream = None
 
 
 def _binance_ws_health():
+    if _binance_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
     return jsonify(_binance_market_stream.snapshot()), 200
+
+
+def _bybit_ws_health():
+    if _bybit_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
+    return jsonify(_bybit_market_stream.snapshot()), 200
 
 
 if "binance_ws_health" not in app.view_functions:
@@ -493,13 +759,19 @@ if "binance_ws_health" not in app.view_functions:
         endpoint="binance_ws_health",
         view_func=_binance_ws_health,
     )
+if "bybit_ws_health" not in app.view_functions:
+    app.add_url_rule(
+        "/bybit-ws-health",
+        endpoint="bybit_ws_health",
+        view_func=_bybit_ws_health,
+    )
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
 _brain_shadow_database_url = database_url_from_env()
 if _brain_shadow_database_url:
     brain_shadow_store = PostgresEvidenceStore(
         _brain_shadow_database_url,
-        evidence_type="BRAIN_SHADOW",
+        evidence_type=f"BRAIN_SHADOW{'' if PAPER_VENUE_MODE == 'MIXED' else '_' + PAPER_VENUE_MODE}",
         max_records=50_000,
     )
 else:
