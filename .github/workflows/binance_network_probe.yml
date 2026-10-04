@@ -1,0 +1,84 @@
+name: Binance Network Probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/binance_network_probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show egress IP
+        run: |
+          set -euo pipefail
+          echo "GITHUB_RUNNER_IP=$(curl -fsS --max-time 10 https://api.ipify.org)"
+
+      - name: Probe Binance REST from GitHub runner
+        env:
+          SYMBOLS: "BTCUSDT ETHUSDT SOLUSDT LINKUSDT ADAUSDT DOTUSDT NEARUSDT ARBUSDT OPUSDT RENDERUSDT BNBUSDT AVAXUSDT ALGOUSDT ATOMUSDT FETUSDT LTCUSDT XRPUSDT XLMUSDT HBARUSDT SUIUSDT BCHUSDT TRXUSDT"
+        run: |
+          set -u
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          symbols = os.environ["SYMBOLS"].split()
+          results = []
+
+          def request(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "my-crypto-bot/binance-network-probe"},
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as resp:
+                      headers = {k.lower(): v for k, v in resp.headers.items()}
+                      body = resp.read()
+                      return {
+                          "status": resp.status,
+                          "retry_after": headers.get("retry-after"),
+                          "used_weight_1m": headers.get("x-mbx-used-weight-1m"),
+                          "content_length": len(body),
+                      }
+              except Exception as exc:
+                  return {"error": type(exc).__name__ + ": " + str(exc)}
+
+          base = "https://api.binance.com/api/v3"
+          print("=== GitHub -> Binance probe ===")
+
+          ticker = request(base + "/ticker/24hr?symbol=BTCUSDT")
+          print("ticker_24hr_BTCUSDT", json.dumps(ticker, sort_keys=True))
+
+          for symbol in symbols:
+              query = urllib.parse.urlencode({
+                  "symbol": symbol,
+                  "interval": "1h",
+                  "limit": 60,
+              })
+              item = request(base + "/klines?" + query)
+              results.append((symbol, item))
+              print("klines_1h", symbol, json.dumps(item, sort_keys=True))
+              time.sleep(0.25)
+
+          statuses = {}
+          for _, item in results:
+              status = str(item.get("status", "error"))
+              statuses[status] = statuses.get(status, 0) + 1
+
+          print("SUMMARY", json.dumps({
+              "kline_requests": len(results),
+              "status_counts": statuses,
+              "errors": sum(1 for _, item in results if "error" in item),
+              "last_used_weight_1m": next(
+                  (item.get("used_weight_1m") for _, item in reversed(results) if item.get("used_weight_1m")),
+                  None,
+              ),
+          }, sort_keys=True))
+          PY
