@@ -591,6 +591,7 @@ def _market_data_guard_snapshot() -> dict:
         "blocked_for_seconds": round(bybit_remaining, 1),
         "symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
     }
+    snapshot["venue_mode"] = PAPER_VENUE_MODE
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
         "bybit_symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
@@ -770,7 +771,7 @@ _brain_shadow_database_url = database_url_from_env()
 if _brain_shadow_database_url:
     brain_shadow_store = PostgresEvidenceStore(
         _brain_shadow_database_url,
-        evidence_type="BRAIN_SHADOW",
+        evidence_type=f"BRAIN_SHADOW{'' if PAPER_VENUE_MODE == 'MIXED' else '_' + PAPER_VENUE_MODE}",
         max_records=50_000,
     )
 else:
