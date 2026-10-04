@@ -221,6 +221,7 @@ def build_paper_outcome_evidence(
             "symbol": strategy.get("symbol_regime"),
             "mtf_bias": strategy.get("mtf_bias"),
             "mtf_net": strategy.get("mtf_net"),
+            "neutral_low_score_shadow": _safe(neutral_low_score_experiment),
             "mtf_higher_timeframes_bearish": strategy.get("mtf_higher_timeframes_bearish"),
             "mtf_higher_timeframes_bullish": strategy.get("mtf_higher_timeframes_bullish"),
             "seller_failure_confirmed": strategy.get("seller_failure_confirmed"),
