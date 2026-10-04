@@ -353,6 +353,22 @@ def test_runtime_kline_history_uses_strategy_required_depth():
     assert len(feed._runtime_kline_history[("BTCUSDT", "5m")]) == 60
     assert len(feed._runtime_kline_history[("BTCUSDT", "15m")]) == 150
 
+def test_public_kline_history_accessor_returns_bounded_copy():
+    feed = BinanceMarketStream(["BTCUSDT"])
+    feed._seed_runtime_kline_history(
+        "BTCUSDT",
+        "5m",
+        [{"open_time": index, "close": float(index)} for index in range(10)],
+        required_limit=10,
+    )
+
+    rows = feed.get_kline_history("BTCUSDT", "5m", 4)
+
+    assert [row["open_time"] for row in rows] == [6, 7, 8, 9]
+    rows[-1]["close"] = 999.0
+    assert feed.get_kline_history("BTCUSDT", "5m", 1)[0]["close"] == 9.0
+
+
 
 def test_custom_paper_stream_keeps_only_5m_and_15m_high_frequency_intervals():
     feed = BinanceMarketStream(["BTCUSDT", "ETHUSDT"], intervals=("5m", "15m"))
