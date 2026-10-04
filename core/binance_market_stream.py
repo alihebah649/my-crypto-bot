@@ -189,7 +189,8 @@ class BinanceMarketStream:
     def get_kline_history(self, symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
         """Return a bounded copy of the locally buffered Binance kline history."""
         return self._runtime_kline_snapshot_rows(str(symbol).upper(), str(interval), int(limit))
-\n    def seed_kline_history(
+
+    def seed_kline_history(
         self,
         symbol: str,
         interval: str,
