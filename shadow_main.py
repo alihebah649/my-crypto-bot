@@ -663,7 +663,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     execution_price = float(entry_price)
     execution_stop_loss = float(stop_loss)
 
-    if market_data_source == "BYBIT":
+    if market_data_source == "BYBIT" and PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
         if not isinstance(market_data_alignment, dict) or not bool(
             market_data_alignment.get("eligible")
         ):
@@ -740,7 +740,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
 
     trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
     trace["market_data_source"] = market_data_source
-    trace["execution_market_data_source"] = "BINANCE"
+    trace["execution_market_data_source"] = market_data_source
     trace["market_data_alignment"] = market_data_alignment
     trace["signal_price"] = float(entry_price)
     trace["execution_reference_price"] = float(execution_price)
