@@ -438,6 +438,15 @@ def _lane_aware_existing_position_gate(symbol: str) -> bool:
 _paper_original_btc_crash_guard = _legacy.btc_crash_guard
 _paper_original_run_exit_watchdog = runtime.run_exit_watchdog
 _paper_original_facade_execute_decision = runtime.facade.execute_decision
+
+
+def _requires_binance_execution_reference(market_data_source: str) -> bool:
+    """Mixed-mode Bybit signals need Binance execution alignment; the isolated
+    Bybit lab must execute against Bybit only."""
+    return (
+        str(market_data_source or "").upper() == "BYBIT"
+        and PAPER_VENUE_MODE != "BYBIT_ONLY_LAB"
+    )
 _paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
 
@@ -663,7 +672,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
     execution_price = float(entry_price)
     execution_stop_loss = float(stop_loss)
 
-    if market_data_source == "BYBIT" and PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+    if _requires_binance_execution_reference(market_data_source):
         if not isinstance(market_data_alignment, dict) or not bool(
             market_data_alignment.get("eligible")
         ):
