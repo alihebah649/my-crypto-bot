@@ -1,32 +1,165 @@
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+import importlib
+import time
 
 
-ROOT = Path(__file__).resolve().parents[1]
+def test_bybit_lab_sync_uses_latest_ws_row_even_when_rest_seed_rows_lack_closed_flags(monkeypatch):
+    base = importlib.import_module("shadow_main_base")
+    monkeypatch.setattr(base, "PAPER_VENUE_MODE", "BYBIT_ONLY_LAB")
+
+    now = time.time()
+    seeded = [
+        {
+            "open_time": i * 300_000,
+            "close_time": i * 300_000 + 299_999,
+            "close": 100.0,
+            "market_data_transport": "REST_COLD_START",
+        }
+        for i in range(1, 60)
+    ]
+    live_open = {
+        "open_time": 60 * 300_000,
+        "close_time": 60 * 300_000 + 299_999,
+        "close": 101.0,
+        "is_closed": False,
+        "received_at": now,
+        "market_data_transport": "WEBSOCKET",
+    }
+    rows = seeded + [live_open]
+
+    class Cache:
+        def __init__(self):
+            self.put_calls = []
+
+        def put(self, key, payload, *, fetched_at=None, persist=True):
+            self.put_calls.append((key, payload, fetched_at, persist))
+
+    class Manager:
+        def __init__(self):
+            self.cache = Cache()
+
+    class Stream:
+        stale_after_seconds = 30.0
+
+        def snapshot(self):
+            return {"event_stream_healthy": True}
+
+    manager = Manager()
+    assert base._sync_bybit_ws_kline_manager_cache(
+        manager,
+        "5m:FETUSDT:60",
+        rows,
+        Stream(),
+    )
+
+    assert len(manager.cache.put_calls) == 1
+    key, payload, fetched_at, persist = manager.cache.put_calls[0]
+    assert key == "5m:FETUSDT:60"
+    assert payload is rows
+    assert fetched_at is not None
+    assert abs(fetched_at - now) < 2.0
+    assert persist is False
 
 
-def test_bybit_lab_syncs_live_ws_5m_into_manager_without_persisting_each_cycle():
-    base = (ROOT / "shadow_main_base.py").read_text(encoding="utf-8")
-    tree = ast.parse(base)
-    source = ast.get_source_segment(base, next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_guarded_fetch_klines"
-    )) or ""
+def test_bybit_lab_closed_ws_row_uses_candle_close_time_not_receive_time(monkeypatch):
+    base = importlib.import_module("shadow_main_base")
+    monkeypatch.setattr(base, "PAPER_VENUE_MODE", "BYBIT_ONLY_LAB")
 
-    assert 'def _sync_bybit_ws_kline_manager_cache' in base
-    assert 'PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"' in base
-    assert 'row for row in ws_rows if row.get("is_closed")' in base
-    assert 'event_stream_healthy' in base
-    assert 'fetched_at=time.time()' in base
-    assert 'persist=False' in base
-    assert 'live_age = max(0.0, time.time() - received_at)' not in base
-    assert base.count('_sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)') >= 3
+    now = time.time()
+    close_time = int((now - 75.0) * 1000)
+    rows = [
+        {
+            "open_time": 1,
+            "close_time": 299_999,
+            "close": 100.0,
+            "market_data_transport": "REST_COLD_START",
+        },
+        {
+            "open_time": 300_000,
+            "close_time": close_time,
+            "close": 101.0,
+            "is_closed": True,
+            "received_at": now - 70.0,
+            "market_data_transport": "WEBSOCKET",
+        },
+    ]
+
+    class Cache:
+        def __init__(self):
+            self.put_calls = []
+
+        def put(self, key, payload, *, fetched_at=None, persist=True):
+            self.put_calls.append((key, payload, fetched_at, persist))
+
+    class Manager:
+        def __init__(self):
+            self.cache = Cache()
+
+    class Stream:
+        stale_after_seconds = 30.0
+
+        def snapshot(self):
+            return {"event_stream_healthy": True}
+
+    manager = Manager()
+    assert base._sync_bybit_ws_kline_manager_cache(
+        manager,
+        "5m:FETUSDT:60",
+        rows,
+        Stream(),
+    )
+
+    _, _, fetched_at, persist = manager.cache.put_calls[0]
+    assert fetched_at is not None
+    assert abs(fetched_at - close_time / 1000.0) < 0.01
+    assert persist is False
+
+
+def test_bybit_lab_does_not_refresh_from_stale_ws_row(monkeypatch):
+    base = importlib.import_module("shadow_main_base")
+    monkeypatch.setattr(base, "PAPER_VENUE_MODE", "BYBIT_ONLY_LAB")
+
+    now = time.time()
+    rows = [{
+        "open_time": 300_000,
+        "close_time": int((now - 10.0) * 1000),
+        "close": 101.0,
+        "is_closed": False,
+        "received_at": now - 31.0,
+        "market_data_transport": "WEBSOCKET",
+    }]
+
+    class Cache:
+        def __init__(self):
+            self.put_calls = []
+
+        def put(self, *args, **kwargs):
+            self.put_calls.append((args, kwargs))
+
+    class Manager:
+        def __init__(self):
+            self.cache = Cache()
+
+    class Stream:
+        stale_after_seconds = 30.0
+
+        def snapshot(self):
+            return {"event_stream_healthy": True}
+
+    manager = Manager()
+    assert base._sync_bybit_ws_kline_manager_cache(
+        manager,
+        "5m:FETUSDT:60",
+        rows,
+        Stream(),
+    ) is False
+    assert manager.cache.put_calls == []
 
 
 def test_binance_lab_path_remains_ws_only_for_cold_start():
-    base = (ROOT / "shadow_main_base.py").read_text(encoding="utf-8")
-    assert 'if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":' in base
-    assert 'There is deliberately no REST' in base
-    assert 'waiting_for_closed_ws_history' in base
+    base = (importlib.import_module("shadow_main_base"))
+    source = open(base.__file__, "r", encoding="utf-8").read()
+    assert 'if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":' in source
+    assert 'There is deliberately no REST' in source
+    assert 'waiting_for_closed_ws_history' in source
