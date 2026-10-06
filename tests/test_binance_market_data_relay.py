@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from tools.binance_market_data_relay import SYMBOLS, build_snapshot
+import pytest
+
+from tools.binance_market_data_relay import RelayError, SYMBOLS, build_snapshot
 
 
 def _raw_candle(open_time: int, close_time: int, close: str = "100.0") -> list:
@@ -43,14 +45,10 @@ def test_build_snapshot_rejects_missing_ticker() -> None:
         for s in SYMBOLS
     }
 
-    try:
+    with pytest.raises(RelayError, match="Ticker coverage incomplete"):
         build_snapshot(
             now_ms=2_000_000,
             ticker_rows=ticker_rows,
             candles=candles,
             limits={"5m": 100, "15m": 100, "1h": 100, "4h": 100},
         )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("expected incomplete ticker coverage to fail")
