@@ -17,7 +17,7 @@ def _strategy(*, seller_failure_confirmed: bool) -> dict:
         "mtf_weighted_bull": 0.0,
         "mtf_weighted_bear": 1.0,
         "mtf_higher_timeframes_bearish": False,
-        "mtf_timeframe_bias": {"1h": "BULLISH", "4h": "BULLISH"},
+        "mtf_timeframe_bias": {"1h": "NEUTRAL", "4h": "NEUTRAL"},
     }
 
 
