@@ -18,8 +18,10 @@ def test_bybit_lab_syncs_live_ws_5m_into_manager_without_persisting_each_cycle()
     assert 'def _sync_bybit_ws_kline_manager_cache' in base
     assert 'PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"' in base
     assert 'row for row in ws_rows if row.get("is_closed")' in base
-    assert 'fetched_at=received_at' in base
+    assert 'event_stream_healthy' in base
+    assert 'fetched_at=time.time()' in base
     assert 'persist=False' in base
+    assert 'live_age = max(0.0, time.time() - received_at)' not in base
     assert base.count('_sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)') >= 3
 
 
