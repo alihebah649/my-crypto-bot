@@ -422,6 +422,14 @@ def _lab_kline_cold_start(
     cache_key: str,
     manager,
 ) -> list[dict]:
+    started_at = time.time()
+    if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" and str(interval) in {"1h", "4h"}:
+        _legacy.logger.info(
+            "[BYBIT-LAB-REST-FALLBACK] start symbol=%s interval=%s limit=%d",
+            symbol,
+            interval,
+            limit,
+        )
     data: list[dict] = []
     if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
         # Binance Lab is fully WS-only. There is deliberately no REST
@@ -442,7 +450,22 @@ def _lab_kline_cold_start(
             return []
         try:
             data = _bybit_client.fetch_klines(symbol, interval, limit)
+            if str(interval) in {"1h", "4h"}:
+                _legacy.logger.info(
+                    "[BYBIT-LAB-REST-FALLBACK] done symbol=%s interval=%s rows=%d elapsed=%.3fs",
+                    symbol,
+                    interval,
+                    len(data),
+                    time.time() - started_at,
+                )
         except BybitMarketDataError as exc:
+            _legacy.logger.warning(
+                "[BYBIT-LAB-REST-FALLBACK] failed symbol=%s interval=%s elapsed=%.3fs error=%s",
+                symbol,
+                interval,
+                time.time() - started_at,
+                exc,
+            )
             _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
             return []
 
@@ -707,6 +730,12 @@ def _fetch_strategy_data_with_mtf():
     manager = getattr(_legacy, "market_data_manager", None)
     if manager is not None and callable(getattr(manager, "claim_kline_refresh_wave", None)):
         wave = manager.claim_kline_refresh_wave()
+        _legacy.logger.info(
+            "[BYBIT-LAB-CYCLE-TRACE] wave_claim index=%s claimed=%s symbols=%s",
+            wave.get("wave_index"),
+            wave.get("claimed"),
+            wave.get("symbols"),
+        )
         _legacy._market_data_kline_refresh_symbols = set(wave.get("symbols", []) or [])
         _legacy._market_data_kline_wave = dict(wave)
     else:
@@ -718,8 +747,20 @@ def _fetch_strategy_data_with_mtf():
             "claimed": False,
         }
 
+    base_started_at = time.time()
     base = _original_fetch_strategy_data()
+    _legacy.logger.info(
+        "[BYBIT-LAB-CYCLE-TRACE] base_fetch_done elapsed=%.3fs",
+        time.time() - base_started_at,
+    )
+    mtf_started_at = time.time()
     _mtf_candles = _fetch_mtf_context()
+    _legacy.logger.info(
+        "[BYBIT-LAB-CYCLE-TRACE] mtf_fetch_done elapsed=%.3fs symbols=%d contexts=%d",
+        time.time() - mtf_started_at,
+        len(_mtf_candles),
+        sum(1 for ctx in _mtf_candles.values() if ctx),
+    )
     return base
 
 
