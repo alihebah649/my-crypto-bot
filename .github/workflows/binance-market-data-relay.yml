@@ -45,10 +45,10 @@ jobs:
 
       - name: Publish latest snapshot as release asset
         env:
-          GH_TOKEN: ${GITHUB_TOKEN:-${{ github.token }}}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view market-data --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create market-data               --repo "$GITHUB_REPOSITORY"               --title "Market Data Relay"               --notes "Latest public Binance Spot market snapshot for the Paper Trading bot."               --prerelease
+            gh release create market-data --repo "$GITHUB_REPOSITORY"               --title "Market Data Relay"               --notes "Latest public Binance Spot market snapshot for the Paper Trading bot."               --prerelease
           fi
           gh release upload market-data data/latest-market-data.json             --repo "$GITHUB_REPOSITORY"             --clobber
 
@@ -58,5 +58,4 @@ jobs:
           import json
           d = json.load(open("data/latest-market-data.json"))
           print(f"RELAY_PUBLISHED generated_at={d['generated_at']} symbols={d['symbol_count']}")
-          print("ASSET_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/market-data/latest-market-data.json")
           PY
