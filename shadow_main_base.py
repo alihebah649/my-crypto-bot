@@ -353,26 +353,28 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
 
 def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[dict], stream) -> bool:
-    """Keep the Bybit-only live 5m manager cache aligned with WS closed candles."""
+    """Keep the Bybit-only manager freshness clock aligned with a healthy live WS."""
     if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB" or manager is None or not ws_rows:
+        return False
+    try:
+        stream_snapshot = stream.snapshot()
+    except Exception:
+        return False
+    if not bool(stream_snapshot.get("event_stream_healthy")):
         return False
     closed_rows = [row for row in ws_rows if row.get("is_closed")]
     reference_row = closed_rows[-1] if closed_rows else None
-    received_at = None if reference_row is None else reference_row.get("received_at")
-    try:
-        received_at = float(received_at)
-    except (TypeError, ValueError):
-        received_at = 0.0
-    if received_at <= 0.0:
+    if reference_row is None:
         return False
-    live_age = max(0.0, time.time() - received_at)
-    stale_after = float(getattr(stream, "stale_after_seconds", 30.0))
-    if live_age > max(stale_after, 30.0):
-        return False
+    # A live WebSocket stream means the cached closed-candle snapshot is current
+    # to the latest completed candle, even though that candle's own received_at
+    # timestamp naturally ages for several minutes between 5m closes. Use the
+    # current healthy-stream observation time as the manager freshness clock;
+    # do not persist the heartbeat-only refresh.
     manager.cache.put(
         cache_key,
         ws_rows,
-        fetched_at=received_at,
+        fetched_at=time.time(),
         persist=False,
     )
     return True
