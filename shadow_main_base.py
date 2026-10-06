@@ -468,6 +468,29 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
             except Exception:
                 ws_rows = []
             if len(ws_rows) >= int(limit):
+                # BYBIT_ONLY_LAB receives the live candle stream directly, so
+                # keep the active MarketDataManager freshness clock aligned with
+                # the latest CLOSED candle delivered by that same WebSocket.
+                # This is intentionally an in-memory sync: persisting every WS
+                # event would turn the cache file into a write-heavy hot path.
+                if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" and manager is not None:
+                    closed_rows = [row for row in ws_rows if row.get("is_closed")]
+                    reference_row = closed_rows[-1] if closed_rows else None
+                    received_at = None if reference_row is None else reference_row.get("received_at")
+                    try:
+                        received_at = float(received_at)
+                    except (TypeError, ValueError):
+                        received_at = 0.0
+                    if received_at > 0.0:
+                        live_age = max(0.0, time.time() - received_at)
+                        stale_after = float(getattr(stream, "stale_after_seconds", 30.0))
+                        if live_age <= max(stale_after, 30.0):
+                            manager.cache.put(
+                                cache_key,
+                                ws_rows,
+                                fetched_at=received_at,
+                                persist=False,
+                            )
                 return ws_rows
 
         # REST cold-start is also wave-gated. A symbol waits for its scheduler
