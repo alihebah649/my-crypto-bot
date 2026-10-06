@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - "diag/market-data-relay-bootstrap"
 
 permissions:
   contents: write
@@ -48,9 +51,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view market-data --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create market-data --repo "$GITHUB_REPOSITORY"               --title "Market Data Relay"               --notes "Latest public Binance Spot market snapshot for the Paper Trading bot."               --prerelease
+            gh release create market-data --repo "$GITHUB_REPOSITORY" \
+              --title "Market Data Relay" \
+              --notes "Latest public Binance Spot market snapshot for the Paper Trading bot." \
+              --prerelease
           fi
-          gh release upload market-data data/latest-market-data.json             --repo "$GITHUB_REPOSITORY"             --clobber
+          gh release upload market-data data/latest-market-data.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
       - name: Relay summary
         run: |
