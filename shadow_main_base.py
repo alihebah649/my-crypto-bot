@@ -391,6 +391,66 @@ def _guarded_fetch_24h_tickers(symbols=None):
     return {symbol: result[symbol] for symbol in requested if symbol in result}
 
 
+def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[dict], stream) -> bool:
+    """Keep Bybit manager freshness aligned with the latest symbol-level WS kline observation."""
+    if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB" or manager is None or not ws_rows:
+        return False
+    try:
+        stream_snapshot = stream.snapshot()
+    except Exception:
+        return False
+    if not bool(stream_snapshot.get("event_stream_healthy")):
+        return False
+
+    # REST warm-up rows do not carry ``is_closed``/WS timestamps. Select the
+    # newest candle by open time, then require that the newest row is actually
+    # attributable to the live WebSocket before advancing manager freshness.
+    candidates = [
+        row for row in ws_rows
+        if isinstance(row, dict) and row.get("open_time") is not None
+    ]
+    if not candidates:
+        return False
+    latest_row = max(
+        candidates,
+        key=lambda row: int(row.get("open_time") or 0),
+    )
+    if str(latest_row.get("market_data_transport", "")).upper() != "WEBSOCKET":
+        return False
+
+    now = time.time()
+    is_closed = bool(latest_row.get("is_closed"))
+    if is_closed:
+        close_time = latest_row.get("close_time")
+        try:
+            close_timestamp = float(close_time) / 1000.0
+        except (TypeError, ValueError):
+            return False
+        # For a closed latest row, freshness follows the candle's completed
+        # timestamp. This avoids the PR #159 failure mode where the receive
+        # timestamp aged out after seconds even though the candle remained the
+        # correct latest completed snapshot.
+        fetched_at = min(now, close_timestamp)
+    else:
+        received_at = latest_row.get("received_at")
+        try:
+            live_age = max(0.0, now - float(received_at))
+        except (TypeError, ValueError):
+            return False
+        if live_age > float(getattr(stream, "stale_after_seconds", 30.0)):
+            return False
+        # A live current-candle WS observation is the safe heartbeat clock.
+        fetched_at = now
+
+    manager.cache.put(
+        cache_key,
+        ws_rows,
+        fetched_at=fetched_at,
+        persist=False,
+    )
+    return True
+
+
 def _lab_kline_cold_start(
     symbol: str,
     interval: str,
@@ -401,6 +461,14 @@ def _lab_kline_cold_start(
     cache_key: str,
     manager,
 ) -> list[dict]:
+    started_at = time.time()
+    if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" and str(interval) in {"1h", "4h"}:
+        _legacy.logger.info(
+            "[BYBIT-LAB-REST-FALLBACK] start symbol=%s interval=%s limit=%d",
+            symbol,
+            interval,
+            limit,
+        )
     data: list[dict] = []
     if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
         # Binance Lab is fully WS-only. There is deliberately no REST
@@ -421,7 +489,22 @@ def _lab_kline_cold_start(
             return []
         try:
             data = _bybit_client.fetch_klines(symbol, interval, limit)
+            if str(interval) in {"1h", "4h"}:
+                _legacy.logger.info(
+                    "[BYBIT-LAB-REST-FALLBACK] done symbol=%s interval=%s rows=%d elapsed=%.3fs",
+                    symbol,
+                    interval,
+                    len(data),
+                    time.time() - started_at,
+                )
         except BybitMarketDataError as exc:
+            _legacy.logger.warning(
+                "[BYBIT-LAB-REST-FALLBACK] failed symbol=%s interval=%s elapsed=%.3fs error=%s",
+                symbol,
+                interval,
+                time.time() - started_at,
+                exc,
+            )
             _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
             return []
 
@@ -473,6 +556,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
                         stream.seed_kline_history(symbol, interval, cached[1])
                         ws_rows = stream.get_kline_history(symbol, interval, limit)
                         if len(ws_rows) >= int(limit):
+                            _sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)
                             return ws_rows
                     except Exception:
                         pass
@@ -490,6 +574,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
                             stream.seed_kline_history(symbol, interval, payload)
                             ws_rows = stream.get_kline_history(symbol, interval, limit)
                             if len(ws_rows) >= int(limit):
+                                _sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)
                                 return ws_rows
                         except Exception:
                             pass
@@ -507,6 +592,7 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
             except Exception:
                 ws_rows = []
             if len(ws_rows) >= int(limit):
+                _sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)
                 return ws_rows
 
         # REST cold-start is also wave-gated. A symbol waits for its scheduler
@@ -683,6 +769,12 @@ def _fetch_strategy_data_with_mtf():
     manager = getattr(_legacy, "market_data_manager", None)
     if manager is not None and callable(getattr(manager, "claim_kline_refresh_wave", None)):
         wave = manager.claim_kline_refresh_wave()
+        _legacy.logger.info(
+            "[BYBIT-LAB-CYCLE-TRACE] wave_claim index=%s claimed=%s symbols=%s",
+            wave.get("wave_index"),
+            wave.get("claimed"),
+            wave.get("symbols"),
+        )
         _legacy._market_data_kline_refresh_symbols = set(wave.get("symbols", []) or [])
         _legacy._market_data_kline_wave = dict(wave)
     else:
@@ -694,8 +786,20 @@ def _fetch_strategy_data_with_mtf():
             "claimed": False,
         }
 
+    base_started_at = time.time()
     base = _original_fetch_strategy_data()
+    _legacy.logger.info(
+        "[BYBIT-LAB-CYCLE-TRACE] base_fetch_done elapsed=%.3fs",
+        time.time() - base_started_at,
+    )
+    mtf_started_at = time.time()
     _mtf_candles = _fetch_mtf_context()
+    _legacy.logger.info(
+        "[BYBIT-LAB-CYCLE-TRACE] mtf_fetch_done elapsed=%.3fs symbols=%d contexts=%d",
+        time.time() - mtf_started_at,
+        len(_mtf_candles),
+        sum(1 for ctx in _mtf_candles.values() if ctx),
+    )
     return base
 
 
