@@ -806,6 +806,19 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             trade_mode=mode,
         )
 
+    downstream_trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
+    if position is None:
+        _legacy.logger.warning(
+            "DOWNSTREAM ENTRY RESULT %s mode=%s risk_gateway=%s risk_reason=%s facade=%s execution=%s result=%s",
+            symbol,
+            mode,
+            downstream_trace.get("risk_gateway"),
+            downstream_trace.get("risk_reason"),
+            downstream_trace.get("facade"),
+            downstream_trace.get("execution"),
+            downstream_trace.get("result"),
+        )
+
     if position is not None:
         pre_execution_chain["final"] = {
             "approved": True,
