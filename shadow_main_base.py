@@ -30,6 +30,7 @@ from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
 from core.binance_market_stream import BinanceMarketStream
+from core.binance_snapshot_consumer import BinanceSnapshotError, hydrate_market_data_manager
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
 from core.bybit_market_stream import BybitMarketStream
 from trade_manager.core_risk_providers import KlineCorrelationProvider
@@ -122,6 +123,44 @@ _market_data_manager = MarketDataManager(
 )
 _legacy.market_data_manager = _market_data_manager
 _legacy._market_data_manager_installed = True
+
+# Optional Binance Lab warm-start from the GitHub-published market snapshot.
+# Main/MIXED remains unchanged unless the URL is explicitly configured.
+_BINANCE_MARKET_DATA_SNAPSHOT_URL = os.getenv(
+    "BINANCE_MARKET_DATA_SNAPSHOT_URL", ""
+).strip()
+try:
+    _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE = float(
+        os.getenv("BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE", "900")
+    )
+except (TypeError, ValueError):
+    _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE = 900.0
+
+if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
+    try:
+        _snapshot_result = hydrate_market_data_manager(
+            _market_data_manager,
+            _BINANCE_MARKET_DATA_SNAPSHOT_URL,
+            TRADING_SYMBOLS,
+            max_stale_seconds=max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
+        )
+        _legacy.logger.info(
+            "[BINANCE-SNAPSHOT] loaded=%s symbols=%s entries=%s age=%.1fs",
+            bool(_snapshot_result.get("loaded")),
+            _snapshot_result.get("symbols", 0),
+            _snapshot_result.get("cache_entries_written", 0),
+            float(_snapshot_result.get("age_seconds", 0.0)),
+        )
+    except BinanceSnapshotError as exc:
+        _legacy.logger.warning(
+            "[BINANCE-SNAPSHOT] rejected: %s; continuing with existing WS-only fallback",
+            exc,
+        )
+    except Exception as exc:
+        _legacy.logger.warning(
+            "[BINANCE-SNAPSHOT] load failed: %s; continuing with existing WS-only fallback",
+            exc,
+        )
 
 
 def _correlation_candle_loader(symbol: str):
