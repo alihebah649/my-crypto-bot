@@ -16,7 +16,7 @@ def test_bybit_lab_syncs_live_ws_5m_into_manager_without_persisting_each_cycle()
     )) or ""
 
     assert 'def _sync_bybit_ws_kline_manager_cache' in base
-    assert 'PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"' in source
+    assert 'PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"' in base
     assert 'row for row in ws_rows if row.get("is_closed")' in base
     assert 'fetched_at=received_at' in base
     assert 'persist=False' in base
