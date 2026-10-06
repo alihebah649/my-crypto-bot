@@ -74,6 +74,16 @@ class BybitMarketStream:
                 topics.append(f"kline.{_INTERVAL_TO_BYBIT[interval]}.{symbol}")
         return topics
 
+    @staticmethod
+    def _chunk_topics(topics: list[str], batch_size: int = 10) -> list[list[str]]:
+        size = max(1, int(batch_size))
+        return [topics[i : i + size] for i in range(0, len(topics), size)]
+
+    @property
+    def subscription_batches(self) -> list[list[str]]:
+        """Split Spot subscriptions to respect Bybit per-request topic limits."""
+        return self._chunk_topics(self.topic_names, 10)
+
     @property
     def stream_count(self) -> int:
         return len(self.topic_names)
@@ -116,14 +126,15 @@ class BybitMarketStream:
                     close_timeout=5,
                     max_size=4 * 1024 * 1024,
                 ) as websocket:
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                "op": "subscribe",
-                                "args": self.topic_names,
-                            }
+                    for topics in self.subscription_batches:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "op": "subscribe",
+                                    "args": topics,
+                                }
+                            )
                         )
-                    )
                     heartbeat_task = asyncio.create_task(self._heartbeat(websocket))
                     with self._lock:
                         self._connected = True
