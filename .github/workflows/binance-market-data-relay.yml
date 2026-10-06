@@ -29,6 +29,8 @@ jobs:
           python-version: "3.12"
 
       - name: Fetch Binance snapshot
+        env:
+          BINANCE_API_BASE: https://data-api.binance.vision
         run: python tools/binance_market_data_relay.py --output data/latest-market-data.json
 
       - name: Validate snapshot
