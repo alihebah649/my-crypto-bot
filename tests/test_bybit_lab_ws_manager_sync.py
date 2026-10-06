@@ -15,11 +15,12 @@ def test_bybit_lab_syncs_live_ws_5m_into_manager_without_persisting_each_cycle()
         if isinstance(node, ast.FunctionDef) and node.name == "_guarded_fetch_klines"
     )) or ""
 
+    assert 'def _sync_bybit_ws_kline_manager_cache' in base
     assert 'PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"' in source
-    assert 'row for row in ws_rows if row.get("is_closed")' in source
-    assert 'manager.cache.put(' in source
-    assert 'fetched_at=received_at' in source
-    assert 'persist=False' in source
+    assert 'row for row in ws_rows if row.get("is_closed")' in base
+    assert 'fetched_at=received_at' in base
+    assert 'persist=False' in base
+    assert base.count('_sync_bybit_ws_kline_manager_cache(manager, cache_key, ws_rows, stream)') >= 3
 
 
 def test_binance_lab_path_remains_ws_only_for_cold_start():
