@@ -285,6 +285,23 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     lane_capture = capture.get(lane, {}) or {}
     capture_id = lane_capture.get("capture_id")
 
+    _legacy.logger.info(
+        "BRAIN INPUTS %s mode=%s score=%s local_regime=%s market_regime=%s "
+        "confirmed_reversal=%s recovery_confirmation=%s volume_ratio_5m=%s "
+        "seller_failure_confirmed=%s higher_timeframe_bearish=%s existing_position=%s",
+        normalized,
+        lane,
+        lane_score.get("score"),
+        ((derive_market_regime(lane_score)).regime),
+        market_view.regime,
+        lane_score.get("scalp_confirmed_reversal"),
+        lane_score.get("scalp_recovery_confirmation"),
+        lane_score.get("volume_ratio_5m"),
+        lane_score.get("seller_failure_confirmed"),
+        ((derive_market_regime(lane_score)).higher_timeframe_bearish),
+        active_position,
+    )
+
     record = brain_authority.evaluate_entry(
         normalized,
         lane_score,
@@ -804,6 +821,19 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             execution_price,
             execution_stop_loss,
             trade_mode=mode,
+        )
+
+    downstream_trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
+    if position is None:
+        _legacy.logger.warning(
+            "DOWNSTREAM ENTRY RESULT %s mode=%s risk_gateway=%s risk_reason=%s facade=%s execution=%s result=%s",
+            symbol,
+            mode,
+            downstream_trace.get("risk_gateway"),
+            downstream_trace.get("risk_reason"),
+            downstream_trace.get("facade"),
+            downstream_trace.get("execution"),
+            downstream_trace.get("result"),
         )
 
     if position is not None:

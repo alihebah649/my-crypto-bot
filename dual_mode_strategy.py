@@ -206,6 +206,21 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         and str(mtf_frames.get("15m", {}).get("bias", "UNKNOWN")).upper() == "BEARISH"
     )
 
+    # Structural seller-failure is an existing multi-candle fact, not a new
+    # scoring rule. Expose it to the guarded Brain using the same 5m/15m
+    # patterns already used by Entry v2, so the Brain receives the field its
+    # BEAR/SCALP safety contract already requires.
+    seller_failure_patterns = {
+        "5C_SELLING_PRESSURE_WEAKENING",
+        "FOUR_C_BEAR_TO_BULL_REVERSAL",
+        "8C_SELL_OFF_TO_RECOVERY",
+    }
+    seller_failure_confirmed = any(
+        pattern in mtf_frames.get(timeframe, {}).get("patterns", [])
+        for timeframe in ("5m", "15m")
+        for pattern in seller_failure_patterns
+    )
+
     swing = 0
     swing_reasons = []
     if price > ema100:
@@ -410,6 +425,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
             timeframe: list(ctx.get("patterns", []))
             for timeframe, ctx in mtf_frames.items()
         },
+        "seller_failure_confirmed": seller_failure_confirmed,
         "reasons": reasons,
         "swing_reasons": swing_reasons,
         "scalp_reasons": scalp_reasons,

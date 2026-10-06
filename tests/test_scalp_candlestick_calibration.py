@@ -11,7 +11,7 @@ def candles(count: int) -> list[dict]:
     return [candle(100.0, 101.0, 99.0, 100.0, 100.0) for _ in range(count)]
 
 
-def _run(monkeypatch, pattern_result):
+def _run(monkeypatch, pattern_result, mtf_frames=None):
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 44.0)
     monkeypatch.setattr(
         dual_mode_strategy,
@@ -40,7 +40,7 @@ def _run(monkeypatch, pattern_result):
             "aligned_bullish": False,
             "higher_timeframes_bearish": False,
             "higher_timeframes_bullish": False,
-            "frames": {},
+            "frames": mtf_frames or {},
         },
     )
 
@@ -72,3 +72,35 @@ def test_unconfirmed_bullish_candlestick_plus_recovery_can_cross_scalp_threshold
     assert result["scalp_gate"] is True
     assert result["scalp_signal"] == "BUY"
     assert result["trade_mode"] == "SCALP"
+
+
+def test_seller_failure_confirmation_is_exposed_from_existing_5m_or_15m_context(monkeypatch):
+    result_5m = _run(
+        monkeypatch,
+        (False, "NEUTRAL", False),
+        {
+            "5m": {"patterns": ["5C_SELLING_PRESSURE_WEAKENING"]},
+            "15m": {"patterns": []},
+        },
+    )
+    assert result_5m["seller_failure_confirmed"] is True
+
+    result_15m = _run(
+        monkeypatch,
+        (False, "NEUTRAL", False),
+        {
+            "5m": {"patterns": []},
+            "15m": {"patterns": ["8C_SELL_OFF_TO_RECOVERY"]},
+        },
+    )
+    assert result_15m["seller_failure_confirmed"] is True
+
+    result_none = _run(
+        monkeypatch,
+        (False, "NEUTRAL", False),
+        {
+            "5m": {"patterns": ["7C_HIGHER_LOW_STRUCTURE"]},
+            "15m": {"patterns": ["7C_LOWER_HIGH_STRUCTURE"]},
+        },
+    )
+    assert result_none["seller_failure_confirmed"] is False
