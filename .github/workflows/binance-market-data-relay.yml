@@ -1,0 +1,62 @@
+name: Binance Market Data Relay
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: binance-market-data-relay
+  cancel-in-progress: true
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch Binance snapshot
+        run: python tools/binance_market_data_relay.py --output data/latest-market-data.json
+
+      - name: Validate snapshot
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("data/latest-market-data.json").read_text())
+          assert data["schema_version"] == 1
+          assert data["symbol_count"] == 22
+          assert len(data["symbols"]) == 22
+          for payload in data["symbols"].values():
+              assert set(payload["klines"]) == {"5m", "15m", "1h", "4h"}
+              assert all(payload["klines"][tf] for tf in payload["klines"])
+          print("SNAPSHOT_VALID", data["generated_at"], "symbols=", data["symbol_count"])
+          PY
+
+      - name: Publish latest snapshot as release asset
+        env:
+          GH_TOKEN: ${GITHUB_TOKEN:-${{ github.token }}}
+        run: |
+          if ! gh release view market-data --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create market-data               --repo "$GITHUB_REPOSITORY"               --title "Market Data Relay"               --notes "Latest public Binance Spot market snapshot for the Paper Trading bot."               --prerelease
+          fi
+          gh release upload market-data data/latest-market-data.json             --repo "$GITHUB_REPOSITORY"             --clobber
+
+      - name: Relay summary
+        run: |
+          python - <<'PY'
+          import json
+          d = json.load(open("data/latest-market-data.json"))
+          print(f"RELAY_PUBLISHED generated_at={d['generated_at']} symbols={d['symbol_count']}")
+          print("ASSET_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/market-data/latest-market-data.json")
+          PY
