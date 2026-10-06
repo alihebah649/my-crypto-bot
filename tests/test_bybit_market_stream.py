@@ -96,3 +96,14 @@ def test_bybit_stream_seeded_rest_history_is_exposed_to_runtime():
     rows = stream.get_kline_history("FETUSDT", "5m", 60)
     assert len(rows) == 60
     assert rows[-1]["market_data_transport"] == "REST_COLD_START"
+
+
+
+def test_bybit_spot_subscriptions_are_batched_to_ten_topics_per_request():
+    stream = BybitMarketStream(["BTCUSDT", "ETHUSDT", "SOLUSDT"], intervals=("5m", "15m", "1h", "4h"))
+    batches = stream.subscription_batches
+
+    assert len(stream.topic_names) == 15
+    assert [len(batch) for batch in batches] == [10, 5]
+    assert all(len(batch) <= 10 for batch in batches)
+    assert [topic for batch in batches for topic in batch] == stream.topic_names
