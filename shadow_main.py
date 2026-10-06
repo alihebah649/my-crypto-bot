@@ -285,6 +285,23 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     lane_capture = capture.get(lane, {}) or {}
     capture_id = lane_capture.get("capture_id")
 
+    _legacy.logger.info(
+        "BRAIN INPUTS %s mode=%s score=%s local_regime=%s market_regime=%s "
+        "confirmed_reversal=%s recovery_confirmation=%s volume_ratio_5m=%s "
+        "seller_failure_confirmed=%s higher_timeframe_bearish=%s existing_position=%s",
+        normalized,
+        lane,
+        lane_score.get("score"),
+        ((derive_market_regime(lane_score)).regime),
+        market_view.regime,
+        lane_score.get("scalp_confirmed_reversal"),
+        lane_score.get("scalp_recovery_confirmation"),
+        lane_score.get("volume_ratio_5m"),
+        lane_score.get("seller_failure_confirmed"),
+        ((derive_market_regime(lane_score)).higher_timeframe_bearish),
+        active_position,
+    )
+
     record = brain_authority.evaluate_entry(
         normalized,
         lane_score,
