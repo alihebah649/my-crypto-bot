@@ -353,7 +353,7 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
 
 def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[dict], stream) -> bool:
-    """Keep the Bybit-only manager freshness clock aligned with a healthy live WS."""
+    """Keep Bybit manager freshness aligned with the latest symbol-level WS kline observation."""
     if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB" or manager is None or not ws_rows:
         return False
     try:
@@ -362,19 +362,51 @@ def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[di
         return False
     if not bool(stream_snapshot.get("event_stream_healthy")):
         return False
-    closed_rows = [row for row in ws_rows if row.get("is_closed")]
-    reference_row = closed_rows[-1] if closed_rows else None
-    if reference_row is None:
+
+    # REST warm-up rows do not carry ``is_closed``/WS timestamps. Select the
+    # newest candle by open time, then require that the newest row is actually
+    # attributable to the live WebSocket before advancing manager freshness.
+    candidates = [
+        row for row in ws_rows
+        if isinstance(row, dict) and row.get("open_time") is not None
+    ]
+    if not candidates:
         return False
-    # A live WebSocket stream means the cached closed-candle snapshot is current
-    # to the latest completed candle, even though that candle's own received_at
-    # timestamp naturally ages for several minutes between 5m closes. Use the
-    # current healthy-stream observation time as the manager freshness clock;
-    # do not persist the heartbeat-only refresh.
+    latest_row = max(
+        candidates,
+        key=lambda row: int(row.get("open_time") or 0),
+    )
+    if str(latest_row.get("market_data_transport", "")).upper() != "WEBSOCKET":
+        return False
+
+    now = time.time()
+    is_closed = bool(latest_row.get("is_closed"))
+    if is_closed:
+        close_time = latest_row.get("close_time")
+        try:
+            close_timestamp = float(close_time) / 1000.0
+        except (TypeError, ValueError):
+            return False
+        # For a closed latest row, freshness follows the candle's completed
+        # timestamp. This avoids the PR #159 failure mode where the receive
+        # timestamp aged out after seconds even though the candle remained the
+        # correct latest completed snapshot.
+        fetched_at = min(now, close_timestamp)
+    else:
+        received_at = latest_row.get("received_at")
+        try:
+            live_age = max(0.0, now - float(received_at))
+        except (TypeError, ValueError):
+            return False
+        if live_age > float(getattr(stream, "stale_after_seconds", 30.0)):
+            return False
+        # A live current-candle WS observation is the safe heartbeat clock.
+        fetched_at = now
+
     manager.cache.put(
         cache_key,
         ws_rows,
-        fetched_at=time.time(),
+        fetched_at=fetched_at,
         persist=False,
     )
     return True
