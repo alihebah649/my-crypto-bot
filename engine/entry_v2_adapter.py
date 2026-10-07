@@ -84,6 +84,7 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         for timeframe in TIMEFRAMES
     }
     multi5 = candle_contexts["5m"]
+    multi15 = candle_contexts["15m"]
     support, pullback = _location_from_legacy(legacy)
     confirmed_reversal = bool(legacy.get("scalp_confirmed_reversal"))
 
@@ -95,7 +96,15 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         _has_pattern(multi5, "7C_HIGHER_LOW_STRUCTURE", "8C_SELL_OFF_TO_RECOVERY")
         or _has_pattern(candle_contexts["15m"], "7C_HIGHER_LOW_STRUCTURE", "8C_SELL_OFF_TO_RECOVERY")
     )
-    higher_low = _has_pattern(multi5, "7C_HIGHER_LOW_STRUCTURE")
+    # Higher-low is structural confirmation, not a 5m-only property. A
+    # confirmed 15m higher-low is sufficient to validate the setup context
+    # for a 5m reversal trigger. This prevents a valid 5m/15m reversal from
+    # being falsely rejected just because the 5m window has not printed its
+    # own higher-low yet (RENDER-style false negative observed in Paper).
+    higher_low = bool(
+        _has_pattern(multi5, "7C_HIGHER_LOW_STRUCTURE")
+        or _has_pattern(multi15, "7C_HIGHER_LOW_STRUCTURE")
+    )
     reclaim = bool(
         confirmed_reversal
         and (
@@ -160,6 +169,11 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
             "reclaim": reclaim,
             "continuation_break": continuation_break,
             "pullback_holds": pullback_holds,
+            "higher_low_timeframes": tuple(
+                timeframe
+                for timeframe, context in (("5m", multi5), ("15m", multi15))
+                if _has_pattern(context, "7C_HIGHER_LOW_STRUCTURE")
+            ),
             "new_structure_after_prior_stop": facts.new_structure_after_prior_stop,
             "multi_candle_bias": multi5.get("bias"),
             "multi_candle_strength": multi5.get("strength", 0),
