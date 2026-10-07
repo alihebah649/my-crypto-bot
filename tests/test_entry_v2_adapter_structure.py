@@ -40,12 +40,6 @@ def test_fifteen_minute_higher_low_counts_as_structural_higher_low(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr(
-        adapter,
-        "analyze_multi_candle_context",
-        lambda candles: contexts[adapter.TIMEFRAMES[list(candle_map_calls).pop(0)]],
-    )
-
     # Avoid coupling the test to the concrete candle analyzers by replacing
     # them with deterministic contexts in timeframe order.
     candle_map_calls = iter(adapter.TIMEFRAMES)
