@@ -1,4 +1,5 @@
 from core.entry_selective_gate import (
+    BEAR_RECOVERY_MIN_TRIGGERS,
     BEAR_SCALP_MIN_VOLUME_RATIO,
     RSI_PRESSURE_THRESHOLD,
     selective_entry_veto,
@@ -103,3 +104,88 @@ def test_non_matching_low_rsi_seller_rejection_stays_advisory():
     strategy = {"rsi5m": 39.0}
     shadow = _shadow(regime="TRANSITION")
     assert selective_entry_veto(strategy, shadow, trade_mode="SCALP") is None
+
+
+def test_bear_recovery_without_higher_low_is_vetoed():
+    strategy = {"rsi5m": 43.0}
+    shadow = _shadow(
+        failed_gate="STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+        regime="BEAR",
+        classification="BEAR_RECOVERY_CAUTION",
+        recovery_trigger_count=BEAR_RECOVERY_MIN_TRIGGERS,
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=1.936,
+    )
+    shadow["candle_patterns_5m"] = ("7C_LOWER_HIGH_STRUCTURE",)
+    shadow["candle_patterns_15m"] = ("7C_LOWER_HIGH_STRUCTURE",)
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+    ) == "V2_BEAR_RECOVERY_NO_STRUCTURAL_RECLAIM"
+
+
+def test_fifteen_minute_higher_low_exempts_bear_recovery_structural_veto():
+    strategy = {"rsi5m": 43.0}
+    shadow = _shadow(
+        failed_gate="STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+        regime="BEAR",
+        classification="BEAR_RECOVERY_CAUTION",
+        recovery_trigger_count=BEAR_RECOVERY_MIN_TRIGGERS,
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=3.03,
+    )
+    shadow["candle_patterns_5m"] = (
+        "FOUR_C_BEAR_TO_BULL_REVERSAL",
+        "7C_LOWER_HIGH_STRUCTURE",
+    )
+    shadow["candle_patterns_15m"] = (
+        "7C_HIGHER_LOW_STRUCTURE",
+        "7C_LOWER_HIGH_STRUCTURE",
+    )
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+    ) is None
+
+
+def test_fet_like_dual_timeframe_lower_high_keeps_seller_pressure_blocked():
+    strategy = {"rsi5m": 42.0}
+    shadow = _shadow(
+        failed_gate="SELLER_PRESSURE_NOT_INVALIDATED",
+        regime="BEAR",
+        classification="BEAR_RECOVERY_CAUTION",
+        recovery_trigger_count=3,
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=4.31,
+    )
+    shadow["candle_patterns_5m"] = (
+        "FOUR_BEARISH_SEQUENCE",
+        "7C_LOWER_HIGH_STRUCTURE",
+    )
+    shadow["candle_patterns_15m"] = ("7C_LOWER_HIGH_STRUCTURE",)
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+    ) == "V2_BEAR_SELLER_PRESSURE_DUAL_TF_LOWER_HIGH"
+
+
+def test_seller_pressure_winner_without_persistent_dual_lower_high_stays_advisory():
+    strategy = {"rsi5m": 42.0}
+    shadow = _shadow(
+        failed_gate="SELLER_PRESSURE_NOT_INVALIDATED",
+        regime="BEAR",
+        classification="BEAR_RECOVERY_CAUTION",
+        recovery_trigger_count=3,
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=1.6383,
+    )
+    shadow["candle_patterns_5m"] = ("7C_LOWER_HIGH_STRUCTURE",)
+    shadow["candle_patterns_15m"] = ("NEUTRAL",)
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+    ) is None
