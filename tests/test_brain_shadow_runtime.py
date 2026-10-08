@@ -32,6 +32,7 @@ def test_shadow_runtime_agrees_on_valid_scalp_recovery_entry():
         "scalp_score": 70,
         "scalp_confirmed_reversal": False,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
     }
 
     result = runtime.evaluate_entry("ALGOUSDT", strategy)
