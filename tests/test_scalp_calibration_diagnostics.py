@@ -11,7 +11,7 @@ def candles(count: int = 30) -> list[dict]:
     return [candle(100.0, 101.0, 99.0, 100.0, 100.0) for _ in range(count)]
 
 
-def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
+def test_fet_like_recovery_is_blocked_without_structure(monkeypatch):
     """Lock the observed calibration gap without changing production scoring."""
     monkeypatch.setattr(
         dual_mode_strategy,
@@ -59,11 +59,12 @@ def test_fet_like_recovery_is_gate_true_but_below_scalp_threshold(monkeypatch):
         candles_5m,
     )
 
-    # 15m macro support = 6, 5m near support = 16, volume = 8,
-    # recovery confirmation = 4 => 34. RSI 48.66 contributes no points.
-    assert result["scalp_gate"] is True
+    # Recovery alone is not enough: the calibrated score remains diagnostic
+    # and the entry gate requires structural confirmation.
+    assert result["scalp_gate"] is False
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
     assert result["scalp_recovery_confirmation"] is True
-    assert result["scalp_score"] == 34
+    assert result["scalp_score"] == 24
     assert result["scalp_score"] < dual_mode_strategy.SCALP_SCORE_THRESHOLD
     assert result["scalp_signal"] == "HOLD"
     assert result["trade_mode"] == "NONE"
