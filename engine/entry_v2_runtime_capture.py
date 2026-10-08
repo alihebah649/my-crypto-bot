@@ -140,6 +140,12 @@ class EntryV2RuntimeCapture:
                         metadata.setdefault("entry_v2_shadow_target_price", capture.entry_scenario.get("risk", {}).get("target_price"))
                         metadata.setdefault("entry_v2_shadow_reward_risk", capture.entry_scenario.get("risk", {}).get("reward_risk"))
                         metadata.setdefault("entry_v2_shadow_target_status", capture.entry_scenario.get("risk", {}).get("target_status"))
+                        metadata.setdefault("entry_v2_shadow_atr_stop_loss", capture.entry_scenario.get("risk", {}).get("atr_stop_loss"))
+                        metadata.setdefault("entry_v2_shadow_structural_stop_candidate", capture.entry_scenario.get("risk", {}).get("structural_stop_candidate"))
+                        metadata.setdefault("entry_v2_shadow_structural_stop_source", capture.entry_scenario.get("risk", {}).get("structural_stop_source"))
+                        metadata.setdefault("entry_v2_shadow_structural_stop_timeframe", capture.entry_scenario.get("risk", {}).get("structural_stop_timeframe"))
+                        metadata.setdefault("entry_v2_shadow_structural_stop_distance_percent", capture.entry_scenario.get("risk", {}).get("structural_stop_distance_percent"))
+                        metadata.setdefault("entry_v2_shadow_structural_stop_would_widen_current_model", capture.entry_scenario.get("risk", {}).get("structural_stop_would_widen_current_model"))
                 except Exception as exc:
                     self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["position_identity_error"] = str(exc)
                 return self._original_repository_add(position)
