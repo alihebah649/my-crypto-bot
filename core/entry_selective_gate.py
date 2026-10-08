@@ -148,19 +148,6 @@ def selective_entry_veto(
 
         if (
             lane == "SCALP"
-            and failed_gate == "SELLER_PRESSURE_NOT_INVALIDATED"
-            and adaptive_regime == "BEAR"
-            and mtf_net <= 0.0
-            and mtf_bias != "BULLISH"
-            and stop_distance_percent is not None
-            and stop_distance_percent < BEAR_RECLAIM_STOP_MAX_PERCENT
-            and persistent_lower_high
-            and not higher_low
-        ):
-            return "BEAR_SELLER_PRESSURE_TIGHT_STOP"
-
-        if (
-            lane == "SCALP"
             and failed_gate == "NO_TARGET_MEETS_RR"
             and adaptive_regime == "BEAR"
             and mtf_net <= BEAR_NO_TARGET_NET_FLOOR
