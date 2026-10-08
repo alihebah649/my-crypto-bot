@@ -74,6 +74,7 @@ def test_bear_scalp_can_buy_only_on_confirmed_countertrend_reversal():
         trade_mode="SCALP",
         scalp_score=70,
         scalp_recovery_confirmation=True,
+        scalp_structural_confirmation=True,
         volume_ratio_5m=1.35,
         seller_failure_confirmed=True,
         higher_timeframe_bearish=False,
