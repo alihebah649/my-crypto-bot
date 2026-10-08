@@ -23,6 +23,13 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
         entry_metadata={
             "trade_mode": "SCALP",
             "entry_stop_loss": 693.0,
+            "entry_economics": {
+                "approved": True,
+                "reason": "APPROVED",
+                "reward_risk": 1.5,
+                "net_reward_percent": 0.814,
+                "required_reward_risk": 1.2,
+            },
             "entry_v2_shadow_capture_id": "cap-1",
             "entry_v2_shadow_decision": {
                 "decision": "REJECT_NO_RECLAIM",
@@ -96,6 +103,8 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["holding_seconds"] == 60.0
     assert record["realized_pnl"] == 3.5
     assert record["entry_v2"]["capture_id"] == "cap-1"
+    assert record["entry_economics"]["approved"] is True
+    assert record["entry_economics"]["reward_risk"] == 1.5
     assert record["entry_v2"]["approved"] is False
     assert record["entry_v2"]["failed_gate"] == "STRUCTURAL_RECLAIM_NOT_CONFIRMED"
     assert record["brain"]["capture_id"] == "cap-1"
