@@ -87,6 +87,7 @@ def test_shadow_runtime_marks_bear_regime_and_checks_countertrend_quality():
         "scalp_score": 70,
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.4,
         "mtf_timeframe_bias": {"1h": "BEARISH", "4h": "BULLISH"},
         "mtf_weighted_bull": 40,
