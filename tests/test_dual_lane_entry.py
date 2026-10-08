@@ -156,7 +156,7 @@ def test_runtime_blocks_dual_candidate_when_any_lane_is_active(monkeypatch):
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
 
 
-def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
+def test_existing_lane_blocks_same_dual_candidate(monkeypatch):
     import shadow_main
 
     existing_scalp = SimpleNamespace(
@@ -165,18 +165,17 @@ def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
         entry_metadata={"trade_mode": "SCALP"},
     )
     monkeypatch.setattr(shadow_main.runtime.repository, "get_by_symbol", lambda symbol: [existing_scalp])
-    monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda position: None)
-
     shadow_main._legacy.latest_scores["TESTUSDT"] = {
         "scalp_signal": "BUY",
         "swing_signal": "BUY",
+        "trade_mode": "SCALP",
     }
     opened_modes = []
 
     def fake_open(symbol, entry_price, stop_loss, trade_mode):
         opened_modes.append(trade_mode)
         return SimpleNamespace(
-            position_id=f"{trade_mode.lower()}-2",
+            position_id=f"{trade_mode.lower()}-blocked",
             entry_metadata={"trade_mode": trade_mode},
             metadata={},
         )
@@ -185,12 +184,10 @@ def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
     shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
 
     try:
-        shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0)
-        assert opened_modes == ["SWING"]
+        assert shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0) is None
+        assert opened_modes == []
         trace = shadow_main.runtime.last_entry_diagnostics["TESTUSDT"]
-        assert trace["trade_modes_skipped_existing"] == ["SCALP"]
-        assert trace["trade_modes_opened"] == ["SWING"]
-        assert trace["dual_lane_entry"] is False
+        assert trace["dual_lane_duplicate_blocked"] is True
     finally:
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
