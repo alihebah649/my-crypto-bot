@@ -55,23 +55,23 @@ def _run(monkeypatch, pattern_result, mtf_frames=None):
 def test_confirmed_bullish_candlestick_pushes_strong_confluence_to_scalp_buy(monkeypatch):
     result = _run(monkeypatch, (True, "BULLISH_ENGULFING", True))
 
-    # 15m lower support = 15, RSI 44 = 10, 5m near support = 16,
-    # volume 1.20 = 15, confirmed pattern = 30, recovery = 4 => 90.
-    assert result["scalp_score"] == 90
-    assert result["scalp_gate"] is True
-    assert result["scalp_signal"] == "BUY"
-    assert result["trade_mode"] == "SCALP"
+    # Correlated support/RSI/Bollinger evidence is capped, pattern points are
+    # capped, and structure is mandatory before a SCALP entry.
+    assert result["scalp_score"] == 61
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert result["trade_mode"] == "NONE"
 
 
 def test_unconfirmed_bullish_candlestick_plus_recovery_can_cross_scalp_threshold(monkeypatch):
     result = _run(monkeypatch, (True, "MORNING_STAR", False))
 
-    # Unconfirmed patterns currently contribute +8. With the same strong
-    # confluence, this produces 68 and therefore crosses the 65-point gate.
-    assert result["scalp_score"] == 68
-    assert result["scalp_gate"] is True
-    assert result["scalp_signal"] == "BUY"
-    assert result["trade_mode"] == "SCALP"
+    # Unconfirmed pattern evidence cannot authorize the trade without
+    # independent structural confirmation.
+    assert result["scalp_score"] == 49
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert result["trade_mode"] == "NONE"
 
 
 def test_seller_failure_confirmation_is_exposed_from_existing_5m_or_15m_context(monkeypatch):

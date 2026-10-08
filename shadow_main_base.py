@@ -135,6 +135,12 @@ try:
     )
 except (TypeError, ValueError):
     _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE = 900.0
+try:
+    _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = float(
+        os.getenv("BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE", "21600")
+    )
+except (TypeError, ValueError):
+    _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = 21600.0
 
 if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
     try:
@@ -143,10 +149,16 @@ if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
             _BINANCE_MARKET_DATA_SNAPSHOT_URL,
             TRADING_SYMBOLS,
             max_stale_seconds=max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
+            bootstrap_max_stale_seconds=max(
+                max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
+                _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE,
+            ),
         )
         _legacy.logger.info(
-            "[BINANCE-SNAPSHOT] loaded=%s symbols=%s entries=%s age=%.1fs",
+            "[BINANCE-SNAPSHOT] loaded=%s bootstrap_stale=%s entry_fresh=%s symbols=%s entries=%s age=%.1fs",
             bool(_snapshot_result.get("loaded")),
+            bool(_snapshot_result.get("bootstrap_stale")),
+            bool(_snapshot_result.get("entry_fresh")),
             _snapshot_result.get("symbols", 0),
             _snapshot_result.get("cache_entries_written", 0),
             float(_snapshot_result.get("age_seconds", 0.0)),
@@ -840,6 +852,53 @@ _legacy.logger.info(
 )
 TRADING_SYMBOLS = _legacy.TRADING_SYMBOLS
 
+def _seed_binance_lab_stream_from_manager_cache(stream) -> int:
+    """Hydrate the Binance Lab WS history from the already-validated local snapshot.
+
+    The Binance Lab is intentionally REST-free. When the GitHub market snapshot
+    has been loaded into MarketDataManager, the WS runtime must consume that
+    closed history immediately instead of waiting for 60/150 closed candles to
+    arrive over WebSocket after every deploy/restart.
+    """
+    if PAPER_VENUE_MODE != "BINANCE_ONLY_LAB" or stream is None:
+        return 0
+    manager = getattr(_legacy, "market_data_manager", None)
+    cache = getattr(manager, "cache", None) if manager is not None else None
+    if cache is None:
+        return 0
+    seeded = 0
+    intervals = ("5m", "15m", "1h", "4h")
+    limits = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+    for symbol in TRADING_SYMBOLS:
+        for interval in intervals:
+            try:
+                snapshot = cache.get(f"{interval}:{symbol}:{limits[interval]}")
+                if snapshot is None or not isinstance(snapshot.payload, list):
+                    continue
+                rows = snapshot.payload
+                if len(rows) < limits[interval]:
+                    continue
+                count = stream.seed_kline_history(symbol, interval, rows)
+                if count >= limits[interval]:
+                    seeded += 1
+            except Exception as exc:
+                _legacy.logger.debug(
+                    "[BINANCE-SNAPSHOT] runtime seed skipped symbol=%s interval=%s error=%s",
+                    symbol, interval, type(exc).__name__,
+                )
+    if seeded:
+        _legacy.logger.info(
+            "[BINANCE-SNAPSHOT] runtime warm-start seeded=%d/%d series from MarketDataManager",
+            seeded, len(TRADING_SYMBOLS) * len(intervals),
+        )
+    else:
+        _legacy.logger.info(
+            "[BINANCE-SNAPSHOT] runtime warm-start seeded=0/%d series; WS history will warm normally",
+            len(TRADING_SYMBOLS) * len(intervals),
+        )
+    return seeded
+
+
 # Venue Lab WebSocket feed.
 # MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
 # Each isolated lab uses all four strategy timeframes from its own venue so
@@ -852,6 +911,8 @@ if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
         TRADING_SYMBOLS,
         intervals=_binance_ws_intervals,
     )
+    if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
+        _seed_binance_lab_stream_from_manager_cache(_binance_market_stream)
     if globals().get("_SHADOW_MAIN_EMBEDDED", False):
         _binance_market_stream.start()
     _legacy.binance_market_stream = _binance_market_stream

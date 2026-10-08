@@ -66,5 +66,6 @@ def test_rsi_display_field_is_15m_while_scalp_gate_uses_5m(monkeypatch):
     assert result["rsi5m"] == 52.40
     assert result["scalp_max_rsi"] == 55.0
     assert "5M_RSI_TOO_HIGH" not in result["scalp_gate_reasons"]
-    assert result["scalp_gate"] is True
+    assert result["scalp_gate"] is False
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
     assert calls[:2] == [149, 59]

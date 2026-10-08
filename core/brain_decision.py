@@ -41,6 +41,7 @@ class BrainDecisionEngine:
         scalp_score: Optional[float] = None,
         swing_score: Optional[float] = None,
         scalp_recovery_confirmation: bool = False,
+        scalp_structural_confirmation: bool = False,
         volume_ratio_5m: Optional[float] = None,
         seller_failure_confirmed: bool = False,
         higher_timeframe_bearish: bool = False,
@@ -82,6 +83,8 @@ class BrainDecisionEngine:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_SCALP_SCORE_BELOW_THRESHOLD")
             if not scalp_confirmed_reversal:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_NO_CONFIRMED_REVERSAL")
+            if not scalp_structural_confirmation:
+                return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_STRUCTURAL_CONFIRMATION_REQUIRED")
             if not seller_failure_confirmed:
                 return BrainDecision("HOLD", self._clamp(lane_score), "BEAR_SELLER_FAILURE_NOT_CONFIRMED")
             if volume_ratio_5m is None or float(volume_ratio_5m) < 1.0:
@@ -117,6 +120,10 @@ class BrainDecisionEngine:
                 return BrainDecision("HOLD", self._clamp(lane_score), "SCALP_SCORE_BELOW_THRESHOLD")
             if not (scalp_confirmed_reversal or scalp_recovery_confirmation):
                 return BrainDecision("HOLD", self._clamp(lane_score), "NO_CONFIRMED_REVERSAL_OR_RECOVERY")
+            if not scalp_structural_confirmation:
+                return BrainDecision("HOLD", self._clamp(lane_score), "SCALP_STRUCTURAL_CONFIRMATION_REQUIRED")
+            if not scalp_structural_confirmation:
+                return BrainDecision("HOLD", self._clamp(lane_score), "SCALP_STRUCTURAL_CONFIRMATION_REQUIRED")
         elif mode == "SWING":
             lane_score = swing_score if swing_score is not None else score
             if lane_score < self.min_entry_score:

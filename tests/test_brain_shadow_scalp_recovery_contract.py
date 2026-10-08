@@ -9,6 +9,7 @@ def test_brain_accepts_scalp_recovery_at_65_without_pattern():
         trade_mode="SCALP",
         scalp_confirmed_reversal=False,
         scalp_recovery_confirmation=True,
+        scalp_structural_confirmation=True,
     )
     assert decision.action == "BUY"
     assert decision.reason == "SCALP_RECOVERY_CONFIRMED"

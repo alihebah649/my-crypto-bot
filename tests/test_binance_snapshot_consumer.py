@@ -70,6 +70,33 @@ def test_hydrates_cache_with_expected_limits(monkeypatch, tmp_path: Path) -> Non
     assert manager.cache.get("ticker:BTCUSDT").payload["symbol"] == "BTCUSDT"
 
 
+
+def test_accepts_bounded_stale_snapshot_as_bootstrap(monkeypatch, tmp_path: Path) -> None:
+    now = time.time()
+    snapshot = _snapshot(int((now - 5 * 3600) * 1000))
+    monkeypatch.setattr(
+        "core.binance_snapshot_consumer._fetch_json",
+        lambda url, timeout: snapshot,
+    )
+    manager = MarketDataManager(
+        PersistentMarketDataCache(tmp_path / "cache.json"),
+        ticker_symbols=SYMBOLS,
+    )
+
+    result = hydrate_market_data_manager(
+        manager,
+        "https://example.invalid/latest.json",
+        SYMBOLS,
+        now=now,
+        max_stale_seconds=900,
+        bootstrap_max_stale_seconds=21600,
+    )
+
+    assert result["loaded"] is True
+    assert result["bootstrap_stale"] is True
+    assert result["entry_fresh"] is False
+    assert len(manager.cache.get("5m:BTCUSDT:60").payload) == 60
+
 def test_rejects_stale_snapshot(monkeypatch, tmp_path: Path) -> None:
     now = time.time()
     snapshot = _snapshot(int(now * 1000) - 901_000)
@@ -88,6 +115,8 @@ def test_rejects_stale_snapshot(monkeypatch, tmp_path: Path) -> None:
             "https://example.invalid/latest.json",
             SYMBOLS,
             now=now,
+            max_stale_seconds=900,
+            bootstrap_max_stale_seconds=900,
         )
 
 

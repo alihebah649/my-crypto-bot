@@ -17,6 +17,12 @@ SCALP_MAX_RSI = 55.0
 SCALP_RSI_RISE_MIN = 1.5
 SCALP_RECOVERY_TRIGGER_MIN = 2
 SCALP_RECOVERY_POINTS = 4
+# SCALP score is deliberately calibrated by evidence families rather than
+# allowing correlated support/RSI/Bollinger signals to stack into false
+# confidence. The public threshold remains exactly 65.
+SCALP_REVERSION_FAMILY_MAX = 22
+SCALP_PATTERN_POINTS_MAX = 20
+SCALP_STRUCTURAL_BONUS = 4
 
 
 def _closed_candles(candles, captured_at=None):
@@ -150,6 +156,66 @@ def _scalp_recovery_confirmation(candles, current_rsi):
     return count >= SCALP_RECOVERY_TRIGGER_MIN, count, reasons
 
 
+def _scalp_structural_confirmation(candles_5m, candles_15m, mtf, *, confirmed_reversal, seller_failure_confirmed):
+    """Require multi-candle structure before a 5m bounce becomes a SCALP entry.
+
+    A single bullish candle can be a dead-cat bounce. Structural evidence is
+    intentionally narrow: a higher-low on 5m/15m, a confirmed 5m reclaim with
+    seller-failure while the 15m frame is not bearish, or a two-candle reclaim
+    above the prior two-bar highs in a non-bearish 5m/15m context.
+    """
+    frames = mtf.get("frames", {}) if isinstance(mtf, dict) else {}
+    frame5 = frames.get("5m", {}) or {}
+    frame15 = frames.get("15m", {}) or {}
+    patterns5 = {str(x).upper() for x in frame5.get("patterns", [])}
+    patterns15 = {str(x).upper() for x in frame15.get("patterns", [])}
+    higher_low = (
+        "7C_HIGHER_LOW_STRUCTURE" in patterns5
+        or "7C_HIGHER_LOW_STRUCTURE" in patterns15
+    )
+    five_bias = str(frame5.get("bias", "UNKNOWN")).upper()
+    fifteen_bias = str(frame15.get("bias", "UNKNOWN")).upper()
+    two_candle_reclaim = False
+    if len(candles_5m) >= 3:
+        current = candles_5m[-1]
+        previous = candles_5m[-2]
+        previous2 = candles_5m[-3]
+        two_candle_reclaim = bool(
+            float(current.get("close", 0.0)) > max(
+                float(previous.get("high", 0.0)),
+                float(previous2.get("high", 0.0)),
+            )
+            and float(current.get("close", 0.0)) > float(current.get("open", 0.0))
+            and float(previous.get("close", 0.0)) >= float(previous2.get("close", 0.0))
+        )
+
+    non_bearish_setup = fifteen_bias in {"BULLISH", "NEUTRAL", "UNKNOWN"}
+    reclaim_with_seller_failure = bool(
+        confirmed_reversal
+        and seller_failure_confirmed
+        and five_bias == "BULLISH"
+        and non_bearish_setup
+    )
+    structural = bool(
+        (confirmed_reversal and higher_low)
+        or reclaim_with_seller_failure
+        or (two_candle_reclaim and five_bias == "BULLISH" and non_bearish_setup)
+    )
+    return {
+        "confirmed": structural,
+        "higher_low": higher_low,
+        "two_candle_reclaim": two_candle_reclaim,
+        "seller_failure": bool(seller_failure_confirmed),
+        "five_m_bias": five_bias,
+        "fifteen_m_bias": fifteen_bias,
+        "higher_low_timeframes": tuple(
+            timeframe
+            for timeframe, patterns in (("5m", patterns5), ("15m", patterns15))
+            if "7C_HIGHER_LOW_STRUCTURE" in patterns
+        ),
+    }
+
+
 def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candles_4h=None):
     """Score one symbol while preserving the original four-argument contract.
 
@@ -221,6 +287,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         for pattern in seller_failure_patterns
     )
 
+    # --- Swing lane (unchanged threshold semantics) -----------------------
     swing = 0
     swing_reasons = []
     if price > ema100:
@@ -263,57 +330,78 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         swing_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
     swing = min(swing, 100)
 
+    # --- Scalp lane: independent evidence families ------------------------
     macro_points, macro_reason = _macro_support(price, lo15, mid15)
-    scalp = macro_points
     scalp_reasons = [macro_reason] if macro_reason else []
     if r5 <= 25:
-        scalp += 20
+        rsi_points = 20
         scalp_reasons.append("5M_RSI_DEEP_OVERSOLD")
     elif r5 <= 35:
-        scalp += 16
+        rsi_points = 16
         scalp_reasons.append("5M_RSI_OVERSOLD")
     elif r5 <= 45:
-        scalp += 10
+        rsi_points = 10
         scalp_reasons.append("5M_RSI_RECOVERY_ZONE")
+    else:
+        rsi_points = 0
+
+    bb5_points = 0
     if lo5 > 0:
         dist = (price - lo5) / price
         if price <= lo5:
-            scalp += 20
+            bb5_points = 20
             scalp_reasons.append("5M_BOLLINGER_LOWER_SUPPORT")
         elif dist <= 0.005:
-            scalp += 16
+            bb5_points = 16
             scalp_reasons.append("5M_BOLLINGER_NEAR_SUPPORT")
         elif price <= mid5:
-            scalp += 8
+            bb5_points = 8
             scalp_reasons.append("5M_BOLLINGER_LOWER_HALF")
+
     if v5 >= 1.20:
-        scalp += 15
+        volume_points = 15
         scalp_reasons.append("5M_VOLUME_CONFIRMATION")
     elif v5 >= 1.05:
-        scalp += 8
+        volume_points = 8
         scalp_reasons.append("5M_VOLUME_RISING")
     elif v5 >= SCALP_MIN_VOLUME_RATIO:
-        scalp += 3
+        volume_points = 3
         scalp_reasons.append("5M_VOLUME_ACCEPTABLE")
+    else:
+        volume_points = 0
+
     if found and confirmed:
-        scalp += 30
+        pattern_points = SCALP_PATTERN_POINTS_MAX
         scalp_reasons.append(f"5M_{name}_CONFIRMED")
     elif found:
-        scalp += 8
+        pattern_points = 8
         scalp_reasons.append(f"5M_{name}")
+    else:
+        pattern_points = 0
 
-    # Recovery is a scoring component, not only a gate condition. This is a
-    # deliberately small bonus: the 65-point scalp threshold stays unchanged,
-    # while a confirmed recovery can complete an otherwise valid scalp setup.
     recovery_confirmation, recovery_trigger_count, recovery_trigger_reasons = _scalp_recovery_confirmation(c5, r5)
     if recovery_confirmation:
-        scalp += SCALP_RECOVERY_POINTS
         scalp_reasons.append(f"5M_RECOVERY_CONFIRMATION_+{SCALP_RECOVERY_POINTS}")
 
-    # Multi-timeframe context is deliberately a light adjustment, not a new
-    # score lane. This preserves the 65-point Scalp identity while rewarding
-    # aligned higher-timeframe structure and penalizing the riskiest setup:
-    # a weak 5m recovery against bearish 15m + 1h + 4h structure.
+    structural = _scalp_structural_confirmation(
+        c5,
+        c15,
+        mtf,
+        confirmed_reversal=bool(found and confirmed),
+        seller_failure_confirmed=seller_failure_confirmed,
+    )
+
+    # 15m/5m location, Bollinger position, and RSI are strongly correlated
+    # descriptions of the same mean-reversion setup. Cap the whole family so
+    # it cannot manufacture a 90+ score without independent evidence.
+    reversion_raw = max(macro_points, bb5_points) + rsi_points
+    reversion_points = min(SCALP_REVERSION_FAMILY_MAX, reversion_raw)
+    scalp = reversion_points + volume_points + pattern_points
+    if recovery_confirmation:
+        scalp += SCALP_RECOVERY_POINTS
+    if structural["confirmed"]:
+        scalp += SCALP_STRUCTURAL_BONUS
+        scalp_reasons.append("SCALP_STRUCTURAL_CONFIRMATION")
     if mtf_bullish:
         scalp += 4
         scalp_reasons.append("MTF_HIGHER_TIMEFRAME_ALIGNMENT")
@@ -322,23 +410,36 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         scalp_reasons.append("MTF_COUNTERTREND_WARNING")
     scalp = max(0, min(scalp, 100))
 
+    # Raw score remains diagnostic so historical comparisons can distinguish
+    # score-calibration effects from the actual entry-quality score.
+    scalp_raw = macro_points + rsi_points + bb5_points + volume_points + pattern_points
+    if recovery_confirmation:
+        scalp_raw += SCALP_RECOVERY_POINTS
+    if structural["confirmed"]:
+        scalp_raw += SCALP_STRUCTURAL_BONUS
+    if mtf_bullish:
+        scalp_raw += 4
+    elif mtf_bearish:
+        scalp_raw -= 8
+    scalp_raw = max(0, min(scalp_raw, 100))
+
     confirmed_reversal = bool(found and confirmed)
     high_confidence_recovery = bool(
         scalp >= SCALP_SCORE_THRESHOLD
         and r5 <= 45.0
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and recovery_confirmation
+        and structural["confirmed"]
         and not mtf_bearish
     )
 
-    # Do not let a single confirmed 5m reversal bypass a fully bearish
-    # 15m/1h/4h stack. Outside that stack, the normal 5m scalp lane is unchanged.
     mtf_countertrend_veto = bool(mtf_strong_bearish_stack)
     gate = bool(
         macro_points > 0
         and r5 <= SCALP_MAX_RSI
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and (confirmed_reversal or recovery_confirmation)
+        and structural["confirmed"]
         and not mtf_countertrend_veto
     )
 
@@ -360,6 +461,8 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         gate_reasons.extend(recovery_trigger_reasons)
     else:
         gate_reasons.append("SCALP_CONTEXT_ONLY_NO_RECOVERY_TRIGGER")
+    if not structural["confirmed"]:
+        gate_reasons.append("SCALP_STRUCTURE_NOT_CONFIRMED")
 
     scalp_signal = "BUY" if scalp >= SCALP_SCORE_THRESHOLD and gate else "HOLD"
     swing_signal = "BUY" if swing >= SWING_SCORE_THRESHOLD else "HOLD"
@@ -376,7 +479,6 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         mode = "NONE"
         selected = max(scalp, swing)
         reasons = scalp_reasons if scalp >= swing else swing_reasons
-
     frame_bias = {
         timeframe: str(ctx.get("bias", "UNKNOWN"))
         for timeframe, ctx in mtf_frames.items()
@@ -408,6 +510,15 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "scalp_rsi_rise_min": SCALP_RSI_RISE_MIN,
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
         "scalp_recovery_points": SCALP_RECOVERY_POINTS,
+        "scalp_score_raw": scalp_raw,
+        "scalp_reversion_family_points": reversion_points,
+        "scalp_structural_confirmation": structural["confirmed"],
+        "scalp_structural_higher_low": structural["higher_low"],
+        "scalp_structural_two_candle_reclaim": structural["two_candle_reclaim"],
+        "scalp_structural_seller_failure": structural["seller_failure"],
+        "scalp_structural_five_m_bias": structural["five_m_bias"],
+        "scalp_structural_fifteen_m_bias": structural["fifteen_m_bias"],
+        "scalp_structural_higher_low_timeframes": structural["higher_low_timeframes"],
         "mtf_context_available": bool(mtf.get("available")),
         "mtf_bias": str(mtf.get("bias", "UNKNOWN")),
         "mtf_net": int(mtf.get("net", 0) or 0),

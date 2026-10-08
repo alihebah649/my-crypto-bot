@@ -32,6 +32,7 @@ def test_shadow_runtime_agrees_on_valid_scalp_recovery_entry():
         "scalp_score": 70,
         "scalp_confirmed_reversal": False,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
     }
 
     result = runtime.evaluate_entry("ALGOUSDT", strategy)
@@ -50,6 +51,7 @@ def test_shadow_runtime_agrees_on_strong_confirmed_entry():
         "trade_mode": "SCALP",
         "scalp_score": 91,
         "scalp_confirmed_reversal": True,
+        "scalp_structural_confirmation": True,
     }
 
     result = runtime.evaluate_entry("BTCUSDT", strategy)
@@ -85,6 +87,7 @@ def test_shadow_runtime_marks_bear_regime_and_checks_countertrend_quality():
         "scalp_score": 70,
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.4,
         "mtf_timeframe_bias": {"1h": "BEARISH", "4h": "BULLISH"},
         "mtf_weighted_bull": 40,

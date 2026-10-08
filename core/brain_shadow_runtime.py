@@ -113,6 +113,7 @@ class BrainShadowRuntime:
             signal=strategy_action,
             scalp_confirmed_reversal=bool(strategy.get("scalp_confirmed_reversal", False)),
             scalp_recovery_confirmation=bool(strategy.get("scalp_recovery_confirmation", False)),
+            scalp_structural_confirmation=bool(strategy.get("scalp_structural_confirmation", False)),
             scalp_score=float(scalp_score) if scalp_score is not None else None,
             swing_score=float(swing_score) if swing_score is not None else None,
             trade_mode=mode,
