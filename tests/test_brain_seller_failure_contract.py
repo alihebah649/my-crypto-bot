@@ -11,6 +11,7 @@ def _strategy(*, seller_failure_confirmed: bool) -> dict:
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.20,
         "seller_failure_confirmed": seller_failure_confirmed,
         "mtf_net": -1.0,
