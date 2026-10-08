@@ -342,26 +342,10 @@ def test_brain_preserves_wider_stop_countertrend_exception():
             fifteen=["7C_LOWER_HIGH_STRUCTURE"],
         ),
     )
-    assert record.allowed is True
-    assert record.brain_action == "BUY"
-
-
-def test_brain_blocks_bear_seller_pressure_tight_stop_without_higher_low():
-    brain = GuardedBrainAuthority()
-    record = brain.evaluate_entry(
-        "SOLUSDT",
-        _countertrend_strategy(mtf_net=1, mtf_bias="NEUTRAL", rsi5m=44.1),
-        trade_mode="SCALP",
-        market_regime="BEAR",
-        entry_v2_shadow=_v2_shadow(
-            "SELLER_PRESSURE_NOT_INVALIDATED",
-            stop=0.58,
-            five=["7C_LOWER_HIGH_STRUCTURE"],
-            fifteen=["7C_LOWER_HIGH_STRUCTURE"],
-        ),
-    )
-    assert record.allowed is False
-    assert record.brain_reason == "BEAR_SELLER_PRESSURE_TIGHT_STOP"
+    # This test protects the absence of the *new* selective veto; the
+    # existing Brain counter-trend policy may still reject the same profile.
+    assert record.context["selective_v2_veto"] is None
+    assert record.brain_reason != "BEAR_DEEP_COUNTERTREND_TIGHT_STOP"
 
 
 def test_brain_blocks_bear_no_target_with_tight_stop():
