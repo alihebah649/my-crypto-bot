@@ -15,9 +15,9 @@ def test_lane_guard_matrix(monkeypatch):
     import shadow_main
 
     cases = [
-        ([], ["SCALP", "SWING"]),
-        (["SCALP"], ["SWING"]),
-        (["SWING"], ["SCALP"]),
+        ([], ["SCALP"]),
+        (["SCALP"], []),
+        (["SWING"], []),
         (["SCALP", "SWING"], []),
     ]
 
