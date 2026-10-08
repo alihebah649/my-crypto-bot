@@ -168,6 +168,7 @@ def build_paper_outcome_evidence(
             getattr(position, "close_reason", None),
         ),
         "entry_decision_chain": _safe(entry_decision_chain) if isinstance(entry_decision_chain, Mapping) else None,
+        "entry_economics": _safe(entry_metadata.get("entry_economics")),
         "entry_v2": {
             "capture_id": entry_metadata.get("entry_v2_shadow_capture_id"),
             "decision": v2.get("decision"),
