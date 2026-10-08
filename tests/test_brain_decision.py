@@ -148,6 +148,7 @@ def test_local_bear_scalp_can_buy_only_with_structural_confirmation():
         trade_mode="SCALP",
         scalp_score=71,
         scalp_recovery_confirmation=True,
+        scalp_structural_confirmation=True,
         volume_ratio_5m=1.25,
         seller_failure_confirmed=True,
         higher_timeframe_bearish=False,
