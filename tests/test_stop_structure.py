@@ -16,3 +16,41 @@ def test_no_closed_pivot_returns_none():
     result=calculate_structural_stop_candidate(trade_mode="SCALP",entry_price=10.0,candles_by_timeframe={"5m":[{"low":9.5,"high":10.1}],"15m":[]})
     assert result.price is None
     assert result.source is None
+
+
+def test_entry_v2_passes_raw_candles_to_structural_stop(monkeypatch):
+    from engine.entry_v2_adapter import EntryV2MarketFacts, build_entry_scenario
+    from engine.stop_structure import StructuralStopCandidate
+
+    seen = {}
+
+    def spy(*, trade_mode, entry_price, candles_by_timeframe):
+        seen.update({tf: len(candles) for tf, candles in candles_by_timeframe.items()})
+        return StructuralStopCandidate(trade_mode, 9.0, "5m_PIVOT_LOW", "5m", 2)
+
+    monkeypatch.setattr(
+        "engine.entry_v2_adapter.calculate_structural_stop_candidate",
+        spy,
+    )
+
+    candles = [
+        {"open": 10.0, "high": 10.4, "low": 9.8, "close": 10.2}
+        for _ in range(7)
+    ]
+    facts = EntryV2MarketFacts(
+        legacy_result={
+            "trade_mode": "SCALP",
+            "price": 10.0,
+            "atr": 0.5,
+            "scalp_confirmed_reversal": False,
+            "scalp_recovery_confirmation": False,
+            "scalp_reasons": [],
+        },
+        candles_5m=candles,
+        candles_15m=candles,
+    )
+
+    build_entry_scenario(facts)
+
+    assert seen["5m"] == len(candles)
+    assert seen["15m"] == len(candles)
