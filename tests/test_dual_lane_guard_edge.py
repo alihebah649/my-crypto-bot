@@ -21,9 +21,9 @@ def test_dual_lane_guard_must_not_allow_duplicate_of_existing_lane(monkeypatch):
         "swing_signal": "BUY",
     }
     try:
-        # The opposite SWING lane is available, but the already-open SCALP
-        # lane must remain blocked. The production orchestration must therefore
-        # open only SWING in this situation.
+        # Both lanes come from the same current observation. With any active
+        # lane already present, the production orchestration blocks the entire
+        # dual candidate rather than stacking the opposite lane.
         assert shadow_main._lane_aware_has_position("TESTUSDT") is False
 
         opened_modes = []
@@ -40,7 +40,7 @@ def test_dual_lane_guard_must_not_allow_duplicate_of_existing_lane(monkeypatch):
         monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda position: None)
         shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0)
 
-        assert opened_modes == ["SWING"]
+        assert opened_modes == []
     finally:
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)

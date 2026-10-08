@@ -13,6 +13,7 @@ from core.paper_risk_overlay import (
     profit_protection_snapshot,
     profit_protection_trigger,
     strong_bullish_btc_exception,
+    paper_entry_economics,
 )
 
 
@@ -83,3 +84,59 @@ def test_btc_crash_exception_is_narrow():
     assert strong_bullish_btc_exception(strong)
     assert not strong_bullish_btc_exception(weak_score)
     assert not strong_bullish_btc_exception(no_mtf)
+
+
+def test_paper_entry_economics_rejects_missing_target():
+    result = paper_entry_economics(
+        trade_mode="SCALP",
+        entry_price=100.0,
+        stop_loss=99.4,
+        target_price=None,
+        target_status="NO_TARGET_MEETS_RR",
+        reward_risk=None,
+        fee_rate=0.001,
+    )
+    assert result["approved"] is False
+    assert result["reason"] == "NO_VALID_TARGET"
+
+
+def test_paper_entry_economics_rejects_low_rr():
+    result = paper_entry_economics(
+        trade_mode="SCALP",
+        entry_price=100.0,
+        stop_loss=99.4,
+        target_price=100.6849,
+        target_status="VALID",
+        reward_risk=1.1415,
+        fee_rate=0.001,
+    )
+    assert result["approved"] is False
+    assert result["reason"] == "REWARD_RISK_TOO_LOW"
+
+
+def test_paper_entry_economics_preserves_near_like_winner():
+    result = paper_entry_economics(
+        trade_mode="SCALP",
+        entry_price=5.0,
+        stop_loss=4.8807,
+        target_price=5.1486,
+        target_status="VALID",
+        reward_risk=1.2445,
+        fee_rate=0.001,
+    )
+    assert result["approved"] is True
+    assert result["net_reward_percent"] > 0.20
+
+
+def test_paper_entry_economics_rejects_fee_thin_target():
+    result = paper_entry_economics(
+        trade_mode="SCALP",
+        entry_price=100.0,
+        stop_loss=99.9,
+        target_price=100.39,
+        target_status="VALID",
+        reward_risk=3.9,
+        fee_rate=0.001,
+    )
+    assert result["approved"] is False
+    assert result["reason"] == "NET_REWARD_AFTER_FEES_TOO_LOW"

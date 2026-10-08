@@ -14,6 +14,102 @@ PROFIT_PROTECTION_MIN_GAIN_PERCENT = float(os.getenv("PAPER_PROFIT_PROTECTION_MI
 PROFIT_PROTECTION_MIN_RETRACE_PERCENT = float(os.getenv("PAPER_PROFIT_PROTECTION_MIN_RETRACE_PERCENT", "0.35"))
 BTC_RECOVERY_MAX_DRAWDOWN_PERCENT = 1.20
 
+PAPER_SCALP_MIN_REWARD_RISK = float(os.getenv("PAPER_SCALP_MIN_REWARD_RISK", "1.20"))
+PAPER_SWING_MIN_REWARD_RISK = float(os.getenv("PAPER_SWING_MIN_REWARD_RISK", "1.50"))
+PAPER_MIN_NET_REWARD_PERCENT = float(os.getenv("PAPER_MIN_NET_REWARD_PERCENT", "0.20"))
+PAPER_DEFAULT_FEE_RATE = float(os.getenv("PAPER_DEFAULT_FEE_RATE", "0.001"))
+
+
+def paper_entry_economics(
+    *,
+    trade_mode: str,
+    entry_price: float,
+    stop_loss: float,
+    target_price: float | None,
+    target_status: str | None,
+    reward_risk: float | None,
+    fee_rate: float = PAPER_DEFAULT_FEE_RATE,
+) -> dict[str, Any]:
+    """Selective Paper-only entry economics check using current target evidence."""
+    mode = str(trade_mode or "").upper()
+    required_rr = (
+        PAPER_SCALP_MIN_REWARD_RISK
+        if mode == "SCALP"
+        else PAPER_SWING_MIN_REWARD_RISK
+        if mode == "SWING"
+        else max(PAPER_SCALP_MIN_REWARD_RISK, PAPER_SWING_MIN_REWARD_RISK)
+    )
+    entry = float(entry_price or 0.0)
+    stop = float(stop_loss or 0.0)
+    target = float(target_price or 0.0)
+    fee = max(0.0, float(fee_rate or 0.0))
+    round_trip_fee_percent = fee * 2.0 * 100.0
+
+    result = {
+        "available": bool(target_status is not None or reward_risk is not None or target > 0.0),
+        "trade_mode": mode,
+        "entry_price": entry,
+        "stop_loss": stop,
+        "target_price": target if target > 0.0 else None,
+        "target_status": str(target_status or ""),
+        "reward_risk": float(reward_risk) if reward_risk is not None else None,
+        "required_reward_risk": required_rr,
+        "round_trip_fee_percent": round_trip_fee_percent,
+        "minimum_net_reward_percent": PAPER_MIN_NET_REWARD_PERCENT,
+    }
+
+    # Entry v2 remains advisory: if no target evidence is available, record a
+    # bypass rather than inventing a target or vetoing a Legacy entry.
+    if not result["available"]:
+        result.update({
+            "approved": True,
+            "reason": "TARGET_DATA_UNAVAILABLE",
+            "net_reward_percent": None,
+        })
+        return result
+
+    if entry <= 0.0 or stop <= 0.0 or stop >= entry:
+        result.update({
+            "approved": False,
+            "reason": "INVALID_STOP_DISTANCE",
+            "net_reward_percent": None,
+        })
+        return result
+
+    risk_percent = (entry - stop) / entry * 100.0
+    if target <= entry or str(target_status or "").upper() != "VALID":
+        result.update({
+            "approved": False,
+            "reason": "NO_VALID_TARGET",
+            "risk_percent": risk_percent,
+            "gross_reward_percent": max(0.0, (target - entry) / entry * 100.0) if target > 0.0 else 0.0,
+            "net_reward_percent": None,
+        })
+        return result
+
+    gross_reward_percent = (target - entry) / entry * 100.0
+    computed_rr = (target - entry) / (entry - stop)
+    rr = computed_rr if reward_risk is None else float(reward_risk)
+    net_reward_percent = gross_reward_percent - round_trip_fee_percent
+    result.update({
+        "risk_percent": risk_percent,
+        "gross_reward_percent": gross_reward_percent,
+        "net_reward_percent": net_reward_percent,
+        "computed_reward_risk": computed_rr,
+        "reward_risk": rr,
+    })
+
+    if rr < required_rr:
+        result.update({"approved": False, "reason": "REWARD_RISK_TOO_LOW"})
+        return result
+    if net_reward_percent < PAPER_MIN_NET_REWARD_PERCENT:
+        result.update({"approved": False, "reason": "NET_REWARD_AFTER_FEES_TOO_LOW"})
+        return result
+
+    result.update({"approved": True, "reason": "APPROVED"})
+    return result
+
+
 
 def loss_cooldown_remaining(positions: Iterable[Any], symbol: str, *, now: float, cooldown_seconds: float = REENTRY_COOLDOWN_SECONDS) -> float:
     target = str(symbol).upper()

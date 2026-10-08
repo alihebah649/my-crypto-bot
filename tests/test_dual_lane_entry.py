@@ -79,7 +79,7 @@ def test_same_lane_is_still_blocked(monkeypatch):
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
 
 
-def test_runtime_opens_both_qualified_lanes(monkeypatch):
+def test_runtime_resolves_dual_candidate_to_selected_lane_only(monkeypatch):
     import shadow_main
 
     shadow_main._legacy.latest_scores["TESTUSDT"] = {
@@ -104,30 +104,33 @@ def test_runtime_opens_both_qualified_lanes(monkeypatch):
     try:
         position = shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0)
         assert position is not None
-        assert opened_modes == ["SCALP", "SWING"]
+        assert opened_modes == ["SCALP"]
         trace = shadow_main.runtime.last_entry_diagnostics["TESTUSDT"]
-        assert trace["trade_modes_requested"] == ["SCALP", "SWING"]
-        assert trace["trade_modes_opened"] == ["SCALP", "SWING"]
-        assert trace["dual_lane_entry"] is True
+        assert trace["dual_lane_candidate"] is True
+        assert trace["dual_lane_resolution"] == "SCALP"
+        assert trace["dual_lane_duplicate_blocked"] is False
+        assert trace["trade_modes_opened"] == ["SCALP"]
+        assert trace["dual_lane_entry"] is False
     finally:
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
 
 
-def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
+def test_runtime_blocks_dual_candidate_when_any_lane_is_active(monkeypatch):
     import shadow_main
 
-    existing_scalp = SimpleNamespace(
+    existing_swing = SimpleNamespace(
         symbol="TESTUSDT",
         status=SimpleNamespace(name="OPEN"),
-        entry_metadata={"trade_mode": "SCALP"},
+        entry_metadata={"trade_mode": "SWING"},
     )
-    monkeypatch.setattr(shadow_main.runtime.repository, "get_by_symbol", lambda symbol: [existing_scalp])
+    monkeypatch.setattr(shadow_main.runtime.repository, "get_by_symbol", lambda symbol: [existing_swing])
     monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda position: None)
 
     shadow_main._legacy.latest_scores["TESTUSDT"] = {
         "scalp_signal": "BUY",
         "swing_signal": "BUY",
+        "trade_mode": "SCALP",
     }
     opened_modes = []
 
@@ -143,12 +146,48 @@ def test_existing_lane_is_skipped_when_both_signals_qualify(monkeypatch):
     shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
 
     try:
-        shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0)
-        assert opened_modes == ["SWING"]
+        assert shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0) is None
+        assert opened_modes == []
         trace = shadow_main.runtime.last_entry_diagnostics["TESTUSDT"]
-        assert trace["trade_modes_skipped_existing"] == ["SCALP"]
-        assert trace["trade_modes_opened"] == ["SWING"]
-        assert trace["dual_lane_entry"] is False
+        assert trace["dual_lane_duplicate_blocked"] is True
+        assert trace["dual_lane_duplicate_reason"] == "SAME_UNDERLYING_SIGNAL_ALREADY_ACTIVE"
+    finally:
+        shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
+        shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
+
+
+def test_existing_lane_blocks_same_dual_candidate(monkeypatch):
+    import shadow_main
+
+    existing_scalp = SimpleNamespace(
+        symbol="TESTUSDT",
+        status=SimpleNamespace(name="OPEN"),
+        entry_metadata={"trade_mode": "SCALP"},
+    )
+    monkeypatch.setattr(shadow_main.runtime.repository, "get_by_symbol", lambda symbol: [existing_scalp])
+    shadow_main._legacy.latest_scores["TESTUSDT"] = {
+        "scalp_signal": "BUY",
+        "swing_signal": "BUY",
+        "trade_mode": "SCALP",
+    }
+    opened_modes = []
+
+    def fake_open(symbol, entry_price, stop_loss, trade_mode):
+        opened_modes.append(trade_mode)
+        return SimpleNamespace(
+            position_id=f"{trade_mode.lower()}-blocked",
+            entry_metadata={"trade_mode": trade_mode},
+            metadata={},
+        )
+
+    monkeypatch.setattr(shadow_main, "_original_runtime_open_position", fake_open)
+    shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
+
+    try:
+        assert shadow_main._open_position_with_selected_mode("TESTUSDT", 100.0, 98.0) is None
+        assert opened_modes == []
+        trace = shadow_main.runtime.last_entry_diagnostics["TESTUSDT"]
+        assert trace["dual_lane_duplicate_blocked"] is True
     finally:
         shadow_main._legacy.latest_scores.pop("TESTUSDT", None)
         shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)

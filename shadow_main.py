@@ -55,6 +55,7 @@ from core.paper_risk_overlay import (
     strong_bullish_btc_exception,
     btc_recovery_eligible,
     btc_recovery_stop,
+    paper_entry_economics,
 )
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
@@ -665,6 +666,52 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate=str(failed))
         return None
 
+    # Entry v2 remains advisory, but live Paper execution must not knowingly
+    # enter a candidate whose current structural target cannot cover the
+    # documented RR and round-trip fee floor.
+    trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
+    lane_capture = (
+        (trace.get("entry_v2_shadow_by_mode", {}) or {}).get(str(mode).upper(), {})
+        or {}
+    )
+    fee_rate = float(
+        getattr(getattr(runtime, "execution_adapter", None), "fee_rate", 0.001)
+        or 0.001
+    )
+    economics = paper_entry_economics(
+        trade_mode=mode,
+        entry_price=float(entry_price),
+        stop_loss=float(stop_loss),
+        target_price=lane_capture.get("target_price"),
+        target_status=lane_capture.get("target_status"),
+        reward_risk=lane_capture.get("reward_risk"),
+        fee_rate=fee_rate,
+    )
+    trace["entry_economics"] = economics
+    if not economics.get("approved", True):
+        failed = f"PAPER_ENTRY_ECONOMICS:{economics.get('reason', 'REJECTED')}"
+        trace.update({
+            "result": "REJECTED_ENTRY_ECONOMICS",
+            "trade_mode": mode,
+            "execution": "NOT_RUN",
+            "entry_economics_rejection_reason": economics.get("reason"),
+        })
+        _record_chain(
+            final_approved=False,
+            execution_attempted=False,
+            position_opened=False,
+            failed_gate=failed,
+        )
+        _legacy.logger.info(
+            "ENTRY BLOCKED %s: paper entry economics mode=%s rr=%s net_reward=%s reason=%s",
+            symbol,
+            mode,
+            economics.get("reward_risk"),
+            economics.get("net_reward_percent"),
+            economics.get("reason"),
+        )
+        return None
+
     market_data_source = str(
         candidate_strategy_snapshot.get("market_data_source", "UNKNOWN")
     ).upper()
@@ -837,6 +884,8 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         # Preserve the stop requested at entry before any later protection/trailing
         # logic can mutate position.stop_loss. This is diagnostic-only attribution.
         position.entry_metadata["entry_stop_loss"] = float(execution_stop_loss)
+        position.entry_metadata["entry_economics"] = deepcopy(economics)
+        position.metadata["entry_economics"] = deepcopy(economics)
         position.metadata["trade_mode"] = mode
         position.metadata["market_data_source"] = market_data_source
         position.metadata["execution_market_data_source"] = "BINANCE"
@@ -867,6 +916,24 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
         modes = [mode if mode in {"SCALP", "SWING"} else "SWING"]
     requested_modes = list(modes)
     active_modes = _active_trade_modes(symbol)
+    dual_lane_candidate = len(requested_modes) == 2
+    dual_lane_resolution = None
+    dual_lane_duplicate_blocked = False
+    if dual_lane_candidate:
+        selected_mode = str(score.get("trade_mode", "") or "").upper()
+        if selected_mode not in {"SCALP", "SWING"}:
+            scalp_score = float(score.get("scalp_score", -1.0) or -1.0)
+            swing_score = float(score.get("swing_score", -1.0) or -1.0)
+            selected_mode = "SCALP" if scalp_score >= swing_score else "SWING"
+        dual_lane_resolution = selected_mode
+        # SCALP and SWING can be independently requested by the strategy, but
+        # a simultaneous BUY is one underlying observation. Never stack both
+        # lanes from that same signal.
+        if active_modes:
+            dual_lane_duplicate_blocked = True
+            requested_modes = []
+        else:
+            requested_modes = [selected_mode]
     skipped_existing = []
     opened = []
     for mode in requested_modes:
@@ -885,6 +952,12 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
         trace["position_id"] = opened[0].position_id
     else:
         trace.pop("position_id", None)
+    trace["dual_lane_candidate"] = dual_lane_candidate
+    trace["dual_lane_resolution"] = dual_lane_resolution
+    trace["dual_lane_duplicate_blocked"] = dual_lane_duplicate_blocked
+    trace["dual_lane_duplicate_reason"] = (
+        "SAME_UNDERLYING_SIGNAL_ALREADY_ACTIVE" if dual_lane_duplicate_blocked else None
+    )
     trace["dual_lane_entry"] = len(opened) > 1
     if opened:
         trace["trade_mode"] = str(opened[0].entry_metadata.get("trade_mode", "SWING")).upper()
