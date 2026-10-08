@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 from multi_candle_context import analyze_multi_candle_context
 from multi_timeframe_context import analyze_multi_timeframe_context
 from .entry_engine import EntryDecision, EntryEngineV2
+from .stop_structure import calculate_structural_stop_candidate
 
 TIMEFRAMES = ("5m", "15m", "1h", "4h")
 
@@ -151,6 +152,23 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         )
     )
 
+    entry_price = float(legacy.get("price", 0.0) or 0.0)
+    structural_stop = calculate_structural_stop_candidate(
+        trade_mode=mode,
+        entry_price=entry_price,
+        candles_by_timeframe=candles_by_timeframe,
+    )
+    atr15 = float(legacy.get("atr", 0.0) or 0.0)
+    atr_stop = entry_price - (2.0 * atr15) if entry_price > 0.0 and atr15 > 0.0 else None
+    structural_distance_percent = (
+        (entry_price - structural_stop.price) / entry_price * 100.0
+        if entry_price > 0.0 and structural_stop.price is not None else None
+    )
+    structural_would_widen = bool(
+        atr_stop is not None and structural_stop.price is not None
+        and structural_stop.price < atr_stop
+    )
+
     return {
         "trade_mode": mode,
         "setup_type": setup_type,
@@ -207,6 +225,13 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         },
         "risk": {
             "stop_distance_percent": facts.stop_distance_percent,
+            "atr_stop_loss": atr_stop,
+            "structural_stop_candidate": structural_stop.price,
+            "structural_stop_source": structural_stop.source,
+            "structural_stop_timeframe": structural_stop.timeframe,
+            "structural_stop_candle_index": structural_stop.candle_index,
+            "structural_stop_distance_percent": structural_distance_percent,
+            "structural_stop_would_widen_current_model": structural_would_widen,
             "reward_risk": facts.reward_risk,
             "target_price": facts.target_price,
             "target_source": facts.target_source,
