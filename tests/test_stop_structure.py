@@ -7,7 +7,7 @@ def test_scalp_uses_latest_closed_5m_pivot_low_below_entry():
     assert result.source=="5m_PIVOT_LOW"
 
 def test_swing_falls_back_to_1h():
-    candles=[{"low":95.0,"high":102.0},{"low":92.0,"high":101.0},{"low":94.0,"high":103.0}]
+    candles=[{"low":96.0,"high":102.0},{"low":92.0,"high":101.0},{"low":94.0,"high":103.0},{"low":97.0,"high":104.0}]
     result=calculate_structural_stop_candidate(trade_mode="SWING",entry_price=100.0,candles_by_timeframe={"15m":[],"1h":candles,"4h":[]})
     assert result.price==92.0
     assert result.source=="1h_PIVOT_LOW"
