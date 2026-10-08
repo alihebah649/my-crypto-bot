@@ -122,6 +122,8 @@ class BrainDecisionEngine:
                 return BrainDecision("HOLD", self._clamp(lane_score), "NO_CONFIRMED_REVERSAL_OR_RECOVERY")
             if not scalp_structural_confirmation:
                 return BrainDecision("HOLD", self._clamp(lane_score), "SCALP_STRUCTURAL_CONFIRMATION_REQUIRED")
+            if not scalp_structural_confirmation:
+                return BrainDecision("HOLD", self._clamp(lane_score), "SCALP_STRUCTURAL_CONFIRMATION_REQUIRED")
         elif mode == "SWING":
             lane_score = swing_score if swing_score is not None else score
             if lane_score < self.min_entry_score:
