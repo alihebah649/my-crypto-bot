@@ -55,7 +55,15 @@ def selective_entry_veto(
         return None
 
     lane = str(trade_mode or entry_v2_shadow.get("trade_mode", "NONE")).upper()
-    failed_gate = str(entry_v2_shadow.get("failed_gate") or "").upper()
+    # Entry v2 captures have used both the direct field name (`failed_gate`)
+    # and the persisted/candidate-capture field name (`v2_failed_gate`).
+    # Accept both forms so the selective veto cannot silently become advisory
+    # merely because the capture schema uses its prefixed form.
+    failed_gate = str(
+        entry_v2_shadow.get("failed_gate")
+        or entry_v2_shadow.get("v2_failed_gate")
+        or ""
+    ).upper()
 
     # Preserve the previously calibrated RSI-pressure vetoes first.
     try:

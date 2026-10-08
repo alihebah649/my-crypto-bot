@@ -181,3 +181,93 @@ def test_brain_promotes_selective_swing_structure_risk_veto():
     )
     assert record.allowed is False
     assert record.brain_reason == "V2_SWING_STRUCTURE_RSI_PRESSURE"
+
+
+
+def test_brain_promotes_selective_v2_veto_from_persisted_v2_failed_gate():
+    brain = GuardedBrainAuthority()
+    strategy = {
+        "signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_score": 77,
+        "trade_mode": "SCALP",
+        "scalp_confirmed_reversal": True,
+        "scalp_recovery_confirmation": True,
+        "volume_ratio_5m": 1.91,
+        "rsi5m": 51.2,
+    }
+    record = brain.evaluate_entry(
+        "SUIUSDT",
+        strategy,
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow={
+            "approved": False,
+            "v2_failed_gate": "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+            "trade_mode": "SCALP",
+            "adaptive_scalp_shadow": {
+                "regime": "BEAR",
+                "classification": "BEAR_RECOVERY_CAUTION",
+                "recovery_trigger_count": 3,
+                "five_m_bias": "NEUTRAL",
+                "volume_ratio_5m": 1.91,
+            },
+            "candle_patterns_5m": [
+                "8C_SELL_OFF_TO_RECOVERY",
+                "7C_LOWER_HIGH_STRUCTURE",
+            ],
+            "candle_patterns_15m": [
+                "FOUR_BEARISH_SEQUENCE",
+                "7C_LOWER_HIGH_STRUCTURE",
+            ],
+        },
+    )
+
+    assert record.allowed is False
+    assert record.brain_action == "HOLD"
+    assert record.brain_reason == "V2_STRUCTURAL_RECLAIM_RSI_PRESSURE"
+    assert record.context["selective_v2_veto"] == "V2_STRUCTURAL_RECLAIM_RSI_PRESSURE"
+
+
+def test_selective_v2_reads_prefixed_failed_gate_for_low_rsi_bear_recovery():
+    brain = GuardedBrainAuthority()
+    strategy = {
+        "signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_score": 65,
+        "trade_mode": "SCALP",
+        "scalp_confirmed_reversal": False,
+        "scalp_recovery_confirmation": True,
+        "volume_ratio_5m": 1.29,
+        "rsi5m": 39.1,
+    }
+    record = brain.evaluate_entry(
+        "ARBUSDT",
+        strategy,
+        trade_mode="SCALP",
+        market_regime="BULL",
+        entry_v2_shadow={
+            "approved": False,
+            "v2_failed_gate": "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+            "trade_mode": "SCALP",
+            "adaptive_scalp_shadow": {
+                "regime": "BEAR",
+                "classification": "BEAR_WEAK_RECOVERY",
+                "recovery_trigger_count": 3,
+                "five_m_bias": "NEUTRAL",
+                "volume_ratio_5m": 1.29,
+            },
+            "candle_patterns_5m": [
+                "FOUR_C_BEAR_TO_BULL_REVERSAL",
+                "7C_LOWER_HIGH_STRUCTURE",
+            ],
+            "candle_patterns_15m": [
+                "FOUR_BEARISH_SEQUENCE",
+                "7C_LOWER_HIGH_STRUCTURE",
+            ],
+        },
+    )
+
+    # This profile is intentionally not vetoed by the narrower hard class.
+    assert record.allowed is True
+    assert record.brain_action == "BUY"
