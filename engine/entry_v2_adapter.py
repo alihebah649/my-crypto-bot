@@ -153,10 +153,19 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
     )
 
     entry_price = float(legacy.get("price", 0.0) or 0.0)
+    # The structural-stop helper owns the "drop the currently forming candle"
+    # rule. Pass the raw candle windows here; otherwise Entry v2 would drop the
+    # last candle twice and weaken the diagnostic candidate.
+    raw_candles_by_timeframe = {
+        "5m": facts.candles_5m,
+        "15m": facts.candles_15m,
+        "1h": facts.candles_1h,
+        "4h": facts.candles_4h,
+    }
     structural_stop = calculate_structural_stop_candidate(
         trade_mode=mode,
         entry_price=entry_price,
-        candles_by_timeframe=candles_by_timeframe,
+        candles_by_timeframe=raw_candles_by_timeframe,
     )
     atr15 = float(legacy.get("atr", 0.0) or 0.0)
     atr_stop = entry_price - (2.0 * atr15) if entry_price > 0.0 and atr15 > 0.0 else None
