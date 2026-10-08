@@ -61,7 +61,7 @@ def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
     assert "SCALP_CONTEXT_ONLY_NO_RECOVERY_TRIGGER" in result["scalp_gate_reasons"]
 
 
-def test_scalp_recovery_trigger_can_authorize_65_plus_without_pattern(monkeypatch):
+def test_scalp_recovery_alone_cannot_authorize_entry(monkeypatch):
     rsi_values = iter([40.0, 35.0, 33.0])
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
@@ -72,10 +72,46 @@ def test_scalp_recovery_trigger_can_authorize_65_plus_without_pattern(monkeypatc
     candles_5m[-3] = candle(99.0, 99.5, 97.8, 98.0, 120.0)
     candles_5m[-2] = candle(98.0, 99.0, 97.9, 98.6, 120.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "98.6"}, candles_15m, candles_5m)
-    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_score_raw"] > result["scalp_score"] or result["scalp_score"] < SCALP_SCORE_THRESHOLD
     assert result["scalp_recovery_trigger_count"] >= dual_mode_strategy.SCALP_RECOVERY_TRIGGER_MIN
     assert result["scalp_recovery_confirmation"] is True
+    assert result["scalp_structural_confirmation"] is False
+    assert result["scalp_gate"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
+
+
+def test_scalp_recovery_with_higher_low_can_authorize_at_65(monkeypatch):
+    rsi_values = iter([40.0, 35.0, 33.0])
+    monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: next(rsi_values))
+    monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
+    monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
+    monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "analyze_multi_timeframe_context",
+        lambda _frames: {
+            "available": True, "bias": "BULLISH", "net": 8,
+            "weighted_bull": 18, "weighted_bear": 10,
+            "higher_timeframes_bearish": False, "higher_timeframes_bullish": False,
+            "weak_countertrend_recovery": False, "aligned_bullish": False,
+            "frames": {
+                "5m": {"bias": "BULLISH", "strength": 8, "patterns": ["7C_HIGHER_LOW_STRUCTURE"]},
+                "15m": {"bias": "NEUTRAL", "strength": 2, "patterns": []},
+                "1h": {"bias": "NEUTRAL", "strength": 1, "patterns": []},
+                "4h": {"bias": "NEUTRAL", "strength": 1, "patterns": []},
+            },
+        },
+    )
+    candles_15m = rising_series(130, 100.0)
+    candles_5m = rising_series(30, 100.0)
+    candles_5m[-3] = candle(99.0, 99.5, 97.8, 98.0, 120.0)
+    candles_5m[-2] = candle(98.0, 99.0, 97.9, 98.6, 120.0)
+    result = score_symbol("TESTUSDT", {"lastPrice": "98.6"}, candles_15m, candles_5m)
+    assert result["scalp_recovery_confirmation"] is True
+    assert result["scalp_structural_confirmation"] is True
     assert result["scalp_gate"] is True
+    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
     assert result["scalp_signal"] == "BUY"
     assert result["trade_mode"] == "SCALP"
 
@@ -90,7 +126,7 @@ def test_scalp_gate_rejects_without_confirmed_reversal():
     assert result["scalp_gate"] is False
 
 
-def test_scalp_gate_accepts_confirmed_reversal_at_rsi_50(monkeypatch):
+def test_scalp_confirmed_reversal_without_structure_is_blocked(monkeypatch):
     monkeypatch.setattr(dual_mode_strategy, "calculate_rsi", lambda prices, period=14: 50.0)
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
@@ -100,9 +136,10 @@ def test_scalp_gate_accepts_confirmed_reversal_at_rsi_50(monkeypatch):
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
     assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
     assert result["scalp_max_rsi"] == 55.0
-    assert result["scalp_gate"] is True
-    assert result["scalp_signal"] == "BUY"
-    assert result["trade_mode"] == "SCALP"
+    assert result["scalp_gate"] is False
+    assert result["scalp_structural_confirmation"] is False
+    assert result["scalp_signal"] == "HOLD"
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
 
 
 def test_scalp_gate_rejects_confirmed_reversal_above_rsi_55(monkeypatch):
