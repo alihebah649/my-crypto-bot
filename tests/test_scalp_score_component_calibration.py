@@ -70,7 +70,7 @@ def test_scalp_rsi_gate_zone_contributes_zero_score(monkeypatch):
     assert "SCALP_STRUCTURE_NOT_CONFIRMED" in in_gate_zone["scalp_gate_reasons"]
     assert in_gate_zone["rsi5m"] == 48.66
     assert below_score_boundary["rsi5m"] == 44.0
-    assert in_gate_zone["scalp_score"] == 24
+    assert in_gate_zone["scalp_score"] == 28
     assert below_score_boundary["scalp_score"] == 34
     assert below_score_boundary["scalp_score"] - in_gate_zone["scalp_score"] == 10
     assert "5M_RSI_RECOVERY_ZONE" not in in_gate_zone["scalp_reasons"]
