@@ -55,10 +55,10 @@ def _run(monkeypatch, mtf_bias: str):
 def test_strong_scalp_confluence_without_candlestick_stops_at_60(monkeypatch):
     result = _run(monkeypatch, "NEUTRAL")
 
-    # 15m lower support = 15, RSI 44 = 10, 5m near support = 16,
-    # volume 1.20 = 15, recovery = 4, neutral MTF = 0 => 60.
-    assert result["scalp_score"] == 60
-    assert result["scalp_gate"] is True
+    # The reversion family is capped and structural confirmation is mandatory.
+    assert result["scalp_score"] == 41
+    assert result["scalp_gate"] is False
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
     assert result["scalp_signal"] == "HOLD"
     assert result["trade_mode"] == "NONE"
 
@@ -66,9 +66,10 @@ def test_strong_scalp_confluence_without_candlestick_stops_at_60(monkeypatch):
 def test_adding_bullish_mtf_still_stops_below_scalp_threshold(monkeypatch):
     result = _run(monkeypatch, "BULLISH")
 
-    # The same setup receives the +4 bullish-MTF adjustment, reaching 64,
-    # but remains below the production SCALP threshold of 65.
-    assert result["scalp_score"] == 64
-    assert result["scalp_gate"] is True
+    # Bullish MTF context can raise the diagnostic score, but cannot substitute
+    # for local structural confirmation.
+    assert result["scalp_score"] == 45
+    assert result["scalp_gate"] is False
+    assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
     assert result["scalp_signal"] == "HOLD"
     assert result["trade_mode"] == "NONE"
