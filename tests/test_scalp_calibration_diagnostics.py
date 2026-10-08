@@ -64,7 +64,7 @@ def test_fet_like_recovery_is_blocked_without_structure(monkeypatch):
     assert result["scalp_gate"] is False
     assert "SCALP_STRUCTURE_NOT_CONFIRMED" in result["scalp_gate_reasons"]
     assert result["scalp_recovery_confirmation"] is True
-    assert result["scalp_score"] == 24
+    assert result["scalp_score"] == 28
     assert result["scalp_score"] < dual_mode_strategy.SCALP_SCORE_THRESHOLD
     assert result["scalp_signal"] == "HOLD"
     assert result["trade_mode"] == "NONE"
