@@ -135,6 +135,12 @@ try:
     )
 except (TypeError, ValueError):
     _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE = 900.0
+try:
+    _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = float(
+        os.getenv("BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE", "21600")
+    )
+except (TypeError, ValueError):
+    _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = 21600.0
 
 if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
     try:
@@ -143,10 +149,16 @@ if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
             _BINANCE_MARKET_DATA_SNAPSHOT_URL,
             TRADING_SYMBOLS,
             max_stale_seconds=max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
+            bootstrap_max_stale_seconds=max(
+                max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
+                _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE,
+            ),
         )
         _legacy.logger.info(
-            "[BINANCE-SNAPSHOT] loaded=%s symbols=%s entries=%s age=%.1fs",
+            "[BINANCE-SNAPSHOT] loaded=%s bootstrap_stale=%s entry_fresh=%s symbols=%s entries=%s age=%.1fs",
             bool(_snapshot_result.get("loaded")),
+            bool(_snapshot_result.get("bootstrap_stale")),
+            bool(_snapshot_result.get("entry_fresh")),
             _snapshot_result.get("symbols", 0),
             _snapshot_result.get("cache_entries_written", 0),
             float(_snapshot_result.get("age_seconds", 0.0)),
