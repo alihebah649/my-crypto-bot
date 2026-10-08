@@ -948,6 +948,10 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
     trace["trade_modes_skipped_existing"] = skipped_existing
     trace["trade_modes_opened"] = [str(p.entry_metadata.get("trade_mode", "SWING")).upper() for p in opened]
     trace["positions_opened"] = [p.position_id for p in opened]
+    if opened:
+        trace["position_id"] = opened[0].position_id
+    else:
+        trace.pop("position_id", None)
     trace["dual_lane_candidate"] = dual_lane_candidate
     trace["dual_lane_resolution"] = dual_lane_resolution
     trace["dual_lane_duplicate_blocked"] = dual_lane_duplicate_blocked
