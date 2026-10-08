@@ -93,6 +93,7 @@ class GuardedBrainAuthority:
             signal=str(lane.get("signal", "HOLD")).upper(),
             scalp_confirmed_reversal=bool(lane.get("scalp_confirmed_reversal", False)),
             scalp_recovery_confirmation=bool(lane.get("scalp_recovery_confirmation", False)),
+            scalp_structural_confirmation=bool(lane.get("scalp_structural_confirmation", False)),
             scalp_score=float(lane.get("scalp_score")) if lane.get("scalp_score") is not None else None,
             swing_score=float(lane.get("swing_score")) if lane.get("swing_score") is not None else None,
             trade_mode=lane.get("trade_mode", "NONE"),
