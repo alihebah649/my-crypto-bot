@@ -271,3 +271,145 @@ def test_selective_v2_reads_prefixed_failed_gate_for_low_rsi_bear_recovery():
     # This profile is intentionally not vetoed by the narrower hard class.
     assert record.allowed is True
     assert record.brain_action == "BUY"
+
+
+
+def _countertrend_strategy(**overrides):
+    strategy = {
+        "signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_score": 75,
+        "score": 75,
+        "trade_mode": "SCALP",
+        "scalp_confirmed_reversal": True,
+        "scalp_recovery_confirmation": True,
+        "rsi5m": 44.0,
+        "mtf_net": -25,
+        "mtf_bias": "BEARISH",
+    }
+    strategy.update(overrides)
+    return strategy
+
+
+def _v2_shadow(failed_gate, *, stop=0.8, classification="BEAR_RECOVERY", five_bias="NEUTRAL", five=None, fifteen=None):
+    return {
+        "approved": False,
+        "v2_failed_gate": failed_gate,
+        "trade_mode": "SCALP",
+        "stop_distance_percent": stop,
+        "adaptive_scalp_shadow": {
+            "regime": "BEAR",
+            "classification": classification,
+            "recovery_trigger_count": 3,
+            "five_m_bias": five_bias,
+            "volume_ratio_5m": 1.2,
+        },
+        "candle_patterns_5m": five or [],
+        "candle_patterns_15m": fifteen or [],
+    }
+
+
+def test_brain_blocks_deep_bear_tight_stop_without_higher_low():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "SUIUSDT",
+        _countertrend_strategy(),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow(
+            "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+            stop=0.94,
+            five=["7C_LOWER_HIGH_STRUCTURE"],
+            fifteen=["7C_LOWER_HIGH_STRUCTURE"],
+        ),
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "BEAR_DEEP_COUNTERTREND_TIGHT_STOP"
+
+
+def test_brain_preserves_wider_stop_countertrend_exception():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "AVAXUSDT",
+        _countertrend_strategy(mtf_net=-32, rsi5m=39.3),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow(
+            "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+            stop=1.53,
+            classification="BEAR_RECOVERY_STRONG",
+            five=["7C_LOWER_HIGH_STRUCTURE"],
+            fifteen=["7C_LOWER_HIGH_STRUCTURE"],
+        ),
+    )
+    assert record.allowed is True
+    assert record.brain_action == "BUY"
+
+
+def test_brain_blocks_bear_seller_pressure_tight_stop_without_higher_low():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "SOLUSDT",
+        _countertrend_strategy(mtf_net=1, mtf_bias="NEUTRAL", rsi5m=44.1),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow(
+            "SELLER_PRESSURE_NOT_INVALIDATED",
+            stop=0.58,
+            five=["7C_LOWER_HIGH_STRUCTURE"],
+            fifteen=["7C_LOWER_HIGH_STRUCTURE"],
+        ),
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "BEAR_SELLER_PRESSURE_TIGHT_STOP"
+
+
+def test_brain_blocks_bear_no_target_with_tight_stop():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "ALGOUSDT",
+        _countertrend_strategy(mtf_net=-11, mtf_bias="BEARISH", rsi5m=51.1),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow("NO_TARGET_MEETS_RR", stop=0.89),
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "BEAR_NO_TARGET_TIGHT_STOP"
+
+
+def test_brain_blocks_weak_bear_no_reclaim_profile():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "SOLUSDT",
+        _countertrend_strategy(mtf_net=-8, mtf_bias="BEARISH", scalp_score=87, score=87, rsi5m=42.7),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow(
+            "STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+            stop=0.73,
+            five=["7C_LOWER_HIGH_STRUCTURE"],
+            fifteen=["7C_LOWER_HIGH_STRUCTURE"],
+        ),
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "BEAR_RECLAIM_WEAK_COUNTERTREND"
+
+
+def test_brain_blocks_high_score_bear_seller_pressure_profile():
+    brain = GuardedBrainAuthority()
+    record = brain.evaluate_entry(
+        "ARBUSDT",
+        _countertrend_strategy(mtf_net=0, mtf_bias="NEUTRAL", scalp_score=81, score=81, rsi5m=42.7),
+        trade_mode="SCALP",
+        market_regime="BEAR",
+        entry_v2_shadow=_v2_shadow(
+            "SELLER_PRESSURE_NOT_INVALIDATED",
+            stop=1.26,
+            classification="BEAR_RECOVERY",
+            five_bias="BEARISH",
+            five=["7C_LOWER_HIGH_STRUCTURE"],
+            fifteen=[],
+        ),
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "BEAR_HIGH_SCORE_NO_SELLER_FAILURE"
