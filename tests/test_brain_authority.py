@@ -61,6 +61,7 @@ def test_guarded_brain_blocks_strong_bear_scalp_without_seller_failure():
         "scalp_confirmed_reversal": True,
         "volume_ratio_5m": 1.30,
         "seller_failure_confirmed": False,
+        "scalp_structural_confirmation": True,
         "mtf_higher_timeframes_bearish": True,
         "mtf_net": -30,
         "mtf_weighted_bull": 0,
