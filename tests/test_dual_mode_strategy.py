@@ -244,7 +244,7 @@ def test_scalp_confirmed_5m_reversal_is_blocked_by_full_bearish_stack(monkeypatc
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
 
-    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
     assert result["scalp_confirmed_reversal"] is True
     assert result["mtf_strong_bearish_stack"] is True
     assert result["mtf_countertrend_veto"] is True
