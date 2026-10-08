@@ -53,7 +53,8 @@ def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
     candles_5m[-3] = candle(100.0, 100.2, 98.5, 99.0, 120.0)
     candles_5m[-2] = candle(99.0, 99.2, 97.8, 98.0, 120.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "98.0"}, candles_15m, candles_5m)
-    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
+    assert result["scalp_score_raw"] >= result["scalp_score"]
     assert result["scalp_context_only"] is True
     assert result["scalp_recovery_confirmation"] is False
     assert result["scalp_gate"] is False
@@ -134,7 +135,8 @@ def test_scalp_confirmed_reversal_without_structure_is_blocked(monkeypatch):
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
-    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
+    assert result["scalp_score_raw"] >= result["scalp_score"]
     assert result["scalp_max_rsi"] == 55.0
     assert result["scalp_gate"] is False
     assert result["scalp_structural_confirmation"] is False
@@ -150,7 +152,7 @@ def test_scalp_gate_rejects_confirmed_reversal_above_rsi_55(monkeypatch):
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
-    assert result["scalp_score"] >= SCALP_SCORE_THRESHOLD
+    assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
     assert result["scalp_gate"] is False
     assert result["scalp_signal"] == "HOLD"
 
