@@ -11,6 +11,7 @@ def test_guarded_brain_allows_confirmed_bull_scalp_before_risk():
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": False,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.20,
         "seller_failure_confirmed": True,
         "mtf_net": 8,
@@ -28,6 +29,26 @@ def test_guarded_brain_allows_confirmed_bull_scalp_before_risk():
     assert record.allowed is True
     assert record.brain_action == "BUY"
     assert record.stage == "ENTRY_GATE"
+
+
+def test_brain_blocks_scalp_without_structural_confirmation():
+    brain = GuardedBrainAuthority()
+    strategy = {
+        "signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_score": 90,
+        "trade_mode": "SCALP",
+        "scalp_confirmed_reversal": True,
+        "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": False,
+        "volume_ratio_5m": 2.0,
+        "seller_failure_confirmed": True,
+    }
+    record = brain.evaluate_entry(
+        "TESTUSDT", strategy, trade_mode="SCALP", market_regime="BULL"
+    )
+    assert record.allowed is False
+    assert record.brain_reason == "SCALP_STRUCTURAL_CONFIRMATION_REQUIRED"
 
 
 def test_guarded_brain_blocks_strong_bear_scalp_without_seller_failure():
@@ -108,6 +129,7 @@ def test_brain_promotes_selective_entry_v2_structure_risk_veto():
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": False,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 0.84,
         "rsi5m": 49.5,
         "mtf_net": 8,
@@ -140,6 +162,7 @@ def test_brain_does_not_promote_low_rsi_seller_pressure_failure():
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 2.0,
         "rsi5m": 42.8,
     }
@@ -193,6 +216,7 @@ def test_brain_promotes_selective_v2_veto_from_persisted_v2_failed_gate():
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.91,
         "rsi5m": 51.2,
     }
@@ -238,6 +262,7 @@ def test_selective_v2_reads_prefixed_failed_gate_for_low_rsi_bear_recovery():
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": False,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "volume_ratio_5m": 1.29,
         "rsi5m": 39.1,
     }
@@ -283,6 +308,7 @@ def _countertrend_strategy(**overrides):
         "trade_mode": "SCALP",
         "scalp_confirmed_reversal": True,
         "scalp_recovery_confirmation": True,
+        "scalp_structural_confirmation": True,
         "rsi5m": 44.0,
         "mtf_net": -25,
         "mtf_bias": "BEARISH",
