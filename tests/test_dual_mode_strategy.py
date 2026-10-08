@@ -55,7 +55,7 @@ def test_scalp_context_score_cannot_trigger_entry_without_recovery(monkeypatch):
     result = score_symbol("TESTUSDT", {"lastPrice": "98.0"}, candles_15m, candles_5m)
     assert result["scalp_score"] < SCALP_SCORE_THRESHOLD
     assert result["scalp_score_raw"] >= result["scalp_score"]
-    assert result["scalp_context_only"] is True
+    assert result["scalp_context_only"] is False
     assert result["scalp_recovery_confirmation"] is False
     assert result["scalp_gate"] is False
     assert result["scalp_signal"] == "HOLD"
@@ -132,6 +132,22 @@ def test_scalp_confirmed_reversal_without_structure_is_blocked(monkeypatch):
     monkeypatch.setattr(dual_mode_strategy, "calculate_bollinger", lambda candles, period=20, deviations=2.0: (100.0, 110.0, 120.0))
     monkeypatch.setattr(dual_mode_strategy, "_volume_ratio", lambda candles, window=20: 1.20)
     monkeypatch.setattr(dual_mode_strategy, "bullish_pattern", lambda candles: (True, "BULLISH_BREAKOUT", True))
+    monkeypatch.setattr(
+        dual_mode_strategy,
+        "analyze_multi_timeframe_context",
+        lambda _frames: {
+            "available": True, "bias": "NEUTRAL", "net": 0,
+            "weighted_bull": 0, "weighted_bear": 0,
+            "higher_timeframes_bearish": False, "higher_timeframes_bullish": False,
+            "weak_countertrend_recovery": False, "aligned_bullish": False,
+            "frames": {
+                "5m": {"bias": "NEUTRAL", "strength": 0, "patterns": []},
+                "15m": {"bias": "NEUTRAL", "strength": 0, "patterns": []},
+                "1h": {"bias": "NEUTRAL", "strength": 0, "patterns": []},
+                "4h": {"bias": "NEUTRAL", "strength": 0, "patterns": []},
+            },
+        },
+    )
     candles_15m = rising_series(130, 100.0)
     candles_5m = rising_series(30, 100.0)
     result = score_symbol("TESTUSDT", {"lastPrice": "100.0"}, candles_15m, candles_5m)
