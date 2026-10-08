@@ -57,6 +57,7 @@ def test_bear_scalp_requires_structural_reversal_quality():
         market_regime="BEAR",
         trade_mode="SCALP",
         scalp_score=70,
+        scalp_structural_confirmation=True,
         volume_ratio_5m=0.82,
         seller_failure_confirmed=True,
     )
