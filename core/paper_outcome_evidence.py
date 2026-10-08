@@ -180,6 +180,12 @@ def build_paper_outcome_evidence(
             "target_price": entry_metadata.get("entry_v2_shadow_target_price"),
             "target_status": entry_metadata.get("entry_v2_shadow_target_status"),
             "reward_risk": entry_metadata.get("entry_v2_shadow_reward_risk"),
+            "atr_stop_loss": entry_metadata.get("entry_v2_shadow_atr_stop_loss"),
+            "structural_stop_candidate": entry_metadata.get("entry_v2_shadow_structural_stop_candidate"),
+            "structural_stop_source": entry_metadata.get("entry_v2_shadow_structural_stop_source"),
+            "structural_stop_timeframe": entry_metadata.get("entry_v2_shadow_structural_stop_timeframe"),
+            "structural_stop_distance_percent": entry_metadata.get("entry_v2_shadow_structural_stop_distance_percent"),
+            "structural_stop_would_widen_current_model": entry_metadata.get("entry_v2_shadow_structural_stop_would_widen_current_model"),
         },
         "brain": {
             "capture_id": (
