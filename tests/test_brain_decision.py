@@ -129,6 +129,7 @@ def test_local_bear_scalp_is_blocked_even_when_broad_market_is_bull():
         symbol_regime="BEAR",
         trade_mode="SCALP",
         scalp_score=71,
+        scalp_structural_confirmation=True,
         volume_ratio_5m=1.5,
         seller_failure_confirmed=False,
         higher_timeframe_bearish=False,
