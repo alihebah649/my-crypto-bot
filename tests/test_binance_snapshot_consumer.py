@@ -115,6 +115,8 @@ def test_rejects_stale_snapshot(monkeypatch, tmp_path: Path) -> None:
             "https://example.invalid/latest.json",
             SYMBOLS,
             now=now,
+            max_stale_seconds=900,
+            bootstrap_max_stale_seconds=900,
         )
 
 
