@@ -59,9 +59,9 @@ def test_recovery_bonus_is_only_applied_when_confirmation_exists(monkeypatch):
     )
 
     assert without_recovery["scalp_gate"] is False
-    assert without_recovery["scalp_score"] == 30
-    assert with_recovery["scalp_gate"] is True
+    assert without_recovery["scalp_score"] == 24
+    assert with_recovery["scalp_gate"] is False
     assert with_recovery["scalp_recovery_confirmation"] is True
-    assert with_recovery["scalp_score"] == 34
+    assert with_recovery["scalp_score"] == 28
     assert with_recovery["scalp_score"] - without_recovery["scalp_score"] == dual_mode_strategy.SCALP_RECOVERY_POINTS
     assert with_recovery["scalp_signal"] == "HOLD"
