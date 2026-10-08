@@ -13,6 +13,15 @@ RSI_PRESSURE_THRESHOLD = 49.0
 BEAR_SCALP_MIN_VOLUME_RATIO = 1.0
 BEAR_RECOVERY_MIN_TRIGGERS = 3
 BEAR_RECOVERY_CLASSIFICATIONS = {"BEAR_RECOVERY", "BEAR_RECOVERY_CAUTION"}
+BEAR_DEEP_MTF_NET = -20.0
+BEAR_DEEP_STOP_MAX_PERCENT = 1.2
+BEAR_RECLAIM_NET_FLOOR = -8.0
+BEAR_RECLAIM_STOP_MAX_PERCENT = 1.0
+BEAR_RECLAIM_MIN_SCORE = 70.0
+BEAR_RECLAIM_MAX_RSI = 49.0
+BEAR_NO_TARGET_NET_FLOOR = -10.0
+BEAR_NO_TARGET_STOP_MAX_PERCENT = 1.0
+BEAR_HIGH_SCORE_NO_SELLER_MIN_SCORE = 80.0
 
 
 def selective_entry_veto(
@@ -112,6 +121,64 @@ def selective_entry_veto(
             "7C_LOWER_HIGH_STRUCTURE" in five_m_patterns
             and "7C_LOWER_HIGH_STRUCTURE" in fifteen_m_patterns
         )
+
+        try:
+            mtf_net = float(strategy.get("mtf_net"))
+        except (TypeError, ValueError):
+            mtf_net = 0.0
+        mtf_bias = str(strategy.get("mtf_bias") or "").upper()
+        try:
+            stop_distance_percent = float(entry_v2_shadow.get("stop_distance_percent"))
+        except (TypeError, ValueError):
+            stop_distance_percent = None
+        try:
+            scalp_score = float(strategy.get("scalp_score") or strategy.get("score") or 0.0)
+        except (TypeError, ValueError):
+            scalp_score = 0.0
+
+        if (
+            lane == "SCALP"
+            and adaptive_regime == "BEAR"
+            and mtf_net <= BEAR_DEEP_MTF_NET
+            and stop_distance_percent is not None
+            and stop_distance_percent < BEAR_DEEP_STOP_MAX_PERCENT
+            and not higher_low
+        ):
+            return "BEAR_DEEP_COUNTERTREND_TIGHT_STOP"
+
+        if (
+            lane == "SCALP"
+            and failed_gate == "NO_TARGET_MEETS_RR"
+            and adaptive_regime == "BEAR"
+            and mtf_net <= BEAR_NO_TARGET_NET_FLOOR
+            and stop_distance_percent is not None
+            and stop_distance_percent < BEAR_NO_TARGET_STOP_MAX_PERCENT
+        ):
+            return "BEAR_NO_TARGET_TIGHT_STOP"
+
+        if (
+            lane == "SCALP"
+            and failed_gate == "STRUCTURAL_RECLAIM_NOT_CONFIRMED"
+            and adaptive_regime == "BEAR"
+            and mtf_net <= BEAR_RECLAIM_NET_FLOOR
+            and stop_distance_percent is not None
+            and stop_distance_percent < BEAR_RECLAIM_STOP_MAX_PERCENT
+            and scalp_score >= BEAR_RECLAIM_MIN_SCORE
+            and rsi5m < BEAR_RECLAIM_MAX_RSI
+            and not higher_low
+        ):
+            return "BEAR_RECLAIM_WEAK_COUNTERTREND"
+
+        if (
+            lane == "SCALP"
+            and failed_gate == "SELLER_PRESSURE_NOT_INVALIDATED"
+            and adaptive_regime == "BEAR"
+            and scalp_score >= BEAR_HIGH_SCORE_NO_SELLER_MIN_SCORE
+            and five_m_bias == "BEARISH"
+            and classification == "BEAR_RECOVERY"
+            and not higher_low
+        ):
+            return "BEAR_HIGH_SCORE_NO_SELLER_FAILURE"
 
         # Structural no-reclaim veto: this catches the observed NEAR/ETH class
         # where Legacy/Brain saw a high score plus recovery, while Entry v2 saw
