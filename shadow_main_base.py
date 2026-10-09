@@ -998,13 +998,13 @@ def _seed_binance_lab_stream_from_manager_cache(stream) -> int:
     return seeded
 
 
-# Venue Lab WebSocket feed.
+# Venue Lab WebSocket feeds.
 # MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
-# Each isolated lab uses all four strategy timeframes from its own venue so
-# 1h/4h context does not silently fall back to the other exchange.
+# Each isolated lab uses all four strategy timeframes from its own venue.
 _binance_market_stream = None
 _bybit_market_stream = None
-if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+_okx_market_stream = None
+if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"}:
     _binance_ws_intervals = ("5m", "15m", "1h", "4h") if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else ("5m", "15m")
     _binance_market_stream = BinanceMarketStream(
         TRADING_SYMBOLS,
@@ -1029,6 +1029,17 @@ if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
 else:
     _legacy.bybit_market_stream = None
 
+if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+    _okx_market_stream = OKXMarketStream(
+        TRADING_SYMBOLS,
+        intervals=("5m", "15m", "1h", "4h"),
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _okx_market_stream.start()
+    _legacy.okx_market_stream = _okx_market_stream
+else:
+    _legacy.okx_market_stream = None
+
 
 def _binance_ws_health():
     if _binance_market_stream is None:
@@ -1042,6 +1053,12 @@ def _bybit_ws_health():
     return jsonify(_bybit_market_stream.snapshot()), 200
 
 
+def _okx_ws_health():
+    if _okx_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
+    return jsonify(_okx_market_stream.snapshot()), 200
+
+
 if "binance_ws_health" not in app.view_functions:
     app.add_url_rule(
         "/binance-ws-health",
@@ -1053,6 +1070,12 @@ if "bybit_ws_health" not in app.view_functions:
         "/bybit-ws-health",
         endpoint="bybit_ws_health",
         view_func=_bybit_ws_health,
+    )
+if "okx_ws_health" not in app.view_functions:
+    app.add_url_rule(
+        "/okx-ws-health",
+        endpoint="okx_ws_health",
+        view_func=_okx_ws_health,
     )
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
@@ -1125,6 +1148,7 @@ _PAPER_BOT_IDENTITY = {
     "MIXED": ("MAIN BOT", "MIXED / 22-SYMBOL SHARDED"),
     "BINANCE_ONLY_LAB": ("BINANCE LAB", "BINANCE ONLY / 22 SYMBOLS"),
     "BYBIT_ONLY_LAB": ("BYBIT LAB", "BYBIT ONLY / 22 SYMBOLS"),
+    "OKX_ONLY_LAB": ("OKX LAB", "OKX SPOT ONLY / 22 SYMBOLS"),
 }.get(
     PAPER_VENUE_MODE,
     ("UNKNOWN BOT", PAPER_VENUE_MODE),
