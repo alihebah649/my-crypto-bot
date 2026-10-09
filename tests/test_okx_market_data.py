@@ -177,3 +177,20 @@ def test_okx_lab_health_uses_okx_guard_not_healthy_binance_guard(monkeypatch):
     assert snapshot["status_code"] == 429
     assert snapshot["blocked"] is True
     assert snapshot["okx"]["state"] == "BLOCKED"
+
+
+def test_isolated_okx_lab_rejects_persisted_candles_from_binance_or_unknown_source(monkeypatch):
+    import shadow_main
+
+    monkeypatch.setattr(shadow_main, "PAPER_VENUE_MODE", "OKX_ONLY_LAB")
+
+    assert shadow_main._lab_kline_payload_matches_venue([
+        {"market_data_source": "OKX", "open_time": 1000, "close": 1.0},
+        {"market_data_source": "OKX", "open_time": 2000, "close": 1.1},
+    ]) is True
+    assert shadow_main._lab_kline_payload_matches_venue([
+        {"market_data_source": "BINANCE", "open_time": 1000, "close": 1.0},
+    ]) is False
+    assert shadow_main._lab_kline_payload_matches_venue([
+        {"open_time": 1000, "close": 1.0},
+    ]) is False
