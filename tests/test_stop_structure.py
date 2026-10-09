@@ -26,7 +26,7 @@ def test_entry_v2_passes_raw_candles_to_structural_stop(monkeypatch):
 
     def spy(*, trade_mode, entry_price, candles_by_timeframe):
         seen.update({tf: len(candles) for tf, candles in candles_by_timeframe.items()})
-        return StructuralStopCandidate(trade_mode, 9.0, "5m_PIVOT_LOW", "5m", 2)
+        return StructuralStopCandidate(trade_mode, None, None, None, None)
 
     monkeypatch.setattr(
         "engine.entry_v2_adapter.calculate_structural_stop_candidate",
@@ -50,7 +50,10 @@ def test_entry_v2_passes_raw_candles_to_structural_stop(monkeypatch):
         candles_15m=candles,
     )
 
-    build_entry_scenario(facts)
+    scenario = build_entry_scenario(facts)
 
     assert seen["5m"] == len(candles)
     assert seen["15m"] == len(candles)
+    assert scenario["risk"]["structural_stop_candidate"] is None
+    # Missing structure is unavailable evidence, not a confirmed "no widening".
+    assert scenario["risk"]["structural_stop_would_widen_current_model"] is None

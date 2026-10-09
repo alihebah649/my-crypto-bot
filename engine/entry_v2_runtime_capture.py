@@ -146,6 +146,10 @@ class EntryV2RuntimeCapture:
                         metadata.setdefault("entry_v2_shadow_structural_stop_timeframe", capture.entry_scenario.get("risk", {}).get("structural_stop_timeframe"))
                         metadata.setdefault("entry_v2_shadow_structural_stop_distance_percent", capture.entry_scenario.get("risk", {}).get("structural_stop_distance_percent"))
                         metadata.setdefault("entry_v2_shadow_structural_stop_would_widen_current_model", capture.entry_scenario.get("risk", {}).get("structural_stop_would_widen_current_model"))
+                        metadata.setdefault(
+                            "entry_v2_shadow_recovery_follow_through_shadow",
+                            capture.entry_scenario.get("trigger", {}).get("recovery_follow_through_shadow"),
+                        )
                 except Exception as exc:
                     self.runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["position_identity_error"] = str(exc)
                 return self._original_repository_add(position)

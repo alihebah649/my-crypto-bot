@@ -133,6 +133,9 @@ def capture_summary(capture: EntryV2ShadowCapture) -> dict[str, Any]:
         "v2_failed_gate": decision.get("failed_gate"),
         "v2_approved": decision.get("approved", False),
         "adaptive_scalp_shadow": deepcopy(_json_safe(capture.adaptive_scalp_shadow)),
+        "recovery_follow_through_shadow": deepcopy(
+            _json_safe(capture.entry_scenario.get("trigger", {}).get("recovery_follow_through_shadow"))
+        ),
         "target_price": risk.get("target_price"),
         "target_source": risk.get("target_source"),
         "target_status": risk.get("target_status"),

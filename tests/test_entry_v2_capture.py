@@ -86,6 +86,8 @@ def test_capture_summary_is_compact_and_preserves_candle_patterns():
     assert summary["v2_trade_mode"] == "SCALP"
     assert summary["candle_patterns_5m"]
     assert summary["candle_patterns_1h"]
+    assert summary["recovery_follow_through_shadow"]["shadow_only"] is True
+    assert summary["recovery_follow_through_shadow"]["available"] is True
 
 
 def test_capture_does_not_mutate_legacy_input():
