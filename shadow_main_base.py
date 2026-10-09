@@ -1045,6 +1045,11 @@ if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
     _okx_market_stream = OKXMarketStream(
         TRADING_SYMBOLS,
         intervals=("5m", "15m", "1h", "4h"),
+        base_url=os.getenv("OKX_MARKET_DATA_WS_PUBLIC_URL", "wss://ws.okx.com/ws/v5/public").strip(),
+        business_base_url=os.getenv(
+            "OKX_MARKET_DATA_WS_BUSINESS_URL",
+            "wss://ws.okx.com/ws/v5/business",
+        ).strip(),
     )
     if globals().get("_SHADOW_MAIN_EMBEDDED", False):
         _okx_market_stream.start()
