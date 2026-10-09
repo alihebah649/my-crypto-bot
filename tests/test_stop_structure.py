@@ -50,7 +50,10 @@ def test_entry_v2_passes_raw_candles_to_structural_stop(monkeypatch):
         candles_15m=candles,
     )
 
-    build_entry_scenario(facts)
+    scenario = build_entry_scenario(facts)
 
     assert seen["5m"] == len(candles)
     assert seen["15m"] == len(candles)
+    assert scenario["risk"]["structural_stop_candidate"] is None
+    # Missing structure is unavailable evidence, not a confirmed "no widening".
+    assert scenario["risk"]["structural_stop_would_widen_current_model"] is None
