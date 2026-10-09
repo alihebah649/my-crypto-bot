@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 import websockets
 
 DEFAULT_BASE_URL = "wss://ws.okx.com/ws/v5/public"
+DEFAULT_BUSINESS_BASE_URL = "wss://ws.okx.com/ws/v5/business"
 _INTERVAL_TO_CHANNEL = {
     "5m": "candle5m",
     "15m": "candle15m",
@@ -63,6 +64,7 @@ class OKXMarketStream:
         *,
         intervals: Iterable[str] = tuple(_INTERVAL_TO_CHANNEL),
         base_url: str = DEFAULT_BASE_URL,
+        business_base_url: str = DEFAULT_BUSINESS_BASE_URL,
         reconnect_min_seconds: float = 2.0,
         reconnect_max_seconds: float = 60.0,
         stale_after_seconds: float = 30.0,
@@ -72,6 +74,7 @@ class OKXMarketStream:
             dict.fromkeys(str(i) for i in intervals if str(i) in _INTERVAL_TO_CHANNEL)
         )
         self.base_url = str(base_url).rstrip("/")
+        self.business_base_url = str(business_base_url).rstrip("/")
         self.reconnect_min_seconds = max(0.5, float(reconnect_min_seconds))
         self.reconnect_max_seconds = max(self.reconnect_min_seconds, float(reconnect_max_seconds))
         self.stale_after_seconds = max(1.0, float(stale_after_seconds))
@@ -79,6 +82,8 @@ class OKXMarketStream:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._connected = False
+        self._public_connected = False
+        self._business_connected = False
         self._last_event_at: float | None = None
         self._events_total = 0
         self._kline_events = 0
@@ -103,14 +108,24 @@ class OKXMarketStream:
         return names
 
     @property
+    def ticker_subscription_args(self) -> list[dict[str, str]]:
+        return [
+            {"channel": "tickers", "instId": _inst_id_from_symbol(symbol)}
+            for symbol in self.symbols
+        ]
+
+    @property
+    def candle_subscription_args(self) -> list[dict[str, str]]:
+        return [
+            {"channel": _INTERVAL_TO_CHANNEL[interval], "instId": _inst_id_from_symbol(symbol)}
+            for symbol in self.symbols
+            for interval in self.intervals
+        ]
+
+    @property
     def subscription_args(self) -> list[dict[str, str]]:
-        args: list[dict[str, str]] = []
-        for symbol in self.symbols:
-            inst_id = _inst_id_from_symbol(symbol)
-            args.append({"channel": "tickers", "instId": inst_id})
-            for interval in self.intervals:
-                args.append({"channel": _INTERVAL_TO_CHANNEL[interval], "instId": inst_id})
-        return args
+        """Combined subscription list for diagnostics and capacity tests."""
+        return self.ticker_subscription_args + self.candle_subscription_args
 
     @staticmethod
     def _chunk_args(args: list[dict[str, str]], batch_size: int = 40) -> list[list[dict[str, str]]]:
@@ -153,29 +168,49 @@ class OKXMarketStream:
             if last_event is None or time.time() - last_event >= 15.0:
                 await websocket.send("ping")
 
-    async def _run_loop(self) -> None:
+    def _set_connection_state(self, connection: str, connected: bool, *, error: str | None = None) -> None:
+        with self._lock:
+            if connection == "public":
+                self._public_connected = connected
+            else:
+                self._business_connected = connected
+            self._connected = self._public_connected and self._business_connected
+            if error is not None:
+                self._last_error = error
+            elif self._connected:
+                self._last_error = None
+
+    async def _run_connection(
+        self,
+        *,
+        base_url: str,
+        args: list[dict[str, str]],
+        connection: str,
+    ) -> None:
+        if not args:
+            self._set_connection_state(connection, False)
+            return
         backoff = self.reconnect_min_seconds
         first_connect = True
         while not self._stop.is_set():
             heartbeat_task = None
             try:
                 async with websockets.connect(
-                    self.base_url,
+                    base_url,
                     ping_interval=None,
                     ping_timeout=None,
                     close_timeout=5,
                     max_size=4 * 1024 * 1024,
                 ) as websocket:
-                    for args in self.subscription_batches:
-                        await websocket.send(json.dumps({"op": "subscribe", "args": args}))
+                    for batch in self._chunk_args(args, 40):
+                        await websocket.send(json.dumps({"op": "subscribe", "args": batch}))
                     heartbeat_task = asyncio.create_task(self._heartbeat(websocket))
                     with self._lock:
-                        self._connected = True
-                        self._last_error = None
                         if not first_connect:
                             self._reconnects += 1
                     first_connect = False
                     backoff = self.reconnect_min_seconds
+                    self._set_connection_state(connection, True)
 
                     async for message in websocket:
                         if self._stop.is_set():
@@ -185,11 +220,17 @@ class OKXMarketStream:
                             with self._lock:
                                 self._last_event_at = time.time()
                             continue
+                        if message == "pong":
+                            with self._lock:
+                                self._last_event_at = time.time()
+                            continue
                         self._consume_message(message)
             except Exception as exc:
-                with self._lock:
-                    self._connected = False
-                    self._last_error = f"{type(exc).__name__}: {exc}"
+                self._set_connection_state(
+                    connection,
+                    False,
+                    error=f"{connection.upper()}_WS {type(exc).__name__}: {exc}",
+                )
                 if self._stop.is_set():
                     break
                 await asyncio.sleep(backoff)
@@ -197,8 +238,24 @@ class OKXMarketStream:
             finally:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
-                with self._lock:
-                    self._connected = False
+                self._set_connection_state(connection, False)
+
+    async def _run_loop(self) -> None:
+        # OKX does not serve candlestick subscriptions from the ticker-only
+        # public endpoint; both connections are read-only and independently
+        # reconnect, while the combined health is healthy only when both are up.
+        await asyncio.gather(
+            self._run_connection(
+                base_url=self.base_url,
+                args=self.ticker_subscription_args,
+                connection="public",
+            ),
+            self._run_connection(
+                base_url=self.business_base_url,
+                args=self.candle_subscription_args,
+                connection="business",
+            ),
+        )
 
     def _consume_message(self, message: str | bytes) -> None:
         if message == "pong":
@@ -389,6 +446,10 @@ class OKXMarketStream:
                 "available": True,
                 "mode": "PAPER_VENUE_LAB_OKX_WS",
                 "connected": self._connected,
+                "public_connected": self._public_connected,
+                "business_connected": self._business_connected,
+                "public_url": self.base_url,
+                "business_url": self.business_base_url,
                 "stream_count": self.stream_count,
                 "symbol_count": len(self.symbols),
                 "intervals": list(self.intervals),
