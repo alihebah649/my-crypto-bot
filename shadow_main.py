@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import threading
 import time
 from copy import deepcopy
@@ -56,6 +57,14 @@ from core.paper_risk_overlay import (
     btc_recovery_eligible,
     btc_recovery_stop,
     paper_entry_economics,
+)
+
+# Cross-venue feature parity and outcome comparisons are intentionally off while
+# the project validates isolated venue labs. Main mixed-mode execution alignment
+# remains a safety check and is not disabled by this diagnostic toggle.
+PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED = (
+    os.getenv("PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 
 _paper_original_process_market_cycle = _legacy.process_market_cycle
@@ -171,7 +180,10 @@ def _score_symbol_with_execution_alignment(symbol, ticker, candles_15m, candles_
                 # Diagnostic-only in the mixed architecture: compare the same 5m/15m feature inputs on
                 # Bybit and the already-local Binance WS reference. This field
                 # never participates in scoring, Brain, risk, or execution.
-                if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+                if (
+                    PAPER_VENUE_MODE != "BYBIT_ONLY_LAB"
+                    and PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED
+                ):
                     result["source_parity_shadow"] = build_source_parity_shadow(
                         source_ticker=ticker,
                         source_15m_candles=candles_15m,
@@ -442,11 +454,10 @@ _paper_original_facade_execute_decision = runtime.facade.execute_decision
 
 
 def _requires_binance_execution_reference(market_data_source: str) -> bool:
-    """Mixed-mode Bybit signals need Binance execution alignment; the isolated
-    Bybit lab must execute against Bybit only."""
+    """Only MIXED mode routes Bybit-generated signals through Binance reference checks."""
     return (
         str(market_data_source or "").upper() == "BYBIT"
-        and PAPER_VENUE_MODE != "BYBIT_ONLY_LAB"
+        and PAPER_VENUE_MODE == "MIXED"
     )
 _paper_original_24h_tickers = _legacy.fetch_24h_tickers
 _last_btc_guard = {"crashing": False, "drop_percent": 0.0}
@@ -877,7 +888,9 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
         position.entry_metadata["trade_mode"] = mode
         position.entry_metadata["market_data_source"] = market_data_source
-        position.entry_metadata["execution_market_data_source"] = "BINANCE"
+        position.entry_metadata["execution_market_data_source"] = (
+            market_data_source if PAPER_VENUE_MODE != "MIXED" else "BINANCE"
+        )
         position.entry_metadata["signal_entry_price"] = float(entry_price)
         position.entry_metadata["execution_reference_price"] = float(execution_price)
         position.entry_metadata["market_data_alignment"] = deepcopy(market_data_alignment)
@@ -888,7 +901,9 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position.metadata["entry_economics"] = deepcopy(economics)
         position.metadata["trade_mode"] = mode
         position.metadata["market_data_source"] = market_data_source
-        position.metadata["execution_market_data_source"] = "BINANCE"
+        position.metadata["execution_market_data_source"] = (
+            market_data_source if PAPER_VENUE_MODE != "MIXED" else "BINANCE"
+        )
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
@@ -1017,7 +1032,13 @@ def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
 
 @app.get("/paper/market-data-comparison")
 def paper_market_data_comparison():
-    """Compare closed Paper outcomes by their fixed market-data source."""
+    """Optional historical report; disabled while isolated venue labs are validated."""
+    if not PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED:
+        return jsonify({
+            "enabled": False,
+            "reason": "DISABLED_BY_CONFIGURATION",
+            "message": "Cross-venue comparison is paused; market alignment safety checks remain active.",
+        }), 200
     records = []
     if _paper_outcome_store is not None:
         try:
