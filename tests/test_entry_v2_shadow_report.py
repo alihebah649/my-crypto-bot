@@ -249,3 +249,54 @@ def test_shadow_report_uses_position_metadata_when_capture_row_is_missing():
     assert structural["UNKNOWN"]["positions"] == 1
     assert structural["UNKNOWN"]["realized_pnl"] == -0.7
     assert report["recovery_follow_through_shadow"]["closed_paper_outcomes"]["by_action"]["WOULD_BLOCK"]["realized_pnl"] == -0.7
+
+
+
+def test_shadow_report_endpoint_payload_exposes_only_aggregate_shadow_evidence():
+    from engine.entry_v2_shadow_report import build_entry_v2_shadow_report_endpoint_payload
+
+    payload = build_entry_v2_shadow_report_endpoint_payload(
+        {
+            "shadow_report": {
+                "coverage": {"captures": 12, "matched_positions": 4},
+                "structural_stop_shadow": {
+                    "shadow_only": True,
+                    "capture_coverage": {"observed_captures": 8},
+                },
+                "recovery_follow_through_shadow": {
+                    "shadow_only": True,
+                    "capture_coverage": {"observed_captures": 7},
+                },
+                # Detailed rows must not be exposed by this aggregate endpoint.
+                "rejected_executions": [{"position_id": "private-position"}],
+            }
+        },
+        venue_mode="OKX_ONLY_LAB",
+    )
+
+    assert payload["available"] is True
+    assert payload["mode"] == "PAPER"
+    assert payload["venue_mode"] == "OKX_ONLY_LAB"
+    assert payload["shadow_only"] is True
+    assert payload["coverage"] == {"captures": 12, "matched_positions": 4}
+    assert payload["structural_stop_shadow"]["capture_coverage"]["observed_captures"] == 8
+    assert payload["recovery_follow_through_shadow"]["capture_coverage"]["observed_captures"] == 7
+    assert "rejected_executions" not in payload
+    assert payload["scope"]["execution_impact"] == "NONE_DIAGNOSTICS_ONLY"
+
+
+def test_shadow_report_endpoint_payload_marks_unavailable_history():
+    from engine.entry_v2_shadow_report import build_entry_v2_shadow_report_endpoint_payload
+
+    payload = build_entry_v2_shadow_report_endpoint_payload(
+        {"shadow_report": None},
+        venue_mode="MIXED",
+    )
+
+    assert payload == {
+        "available": False,
+        "mode": "PAPER",
+        "venue_mode": "MIXED",
+        "shadow_only": True,
+        "reason": "HISTORICAL_EVIDENCE_UNAVAILABLE",
+    }
