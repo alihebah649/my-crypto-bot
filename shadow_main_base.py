@@ -791,9 +791,21 @@ def _market_data_guard_snapshot() -> dict:
     now = time.time()
     remaining = max(0.0, _binance_block_until - now)
     bybit_remaining = max(0.0, _BYBIT_BLOCK_UNTIL - now)
-    snapshot = dict(_binance_guard)
-    snapshot["blocked_for_seconds"] = round(remaining, 1)
-    snapshot["blocked"] = remaining > 0
+    # Surface the active venue's guard at top level for the generic Paper
+    # health message. A healthy Binance guard must never mask an OKX/Bybit lab
+    # outage merely because the app shares the same code entrypoint.
+    if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        selected_guard = dict(_OKX_GUARD)
+        selected_remaining = okx_remaining = max(0.0, _OKX_BLOCK_UNTIL - now)
+    elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+        selected_guard = dict(_BYBIT_GUARD)
+        selected_remaining = bybit_remaining
+    else:
+        selected_guard = dict(_binance_guard)
+        selected_remaining = remaining
+    snapshot = selected_guard
+    snapshot["blocked_for_seconds"] = round(selected_remaining, 1)
+    snapshot["blocked"] = selected_remaining > 0
     snapshot["bybit"] = {
         **dict(_BYBIT_GUARD),
         "enabled": _BYBIT_MARKET_DATA_ENABLED,
