@@ -186,6 +186,9 @@ def build_paper_outcome_evidence(
             "structural_stop_timeframe": entry_metadata.get("entry_v2_shadow_structural_stop_timeframe"),
             "structural_stop_distance_percent": entry_metadata.get("entry_v2_shadow_structural_stop_distance_percent"),
             "structural_stop_would_widen_current_model": entry_metadata.get("entry_v2_shadow_structural_stop_would_widen_current_model"),
+            "recovery_follow_through_shadow": _safe(
+                entry_metadata.get("entry_v2_shadow_recovery_follow_through_shadow")
+            ),
         },
         "brain": {
             "capture_id": (
