@@ -314,6 +314,26 @@ def _lab_stream_for_mode():
     return None
 
 
+def _lab_expected_market_data_source() -> str | None:
+    return {
+        "BINANCE_ONLY_LAB": "BINANCE",
+        "BYBIT_ONLY_LAB": "BYBIT",
+        "OKX_ONLY_LAB": "OKX",
+    }.get(PAPER_VENUE_MODE)
+
+
+def _lab_kline_payload_matches_venue(payload) -> bool:
+    """Reject persisted candles from a different venue when switching labs."""
+    expected = _lab_expected_market_data_source()
+    if expected is None or not isinstance(payload, (list, tuple)) or not payload:
+        return False
+    return all(
+        isinstance(row, dict)
+        and str(row.get("market_data_source") or "").upper() == expected
+        for row in payload
+    )
+
+
 def _lab_ticker_fallback(symbols: list[str]) -> dict[str, dict]:
     global _LAB_TICKER_FALLBACK_CACHE
     now = time.time()
@@ -647,6 +667,12 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     with _kline_cache_lock:
         cached = _kline_cache.get(key)
         cached_age = None if cached is None else max(0.0, now - cached[0])
+        if PAPER_VENUE_LAB and cached is not None and not _lab_kline_payload_matches_venue(cached[1]):
+            # A service may be switched from Binance to OKX while its state
+            # directory survives. Never seed or return another venue's candles.
+            _kline_cache.pop(key, None)
+            cached = None
+            cached_age = None
         if cached is not None and cached_age < ttl:
             if PAPER_VENUE_LAB:
                 stream = _lab_stream_for_mode()
@@ -660,6 +686,12 @@ def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
                     except Exception:
                         pass
             return cached[1]
+
+    if manager_cache is not None and PAPER_VENUE_LAB and not _lab_kline_payload_matches_venue(
+        getattr(manager_cache, "payload", None)
+    ):
+        # Reject persisted snapshots without explicit matching venue provenance.
+        manager_cache = None
 
     if manager_cache is not None:
         try:
