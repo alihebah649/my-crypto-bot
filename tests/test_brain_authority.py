@@ -424,3 +424,32 @@ def test_brain_blocks_high_score_bear_seller_pressure_profile():
     )
     assert record.allowed is False
     assert record.brain_reason == "BEAR_HIGH_SCORE_NO_SELLER_FAILURE"
+
+
+def test_brain_promotes_low_rsi_swing_higher_timeframe_bearish_veto():
+    brain = GuardedBrainAuthority()
+    strategy = {
+        "signal": "BUY",
+        "swing_signal": "BUY",
+        "swing_score": 80,
+        "trade_mode": "SWING",
+        "rsi5m": 26.03,
+        "volume_ratio_5m": 1.2,
+        "mtf_higher_timeframes_bearish": True,
+    }
+    record = brain.evaluate_entry(
+        "SOLUSDT",
+        strategy,
+        trade_mode="SWING",
+        market_regime="BEAR",
+        entry_v2_shadow={
+            "approved": False,
+            "failed_gate": "SWING_HIGHER_TIMEFRAMES_BEARISH",
+            "trade_mode": "SWING",
+        },
+    )
+
+    assert record.allowed is False
+    assert record.brain_action == "HOLD"
+    assert record.brain_reason == "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
+    assert record.context["selective_v2_veto"] == "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
