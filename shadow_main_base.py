@@ -309,6 +309,8 @@ def _lab_stream_for_mode():
         return _binance_market_stream
     if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
         return _bybit_market_stream
+    if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        return _okx_market_stream
     return None
 
 
@@ -343,6 +345,25 @@ def _lab_ticker_fallback(symbols: list[str]) -> dict[str, dict]:
         except BybitMarketDataError as exc:
             _set_bybit_block(exc, "/v5/market/tickers")
             return {}
+    elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        if not _OKX_MARKET_DATA_ENABLED or _okx_guard_active():
+            return {}
+        try:
+            raw = _okx_client.fetch_tickers(symbols)
+            for symbol, ticker in raw.items():
+                row = dict(ticker)
+                row["market_data_source"] = "OKX"
+                row["market_data_transport"] = "REST_COLD_START"
+                fallback[symbol] = row
+            _OKX_GUARD.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except OKXMarketDataError as exc:
+            _set_okx_block(exc, "/api/v5/market/tickers")
+            return {}
 
     if fallback:
         _LAB_TICKER_FALLBACK_CACHE = (now, dict(fallback))
@@ -366,7 +387,7 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
     # Isolated venue labs consume ticker snapshots from their own WebSocket.
     # REST is a bounded cold-start fallback, never a polling path.
-    if PAPER_VENUE_MODE in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+    if PAPER_VENUE_MODE in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
         stream = _lab_stream_for_mode()
         missing: list[str] = []
         if stream is not None:
@@ -449,8 +470,8 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
 
 def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[dict], stream) -> bool:
-    """Keep Bybit manager freshness aligned with the latest symbol-level WS kline observation."""
-    if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB" or manager is None or not ws_rows:
+    """Keep isolated venue manager freshness aligned with live WS kline observations."""
+    if PAPER_VENUE_MODE not in {"BYBIT_ONLY_LAB", "OKX_ONLY_LAB"} or manager is None or not ws_rows:
         return False
     try:
         stream_snapshot = stream.snapshot()
@@ -563,6 +584,27 @@ def _lab_kline_cold_start(
                 exc,
             )
             _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
+            return []
+    elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        if not _OKX_MARKET_DATA_ENABLED or _okx_guard_active():
+            return []
+        try:
+            data = _okx_client.fetch_klines(symbol, interval, limit)
+            _OKX_GUARD.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except OKXMarketDataError as exc:
+            _legacy.logger.warning(
+                "[OKX-LAB-REST-FALLBACK] failed symbol=%s interval=%s elapsed=%.3fs error=%s",
+                symbol,
+                interval,
+                time.time() - started_at,
+                exc,
+            )
+            _set_okx_block(exc, f"/api/v5/market/candles:{symbol}:{interval}")
             return []
 
     if not data:
@@ -759,10 +801,19 @@ def _market_data_guard_snapshot() -> dict:
         "blocked_for_seconds": round(bybit_remaining, 1),
         "symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
     }
+    okx_remaining = max(0.0, _OKX_BLOCK_UNTIL - now)
+    snapshot["okx"] = {
+        **dict(_OKX_GUARD),
+        "enabled": _OKX_MARKET_DATA_ENABLED,
+        "blocked": okx_remaining > 0,
+        "blocked_for_seconds": round(okx_remaining, 1),
+        "symbols": list(_OKX_MARKET_DATA_SYMBOLS),
+    }
     snapshot["venue_mode"] = PAPER_VENUE_MODE
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
         "bybit_symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
+        "okx_symbols": list(_OKX_MARKET_DATA_SYMBOLS),
     }
     with _kline_cache_lock:
         snapshot["kline_cache_entries"] = len(_kline_cache)
@@ -783,8 +834,11 @@ def _market_data_guard_snapshot() -> dict:
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
-    lab_stream = _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" else (
-        _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else None
+    lab_stream = (
+        _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"
+        else _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB"
+        else _okx_market_stream if PAPER_VENUE_MODE == "OKX_ONLY_LAB"
+        else None
     )
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
     for symbol in TRADING_SYMBOLS:
