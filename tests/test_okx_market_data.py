@@ -121,3 +121,37 @@ def test_okx_api_business_error_is_not_accepted_as_market_data(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
     with pytest.raises(OKXMarketDataError, match="API error"):
         OKXMarketDataClient().fetch_tickers(["BTCUSDT"])
+
+
+def test_okx_lab_ticker_router_uses_only_its_own_stream(monkeypatch):
+    import time
+    import shadow_main
+
+    class FakeStream:
+        stale_after_seconds = 30.0
+
+        def get_latest_ticker(self, symbol):
+            return {
+                "symbol": symbol,
+                "lastPrice": 42.0,
+                "received_at": time.time(),
+                "market_data_source": "OKX",
+            }
+
+    monkeypatch.setattr(shadow_main, "PAPER_VENUE_MODE", "OKX_ONLY_LAB")
+    monkeypatch.setattr(shadow_main, "_okx_market_stream", FakeStream())
+    monkeypatch.setattr(
+        shadow_main,
+        "_original_fetch_24h_tickers",
+        lambda symbols: (_ for _ in ()).throw(AssertionError("Binance REST must not be called")),
+    )
+    monkeypatch.setattr(
+        shadow_main._okx_client,
+        "fetch_tickers",
+        lambda symbols: (_ for _ in ()).throw(AssertionError("REST fallback not needed for fresh WS data")),
+    )
+
+    result = shadow_main._guarded_fetch_24h_tickers(["BTCUSDT"])
+
+    assert set(result) == {"BTCUSDT"}
+    assert result["BTCUSDT"]["market_data_source"] == "OKX"
