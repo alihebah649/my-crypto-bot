@@ -30,11 +30,11 @@ _INTERVAL_MS = {
 _HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
 
 
-def _float(value: Any) -> float:
+def _float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return float(default)
 
 
 def _int(value: Any) -> int:
@@ -426,6 +426,11 @@ class OKXMarketStream:
     def get_latest_ticker(self, symbol: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._latest_ticker.get(str(symbol).upper())
+            return dict(value) if isinstance(value, Mapping) else None
+
+    def get_latest_kline(self, symbol: str, interval: str) -> dict[str, Any] | None:
+        with self._lock:
+            value = self._latest_kline.get((str(symbol).upper(), str(interval)))
             return dict(value) if isinstance(value, Mapping) else None
 
     def get_latest_closed_kline(self, symbol: str, interval: str) -> dict[str, Any] | None:
