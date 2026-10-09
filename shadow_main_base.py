@@ -33,6 +33,8 @@ from core.binance_market_stream import BinanceMarketStream
 from core.binance_snapshot_consumer import BinanceSnapshotError, hydrate_market_data_manager
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
 from core.bybit_market_stream import BybitMarketStream
+from core.okx_market_data import OKXMarketDataClient, OKXMarketDataError
+from core.okx_market_stream import OKXMarketStream
 from trade_manager.core_risk_providers import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
@@ -63,7 +65,7 @@ _binance_backoff_seconds = 300.0
 # acquisition only; fees, risk, execution, and order venues remain unchanged.
 _BYBIT_MARKET_DATA_ENABLED = os.getenv("BYBIT_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
 PAPER_VENUE_MODE = os.getenv("PAPER_VENUE_MODE", "MIXED").strip().upper()
-if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
     raise ValueError(f"Unsupported PAPER_VENUE_MODE: {PAPER_VENUE_MODE}")
 PAPER_VENUE_LAB = PAPER_VENUE_MODE != "MIXED"
 _BYBIT_MARKET_DATA_REST = os.getenv("BYBIT_MARKET_DATA_REST_URL", "https://api.bybit.com").strip()
@@ -80,19 +82,40 @@ _BYBIT_GUARD = {
 _BYBIT_TICKER_CACHE_TTL = 30.0
 _BYBIT_TICKER_CACHE: tuple[float, dict[str, dict]] | None = None
 _bybit_client = BybitMarketDataClient(base_url=_BYBIT_MARKET_DATA_REST)
+_OKX_MARKET_DATA_ENABLED = os.getenv("OKX_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+_OKX_MARKET_DATA_REST = os.getenv("OKX_MARKET_DATA_REST_URL", "https://openapi.okx.com").strip()
+_OKX_BLOCK_UNTIL = 0.0
+_OKX_BACKOFF_SECONDS = 120.0
+_OKX_GUARD = {
+    "state": "DISABLED" if not _OKX_MARKET_DATA_ENABLED else "READY",
+    "status_code": None,
+    "blocked_until": 0.0,
+    "retry_after_seconds": 0.0,
+    "last_error": None,
+    "last_path": None,
+}
+_okx_client = OKXMarketDataClient(base_url=_OKX_MARKET_DATA_REST)
 
 _market_data_split = len(TRADING_SYMBOLS) // 2
 if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
     _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
     _BYBIT_MARKET_DATA_SYMBOLS = ()
+    _OKX_MARKET_DATA_SYMBOLS = ()
 elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
     _BINANCE_MARKET_DATA_SYMBOLS = ()
     _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+    _OKX_MARKET_DATA_SYMBOLS = ()
+elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = ()
+    _BYBIT_MARKET_DATA_SYMBOLS = ()
+    _OKX_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
 else:
     _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
     _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
+    _OKX_MARKET_DATA_SYMBOLS = ()
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
+_OKX_MARKET_DATA_SYMBOL_SET = set(_OKX_MARKET_DATA_SYMBOLS)
 _binance_guard = {
     "state": "READY",
     "status_code": None,
@@ -235,6 +258,28 @@ def _binance_guard_active() -> bool:
 
 def _bybit_guard_active() -> bool:
     return (not _BYBIT_MARKET_DATA_ENABLED) or time.time() < _BYBIT_BLOCK_UNTIL
+
+
+def _okx_guard_active() -> bool:
+    return (not _OKX_MARKET_DATA_ENABLED) or time.time() < _OKX_BLOCK_UNTIL
+
+
+def _set_okx_block(exc: Exception, path: str) -> None:
+    global _OKX_BLOCK_UNTIL, _OKX_BACKOFF_SECONDS
+    message = str(exc)
+    is_rate_limit = "HTTP 403" in message or "HTTP 429" in message
+    retry_after = max(120.0, _OKX_BACKOFF_SECONDS) if is_rate_limit else max(60.0, _OKX_BACKOFF_SECONDS)
+    _OKX_BLOCK_UNTIL = time.time() + retry_after
+    _OKX_GUARD.update({
+        "state": "BLOCKED",
+        "status_code": 403 if "HTTP 403" in message else (429 if "HTTP 429" in message else None),
+        "blocked_until": _OKX_BLOCK_UNTIL,
+        "retry_after_seconds": retry_after,
+        "last_error": f"{type(exc).__name__}: {exc}",
+        "last_path": path,
+    })
+    _OKX_BACKOFF_SECONDS = min(max(_OKX_BACKOFF_SECONDS * 2.0, retry_after), 1800.0)
+    _legacy.logger.warning("OKX market-data guard activated: path=%s retry_in=%.1fs", path, retry_after)
 
 
 def _set_bybit_block(exc: Exception, path: str) -> None:
