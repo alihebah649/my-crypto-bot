@@ -50,3 +50,16 @@ def test_active_score_wrapper_carries_market_data_source():
     finally:
         shadow_main.score_symbol = original
         shadow_main._mtf_candles.pop("TESTUSDT", None)
+
+
+def test_cross_venue_outcome_comparison_endpoint_is_paused_by_default(monkeypatch):
+    import shadow_main
+
+    monkeypatch.setattr(shadow_main, "PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED", False)
+    response = shadow_main.app.test_client().get("/paper/market-data-comparison")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["enabled"] is False
+    assert payload["reason"] == "DISABLED_BY_CONFIGURATION"
+    assert "alignment safety checks remain active" in payload["message"]
