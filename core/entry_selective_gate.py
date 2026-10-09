@@ -74,6 +74,16 @@ def selective_entry_veto(
         or ""
     ).upper()
 
+    # A SWING entry is not authorized when Entry v2 identifies both 1h and 4h
+    # as bearish. This failure reason is stronger than RSI oversold: the
+    # latest paper candidates included low-RSI SWING BUYs that were explicitly
+    # rejected as SWING_HIGHER_TIMEFRAMES_BEARISH, while the prior selective
+    # veto checked the separate missing-structure gate only when RSI >= 49.
+    # Promote this exact, lane-specific structural veto to Brain regardless of
+    # RSI. SCALP remains unaffected, and all other V2 failures remain advisory.
+    if lane == "SWING" and failed_gate == "SWING_HIGHER_TIMEFRAMES_BEARISH":
+        return "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
+
     # Preserve the previously calibrated RSI-pressure vetoes first.
     try:
         rsi5m = float(strategy.get("rsi5m"))
