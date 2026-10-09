@@ -155,3 +155,25 @@ def test_okx_lab_ticker_router_uses_only_its_own_stream(monkeypatch):
 
     assert set(result) == {"BTCUSDT"}
     assert result["BTCUSDT"]["market_data_source"] == "OKX"
+
+
+def test_okx_lab_health_uses_okx_guard_not_healthy_binance_guard(monkeypatch):
+    import time
+    import shadow_main
+
+    monkeypatch.setattr(shadow_main, "PAPER_VENUE_MODE", "OKX_ONLY_LAB")
+    monkeypatch.setattr(shadow_main, "_binance_guard", {"state": "READY", "last_error": None})
+    monkeypatch.setattr(shadow_main, "_OKX_GUARD", {
+        "state": "BLOCKED", "status_code": 429, "last_error": "rate limited",
+        "blocked_until": time.time() + 120, "retry_after_seconds": 120,
+        "last_path": "/api/v5/market/candles",
+    })
+    monkeypatch.setattr(shadow_main, "_OKX_BLOCK_UNTIL", time.time() + 120)
+
+    snapshot = shadow_main._market_data_guard_snapshot()
+
+    assert snapshot["venue_mode"] == "OKX_ONLY_LAB"
+    assert snapshot["state"] == "BLOCKED"
+    assert snapshot["status_code"] == 429
+    assert snapshot["blocked"] is True
+    assert snapshot["okx"]["state"] == "BLOCKED"
