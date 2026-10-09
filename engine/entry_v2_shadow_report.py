@@ -450,4 +450,43 @@ def build_entry_v2_shadow_report(
     }
 
 
-__all__ = ["build_entry_v2_shadow_report"]
+def build_entry_v2_shadow_report_endpoint_payload(
+    analysis: Mapping[str, Any],
+    *,
+    venue_mode: str,
+) -> dict[str, Any]:
+    """Return aggregate-only, JSON-safe shadow evidence for the Paper diagnostics route."""
+    report = analysis.get("shadow_report") if isinstance(analysis, Mapping) else None
+    mode = str(venue_mode or "UNKNOWN").upper()
+    if not isinstance(report, Mapping) or report.get("error"):
+        return {
+            "available": False,
+            "mode": "PAPER",
+            "venue_mode": mode,
+            "shadow_only": True,
+            "reason": "HISTORICAL_EVIDENCE_UNAVAILABLE",
+        }
+
+    return {
+        "available": True,
+        "mode": "PAPER",
+        "venue_mode": mode,
+        "shadow_only": True,
+        "scope": {
+            "capture_coverage": (
+                "The report uses the configured durable Entry v2 capture store."
+            ),
+            "paper_outcomes": (
+                "Closed-position outcomes come from this running service's Paper repository."
+            ),
+            "execution_impact": "NONE_DIAGNOSTICS_ONLY",
+        },
+        "coverage": report.get("coverage", {}),
+        "structural_stop_shadow": report.get("structural_stop_shadow", {}),
+        "recovery_follow_through_shadow": report.get(
+            "recovery_follow_through_shadow", {}
+        ),
+    }
+
+
+__all__ = ["build_entry_v2_shadow_report", "build_entry_v2_shadow_report_endpoint_payload"]
