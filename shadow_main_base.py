@@ -33,6 +33,8 @@ from core.binance_market_stream import BinanceMarketStream
 from core.binance_snapshot_consumer import BinanceSnapshotError, hydrate_market_data_manager
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
 from core.bybit_market_stream import BybitMarketStream
+from core.okx_market_data import OKXMarketDataClient, OKXMarketDataError
+from core.okx_market_stream import OKXMarketStream
 from trade_manager.core_risk_providers import KlineCorrelationProvider
 
 # Additional assets are deliberately limited to established Spot assets that
@@ -63,7 +65,7 @@ _binance_backoff_seconds = 300.0
 # acquisition only; fees, risk, execution, and order venues remain unchanged.
 _BYBIT_MARKET_DATA_ENABLED = os.getenv("BYBIT_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
 PAPER_VENUE_MODE = os.getenv("PAPER_VENUE_MODE", "MIXED").strip().upper()
-if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
     raise ValueError(f"Unsupported PAPER_VENUE_MODE: {PAPER_VENUE_MODE}")
 PAPER_VENUE_LAB = PAPER_VENUE_MODE != "MIXED"
 _BYBIT_MARKET_DATA_REST = os.getenv("BYBIT_MARKET_DATA_REST_URL", "https://api.bybit.com").strip()
@@ -80,19 +82,40 @@ _BYBIT_GUARD = {
 _BYBIT_TICKER_CACHE_TTL = 30.0
 _BYBIT_TICKER_CACHE: tuple[float, dict[str, dict]] | None = None
 _bybit_client = BybitMarketDataClient(base_url=_BYBIT_MARKET_DATA_REST)
+_OKX_MARKET_DATA_ENABLED = os.getenv("OKX_MARKET_DATA_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+_OKX_MARKET_DATA_REST = os.getenv("OKX_MARKET_DATA_REST_URL", "https://openapi.okx.com").strip()
+_OKX_BLOCK_UNTIL = 0.0
+_OKX_BACKOFF_SECONDS = 120.0
+_OKX_GUARD = {
+    "state": "DISABLED" if not _OKX_MARKET_DATA_ENABLED else "READY",
+    "status_code": None,
+    "blocked_until": 0.0,
+    "retry_after_seconds": 0.0,
+    "last_error": None,
+    "last_path": None,
+}
+_okx_client = OKXMarketDataClient(base_url=_OKX_MARKET_DATA_REST)
 
 _market_data_split = len(TRADING_SYMBOLS) // 2
 if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
     _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
     _BYBIT_MARKET_DATA_SYMBOLS = ()
+    _OKX_MARKET_DATA_SYMBOLS = ()
 elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
     _BINANCE_MARKET_DATA_SYMBOLS = ()
     _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
+    _OKX_MARKET_DATA_SYMBOLS = ()
+elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+    _BINANCE_MARKET_DATA_SYMBOLS = ()
+    _BYBIT_MARKET_DATA_SYMBOLS = ()
+    _OKX_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
 else:
     _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
     _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
+    _OKX_MARKET_DATA_SYMBOLS = ()
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
+_OKX_MARKET_DATA_SYMBOL_SET = set(_OKX_MARKET_DATA_SYMBOLS)
 _binance_guard = {
     "state": "READY",
     "status_code": None,
@@ -237,6 +260,28 @@ def _bybit_guard_active() -> bool:
     return (not _BYBIT_MARKET_DATA_ENABLED) or time.time() < _BYBIT_BLOCK_UNTIL
 
 
+def _okx_guard_active() -> bool:
+    return (not _OKX_MARKET_DATA_ENABLED) or time.time() < _OKX_BLOCK_UNTIL
+
+
+def _set_okx_block(exc: Exception, path: str) -> None:
+    global _OKX_BLOCK_UNTIL, _OKX_BACKOFF_SECONDS
+    message = str(exc)
+    is_rate_limit = "HTTP 403" in message or "HTTP 429" in message
+    retry_after = max(120.0, _OKX_BACKOFF_SECONDS) if is_rate_limit else max(60.0, _OKX_BACKOFF_SECONDS)
+    _OKX_BLOCK_UNTIL = time.time() + retry_after
+    _OKX_GUARD.update({
+        "state": "BLOCKED",
+        "status_code": 403 if "HTTP 403" in message else (429 if "HTTP 429" in message else None),
+        "blocked_until": _OKX_BLOCK_UNTIL,
+        "retry_after_seconds": retry_after,
+        "last_error": f"{type(exc).__name__}: {exc}",
+        "last_path": path,
+    })
+    _OKX_BACKOFF_SECONDS = min(max(_OKX_BACKOFF_SECONDS * 2.0, retry_after), 1800.0)
+    _legacy.logger.warning("OKX market-data guard activated: path=%s retry_in=%.1fs", path, retry_after)
+
+
 def _set_bybit_block(exc: Exception, path: str) -> None:
     global _BYBIT_BLOCK_UNTIL, _BYBIT_BACKOFF_SECONDS
     message = str(exc)
@@ -264,6 +309,8 @@ def _lab_stream_for_mode():
         return _binance_market_stream
     if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
         return _bybit_market_stream
+    if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        return _okx_market_stream
     return None
 
 
@@ -298,6 +345,25 @@ def _lab_ticker_fallback(symbols: list[str]) -> dict[str, dict]:
         except BybitMarketDataError as exc:
             _set_bybit_block(exc, "/v5/market/tickers")
             return {}
+    elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        if not _OKX_MARKET_DATA_ENABLED or _okx_guard_active():
+            return {}
+        try:
+            raw = _okx_client.fetch_tickers(symbols)
+            for symbol, ticker in raw.items():
+                row = dict(ticker)
+                row["market_data_source"] = "OKX"
+                row["market_data_transport"] = "REST_COLD_START"
+                fallback[symbol] = row
+            _OKX_GUARD.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except OKXMarketDataError as exc:
+            _set_okx_block(exc, "/api/v5/market/tickers")
+            return {}
 
     if fallback:
         _LAB_TICKER_FALLBACK_CACHE = (now, dict(fallback))
@@ -321,7 +387,7 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
     # Isolated venue labs consume ticker snapshots from their own WebSocket.
     # REST is a bounded cold-start fallback, never a polling path.
-    if PAPER_VENUE_MODE in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB"}:
+    if PAPER_VENUE_MODE in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
         stream = _lab_stream_for_mode()
         missing: list[str] = []
         if stream is not None:
@@ -404,8 +470,8 @@ def _guarded_fetch_24h_tickers(symbols=None):
 
 
 def _sync_bybit_ws_kline_manager_cache(manager, cache_key: str, ws_rows: list[dict], stream) -> bool:
-    """Keep Bybit manager freshness aligned with the latest symbol-level WS kline observation."""
-    if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB" or manager is None or not ws_rows:
+    """Keep isolated venue manager freshness aligned with live WS kline observations."""
+    if PAPER_VENUE_MODE not in {"BYBIT_ONLY_LAB", "OKX_ONLY_LAB"} or manager is None or not ws_rows:
         return False
     try:
         stream_snapshot = stream.snapshot()
@@ -518,6 +584,27 @@ def _lab_kline_cold_start(
                 exc,
             )
             _set_bybit_block(exc, f"/v5/market/kline:{symbol}:{interval}")
+            return []
+    elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        if not _OKX_MARKET_DATA_ENABLED or _okx_guard_active():
+            return []
+        try:
+            data = _okx_client.fetch_klines(symbol, interval, limit)
+            _OKX_GUARD.update({
+                "state": "READY",
+                "status_code": None,
+                "last_error": None,
+                "last_path": None,
+            })
+        except OKXMarketDataError as exc:
+            _legacy.logger.warning(
+                "[OKX-LAB-REST-FALLBACK] failed symbol=%s interval=%s elapsed=%.3fs error=%s",
+                symbol,
+                interval,
+                time.time() - started_at,
+                exc,
+            )
+            _set_okx_block(exc, f"/api/v5/market/candles:{symbol}:{interval}")
             return []
 
     if not data:
@@ -704,9 +791,21 @@ def _market_data_guard_snapshot() -> dict:
     now = time.time()
     remaining = max(0.0, _binance_block_until - now)
     bybit_remaining = max(0.0, _BYBIT_BLOCK_UNTIL - now)
-    snapshot = dict(_binance_guard)
-    snapshot["blocked_for_seconds"] = round(remaining, 1)
-    snapshot["blocked"] = remaining > 0
+    # Surface the active venue's guard at top level for the generic Paper
+    # health message. A healthy Binance guard must never mask an OKX/Bybit lab
+    # outage merely because the app shares the same code entrypoint.
+    if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+        selected_guard = dict(_OKX_GUARD)
+        selected_remaining = okx_remaining = max(0.0, _OKX_BLOCK_UNTIL - now)
+    elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
+        selected_guard = dict(_BYBIT_GUARD)
+        selected_remaining = bybit_remaining
+    else:
+        selected_guard = dict(_binance_guard)
+        selected_remaining = remaining
+    snapshot = selected_guard
+    snapshot["blocked_for_seconds"] = round(selected_remaining, 1)
+    snapshot["blocked"] = selected_remaining > 0
     snapshot["bybit"] = {
         **dict(_BYBIT_GUARD),
         "enabled": _BYBIT_MARKET_DATA_ENABLED,
@@ -714,10 +813,19 @@ def _market_data_guard_snapshot() -> dict:
         "blocked_for_seconds": round(bybit_remaining, 1),
         "symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
     }
+    okx_remaining = max(0.0, _OKX_BLOCK_UNTIL - now)
+    snapshot["okx"] = {
+        **dict(_OKX_GUARD),
+        "enabled": _OKX_MARKET_DATA_ENABLED,
+        "blocked": okx_remaining > 0,
+        "blocked_for_seconds": round(okx_remaining, 1),
+        "symbols": list(_OKX_MARKET_DATA_SYMBOLS),
+    }
     snapshot["venue_mode"] = PAPER_VENUE_MODE
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
         "bybit_symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
+        "okx_symbols": list(_OKX_MARKET_DATA_SYMBOLS),
     }
     with _kline_cache_lock:
         snapshot["kline_cache_entries"] = len(_kline_cache)
@@ -738,8 +846,11 @@ def _market_data_guard_snapshot() -> dict:
 
 def _fetch_mtf_context() -> dict[str, dict[str, list[dict]]]:
     result: dict[str, dict[str, list[dict]]] = {symbol: {} for symbol in TRADING_SYMBOLS}
-    lab_stream = _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB" else (
-        _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else None
+    lab_stream = (
+        _bybit_market_stream if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB"
+        else _binance_market_stream if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB"
+        else _okx_market_stream if PAPER_VENUE_MODE == "OKX_ONLY_LAB"
+        else None
     )
     jobs: dict[concurrent.futures.Future, tuple[str, str]] = {}
     for symbol in TRADING_SYMBOLS:
@@ -899,13 +1010,13 @@ def _seed_binance_lab_stream_from_manager_cache(stream) -> int:
     return seeded
 
 
-# Venue Lab WebSocket feed.
+# Venue Lab WebSocket feeds.
 # MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
-# Each isolated lab uses all four strategy timeframes from its own venue so
-# 1h/4h context does not silently fall back to the other exchange.
+# Each isolated lab uses all four strategy timeframes from its own venue.
 _binance_market_stream = None
 _bybit_market_stream = None
-if PAPER_VENUE_MODE != "BYBIT_ONLY_LAB":
+_okx_market_stream = None
+if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"}:
     _binance_ws_intervals = ("5m", "15m", "1h", "4h") if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else ("5m", "15m")
     _binance_market_stream = BinanceMarketStream(
         TRADING_SYMBOLS,
@@ -930,6 +1041,22 @@ if PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
 else:
     _legacy.bybit_market_stream = None
 
+if PAPER_VENUE_MODE == "OKX_ONLY_LAB":
+    _okx_market_stream = OKXMarketStream(
+        TRADING_SYMBOLS,
+        intervals=("5m", "15m", "1h", "4h"),
+        base_url=os.getenv("OKX_MARKET_DATA_WS_PUBLIC_URL", "wss://ws.okx.com/ws/v5/public").strip(),
+        business_base_url=os.getenv(
+            "OKX_MARKET_DATA_WS_BUSINESS_URL",
+            "wss://ws.okx.com/ws/v5/business",
+        ).strip(),
+    )
+    if globals().get("_SHADOW_MAIN_EMBEDDED", False):
+        _okx_market_stream.start()
+    _legacy.okx_market_stream = _okx_market_stream
+else:
+    _legacy.okx_market_stream = None
+
 
 def _binance_ws_health():
     if _binance_market_stream is None:
@@ -943,6 +1070,12 @@ def _bybit_ws_health():
     return jsonify(_bybit_market_stream.snapshot()), 200
 
 
+def _okx_ws_health():
+    if _okx_market_stream is None:
+        return jsonify({"available": False, "venue_mode": PAPER_VENUE_MODE}), 200
+    return jsonify(_okx_market_stream.snapshot()), 200
+
+
 if "binance_ws_health" not in app.view_functions:
     app.add_url_rule(
         "/binance-ws-health",
@@ -954,6 +1087,12 @@ if "bybit_ws_health" not in app.view_functions:
         "/bybit-ws-health",
         endpoint="bybit_ws_health",
         view_func=_bybit_ws_health,
+    )
+if "okx_ws_health" not in app.view_functions:
+    app.add_url_rule(
+        "/okx-ws-health",
+        endpoint="okx_ws_health",
+        view_func=_okx_ws_health,
     )
 brain_shadow_runtime = BrainShadowRuntime()
 _brain_shadow_persistence_dir = getattr(runtime, "persistence_dir", None)
@@ -1026,6 +1165,7 @@ _PAPER_BOT_IDENTITY = {
     "MIXED": ("MAIN BOT", "MIXED / 22-SYMBOL SHARDED"),
     "BINANCE_ONLY_LAB": ("BINANCE LAB", "BINANCE ONLY / 22 SYMBOLS"),
     "BYBIT_ONLY_LAB": ("BYBIT LAB", "BYBIT ONLY / 22 SYMBOLS"),
+    "OKX_ONLY_LAB": ("OKX LAB", "OKX SPOT ONLY / 22 SYMBOLS"),
 }.get(
     PAPER_VENUE_MODE,
     ("UNKNOWN BOT", PAPER_VENUE_MODE),
