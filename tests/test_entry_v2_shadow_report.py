@@ -145,3 +145,107 @@ def test_shadow_report_exposes_maturity_experiment_outcomes():
         "realized_pnl": -0.75,
         "fees": 0.1,
     }
+
+
+
+def test_shadow_report_aggregates_structural_stop_and_recovery_follow_through_evidence():
+    actions = [
+        ("CAP-WIDE", "ADAUSDT", 90.0, 95.0, False, "WOULD_ALLOW", 1.0),
+        ("CAP-NARROW", "SOLUSDT", 96.0, 95.0, True, "WOULD_BLOCK", -2.0),
+        # A stale false flag must not imply a valid non-widening comparison.
+        ("CAP-NO-CANDIDATE", "BNBUSDT", None, 95.0, False, "NOT_APPLICABLE", 0.2),
+        ("CAP-NO-ATR", "XRPUSDT", 90.0, None, True, "INSUFFICIENT_DATA", -0.5),
+    ]
+    captures = []
+    positions = []
+    for capture_id, symbol, candidate, atr_stop, stored_widen, recovery_action, pnl in actions:
+        capture = _capture(
+            capture_id,
+            symbol,
+            f"2026-10-09T05:{len(captures):02d}:00Z",
+            True,
+        )
+        capture["entry_scenario"]["risk"].update({
+            "structural_stop_candidate": candidate,
+            "atr_stop_loss": atr_stop,
+            "structural_stop_would_widen_current_model": stored_widen,
+        })
+        capture["entry_scenario"]["trigger"] = {
+            "recovery_follow_through_shadow": {
+                "schema_version": 1,
+                "shadow_only": True,
+                "applicable": recovery_action in {"WOULD_ALLOW", "WOULD_BLOCK"},
+                "available": recovery_action != "INSUFFICIENT_DATA",
+                "would_be_action": recovery_action,
+            }
+        }
+        captures.append(capture)
+        positions.append({
+            "position_id": f"POS-{capture_id}",
+            "symbol": symbol,
+            "status": "CLOSED",
+            "entry_metadata": {
+                "entry_v2_shadow_capture_id": capture_id,
+                "trade_mode": "SCALP",
+            },
+            "realized_pnl": pnl,
+            "total_fees": 0.1,
+        })
+
+    report = build_entry_v2_shadow_report(captures, positions)
+    structural = report["structural_stop_shadow"]
+    assert structural["shadow_only"] is True
+    assert structural["capture_coverage"] == {
+        "captures": 4,
+        "observed_captures": 4,
+        "candidate_presence": {"PRESENT": 3, "MISSING": 1},
+        "comparison": {"WOULD_WIDEN": 1, "WOULD_NOT_WIDEN": 1, "UNKNOWN": 2},
+    }
+    outcomes = structural["closed_paper_outcomes"]["by_comparison"]
+    assert outcomes["WOULD_WIDEN"]["positions"] == 1
+    assert outcomes["WOULD_WIDEN"]["realized_pnl"] == 1.0
+    assert outcomes["WOULD_NOT_WIDEN"]["realized_pnl"] == -2.0
+    assert outcomes["UNKNOWN"]["positions"] == 2
+    assert outcomes["UNKNOWN"]["realized_pnl"] == -0.3
+    assert structural["closed_paper_outcomes"]["by_candidate_presence"]["MISSING"]["realized_pnl"] == 0.2
+
+    recovery = report["recovery_follow_through_shadow"]
+    assert recovery["shadow_only"] is True
+    assert recovery["capture_coverage"]["observed_captures"] == 4
+    assert recovery["capture_coverage"]["by_action"] == {
+        "WOULD_ALLOW": 1,
+        "WOULD_BLOCK": 1,
+        "NOT_APPLICABLE": 1,
+        "INSUFFICIENT_DATA": 1,
+    }
+    recovery_outcomes = recovery["closed_paper_outcomes"]["by_action"]
+    assert recovery_outcomes["WOULD_ALLOW"]["realized_pnl"] == 1.0
+    assert recovery_outcomes["WOULD_BLOCK"]["realized_pnl"] == -2.0
+    assert recovery_outcomes["NOT_APPLICABLE"]["realized_pnl"] == 0.2
+    assert recovery_outcomes["INSUFFICIENT_DATA"]["realized_pnl"] == -0.5
+    assert "not P&L that a block would necessarily have avoided" in recovery["closed_paper_outcomes"]["interpretation"]
+
+
+def test_shadow_report_uses_position_metadata_when_capture_row_is_missing():
+    position = {
+        "position_id": "POS-LEGACY-UNKNOWN",
+        "symbol": "DOTUSDT",
+        "status": "CLOSED",
+        "entry_metadata": {
+            "entry_v2_shadow_structural_stop_candidate": None,
+            "entry_v2_shadow_atr_stop_loss": 50.0,
+            "entry_v2_shadow_structural_stop_would_widen_current_model": False,
+            "entry_v2_shadow_recovery_follow_through_shadow": {
+                "would_be_action": "WOULD_BLOCK",
+                "shadow_only": True,
+            },
+        },
+        "realized_pnl": -0.7,
+        "total_fees": 0.1,
+    }
+
+    report = build_entry_v2_shadow_report([], [position])
+    structural = report["structural_stop_shadow"]["closed_paper_outcomes"]["by_comparison"]
+    assert structural["UNKNOWN"]["positions"] == 1
+    assert structural["UNKNOWN"]["realized_pnl"] == -0.7
+    assert report["recovery_follow_through_shadow"]["closed_paper_outcomes"]["by_action"]["WOULD_BLOCK"]["realized_pnl"] == -0.7
