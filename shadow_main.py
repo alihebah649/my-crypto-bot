@@ -1516,16 +1516,70 @@ def _binance_rest_ws_compare_loop() -> None:
         time.sleep(60.0)
 
 
-def _binance_websocket_health_loop() -> None:
+def _selected_venue_websocket_snapshot() -> tuple[str, dict[str, object]]:
+    """Return health for the configured venue only; never substitute Binance in a lab."""
+    mode = str(globals().get("PAPER_VENUE_MODE", "MIXED") or "MIXED").upper()
+    venue, stream_name = {
+        "OKX_ONLY_LAB": ("OKX", "_okx_market_stream"),
+        "BYBIT_ONLY_LAB": ("BYBIT", "_bybit_market_stream"),
+        "BINANCE_ONLY_LAB": ("BINANCE", "_binance_market_stream"),
+        "MIXED": ("BINANCE", "_binance_market_stream"),
+    }.get(mode, ("UNKNOWN", ""))
+
+    stream = globals().get(stream_name) if stream_name else None
+    snapshot_method = getattr(stream, "snapshot", None)
+    if not callable(snapshot_method):
+        return venue, {
+            "available": False,
+            "connected": False,
+            "event_stream_healthy": False,
+            "venue_mode": mode,
+            "reason": "SELECTED_VENUE_STREAM_UNAVAILABLE",
+        }
+    snapshot = snapshot_method()
+    return venue, dict(snapshot) if isinstance(snapshot, dict) else {
+        "available": False,
+        "connected": False,
+        "event_stream_healthy": False,
+        "venue_mode": mode,
+        "reason": "INVALID_HEALTH_SNAPSHOT",
+    }
+
+
+def _venue_websocket_health_loop() -> None:
     while True:
         try:
-            stream = globals().get("_binance_market_stream")
-            if stream is not None and callable(getattr(stream, "snapshot", None)):
-                snapshot = stream.snapshot()
+            venue, snapshot = _selected_venue_websocket_snapshot()
+            if venue == "OKX":
                 _legacy.logger.info(
-                    "[BINANCE-WS-HEALTH] connected=%s healthy=%s streams=%s "
-                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s "
-                    "closed_kline=%s reconnects=%s parse_errors=%s last_event_age=%.2f",
+                    "[OKX-WS-HEALTH] connected=%s public_connected=%s business_connected=%s "
+                    "healthy=%s streams=%s kline_coverage=%s/%s ticker_coverage=%s/%s "
+                    "events=%s closed_kline=%s reconnects=%s parse_errors=%s "
+                    "last_event_age=%s last_error=%s",
+                    snapshot.get("connected"),
+                    snapshot.get("public_connected"),
+                    snapshot.get("business_connected"),
+                    snapshot.get("event_stream_healthy"),
+                    snapshot.get("stream_count"),
+                    snapshot.get("symbols_with_latest_kline"),
+                    snapshot.get("expected_kline_streams"),
+                    snapshot.get("tickers_with_latest"),
+                    snapshot.get("expected_tickers"),
+                    snapshot.get("events_total"),
+                    snapshot.get("closed_kline_events"),
+                    snapshot.get("reconnects"),
+                    snapshot.get("parse_errors"),
+                    snapshot.get("last_event_age_seconds"),
+                    snapshot.get("last_error"),
+                )
+            else:
+                _legacy.logger.info(
+                    "[%s-WS-HEALTH] mode=%s available=%s connected=%s healthy=%s streams=%s "
+                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s closed_kline=%s "
+                    "reconnects=%s parse_errors=%s last_event_age=%s last_error=%s",
+                    venue,
+                    snapshot.get("venue_mode", globals().get("PAPER_VENUE_MODE", "MIXED")),
+                    snapshot.get("available", True),
                     snapshot.get("connected"),
                     snapshot.get("event_stream_healthy"),
                     snapshot.get("stream_count"),
@@ -1537,11 +1591,17 @@ def _binance_websocket_health_loop() -> None:
                     snapshot.get("closed_kline_events"),
                     snapshot.get("reconnects"),
                     snapshot.get("parse_errors"),
-                    float(snapshot.get("last_event_age_seconds") or 0.0),
+                    snapshot.get("last_event_age_seconds"),
+                    snapshot.get("last_error"),
                 )
         except Exception:
-            _legacy.logger.exception("Binance WebSocket health logger failed")
+            _legacy.logger.exception("Selected venue WebSocket health logger failed")
         time.sleep(60.0)
+
+
+# Backward-compatible name for existing imports/tests.
+def _binance_websocket_health_loop() -> None:
+    _venue_websocket_health_loop()
 
 
 def _paper_engine_thread_watchdog() -> None:
@@ -1579,9 +1639,9 @@ if __name__ == "__main__":
         name="paper-engine-thread-watchdog",
     ).start()
     threading.Thread(
-        target=_binance_websocket_health_loop,
+        target=_venue_websocket_health_loop,
         daemon=True,
-        name="binance-websocket-health",
+        name="venue-websocket-health",
     ).start()
     threading.Thread(
         target=_binance_rest_ws_compare_loop,
