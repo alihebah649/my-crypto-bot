@@ -42,6 +42,13 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
             "entry_v2_shadow_target_price": 715.0,
             "entry_v2_shadow_target_status": "VALID",
             "entry_v2_shadow_reward_risk": 1.5,
+            "entry_v2_shadow_recovery_follow_through_shadow": {
+                "shadow_only": True,
+                "available": True,
+                "applicable": True,
+                "follow_through_confirmed": False,
+                "would_be_action": "WOULD_BLOCK",
+            },
         },
         entry_context={
             "strategy_snapshot_source": "CANDIDATE_CAPTURE",
@@ -107,6 +114,7 @@ def test_build_paper_outcome_evidence_joins_entry_v2_and_brain():
     assert record["entry_economics"]["reward_risk"] == 1.5
     assert record["entry_v2"]["approved"] is False
     assert record["entry_v2"]["failed_gate"] == "STRUCTURAL_RECLAIM_NOT_CONFIRMED"
+    assert record["entry_v2"]["recovery_follow_through_shadow"]["would_be_action"] == "WOULD_BLOCK"
     assert record["brain"]["capture_id"] == "cap-1"
     assert record["brain"]["action"] == "BUY"
     assert record["market_data_source"] == "BYBIT"
