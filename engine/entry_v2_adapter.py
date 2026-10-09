@@ -49,6 +49,79 @@ def _closed(candles: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return list(candles[:-1]) if len(candles) > 1 else []
 
 
+def _recovery_follow_through_shadow(
+    candles_5m: Sequence[Mapping[str, Any]],
+    *,
+    trade_mode: str,
+    recovery_candidate: bool,
+    bearish_context: bool,
+) -> dict[str, Any]:
+    """Counterfactual only: evaluate two closed 5m bars of recovery follow-through."""
+    closed = _closed(candles_5m)
+    if len(closed) < 2:
+        return {
+            "schema_version": 1,
+            "shadow_only": True,
+            "applicable": trade_mode == "SCALP" and recovery_candidate and bearish_context,
+            "available": False,
+            "follow_through_confirmed": None,
+            "would_be_action": "INSUFFICIENT_DATA",
+            "reason": "TWO_CLOSED_5M_CANDLES_REQUIRED",
+            "closed_candles_used": len(closed),
+        }
+
+    first, second = closed[-2], closed[-1]
+    try:
+        first_open, first_high = float(first["open"]), float(first["high"])
+        first_low, first_close = float(first["low"]), float(first["close"])
+        second_open, second_low, second_close = (
+            float(second["open"]), float(second["low"]), float(second["close"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return {
+            "schema_version": 1,
+            "shadow_only": True,
+            "applicable": trade_mode == "SCALP" and recovery_candidate and bearish_context,
+            "available": False,
+            "follow_through_confirmed": None,
+            "would_be_action": "INSUFFICIENT_DATA",
+            "reason": "INVALID_CLOSED_CANDLE_FIELDS",
+            "closed_candles_used": len(closed),
+        }
+
+    first_bullish = first_close > first_open
+    second_bullish = second_close > second_open
+    second_close_above_first_high = second_close > first_high
+    second_low_above_first_low = second_low > first_low
+    confirmed = bool(first_bullish and second_bullish and second_close_above_first_high)
+    applicable = bool(trade_mode == "SCALP" and recovery_candidate and bearish_context)
+    action = (
+        "NOT_APPLICABLE" if not applicable
+        else "WOULD_ALLOW" if confirmed
+        else "WOULD_BLOCK"
+    )
+    return {
+        "schema_version": 1,
+        "shadow_only": True,
+        "applicable": applicable,
+        "available": True,
+        "trade_mode": trade_mode,
+        "bearish_context": bool(bearish_context),
+        "recovery_candidate": bool(recovery_candidate),
+        "first_closed_candle_bullish": first_bullish,
+        "second_closed_candle_bullish": second_bullish,
+        "second_close_above_first_high": second_close_above_first_high,
+        "second_low_above_first_low": second_low_above_first_low,
+        "follow_through_confirmed": confirmed,
+        "would_be_action": action,
+        "reason": (
+            "TWO_CLOSED_BULLISH_BARS_AND_SECOND_CLOSE_BREAKS_FIRST_HIGH"
+            if confirmed else "TWO_CANDLE_FOLLOW_THROUGH_NOT_CONFIRMED"
+        ),
+        "closed_candles_used": 2,
+    }
+
+
 def _bias(mtf: Mapping[str, Any], timeframe: str) -> str:
     frame = mtf.get("frames", {}).get(timeframe, {})
     return str(frame.get("bias", "UNKNOWN")).upper()
@@ -173,9 +246,31 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
         (entry_price - structural_stop.price) / entry_price * 100.0
         if entry_price > 0.0 and structural_stop.price is not None else None
     )
-    structural_would_widen = bool(
-        atr_stop is not None and structural_stop.price is not None
-        and structural_stop.price < atr_stop
+    # None means the comparison is unavailable; false is reserved for a
+    # valid structural candidate that would not widen the current ATR stop.
+    structural_would_widen = (
+        None
+        if atr_stop is None or structural_stop.price is None
+        else bool(structural_stop.price < atr_stop)
+    )
+
+    try:
+        mtf_net_for_recovery = float(legacy.get("mtf_net", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        mtf_net_for_recovery = 0.0
+    bearish_recovery_context = bool(
+        legacy.get("mtf_higher_timeframes_bearish")
+        or all(_bias(mtf, tf) == "BEARISH" for tf in ("15m", "1h", "4h"))
+        or _bias(mtf, "15m") == "BEARISH"
+        or mtf_net_for_recovery <= -20.0
+    )
+    recovery_follow_through = _recovery_follow_through_shadow(
+        facts.candles_5m,
+        trade_mode=mode,
+        recovery_candidate=bool(
+            legacy.get("scalp_recovery_confirmation") or confirmed_reversal
+        ),
+        bearish_context=bearish_recovery_context,
     )
 
     return {
@@ -227,6 +322,7 @@ def build_entry_scenario(facts: EntryV2MarketFacts) -> dict[str, Any]:
             "volume_ratio_5m": float(
                 legacy.get("volume_ratio_5m", legacy.get("scalp_min_volume_ratio", 0.0)) or 0.0
             ),
+            "recovery_follow_through_shadow": recovery_follow_through,
         },
         "execution": {
             "closed_candle": bool(candles_by_timeframe["5m"] and candles_by_timeframe["15m"]),
