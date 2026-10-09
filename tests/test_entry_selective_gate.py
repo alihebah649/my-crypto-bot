@@ -189,3 +189,37 @@ def test_seller_pressure_winner_without_persistent_dual_lower_high_stays_advisor
         shadow,
         trade_mode="SCALP",
     ) is None
+
+
+def test_swing_higher_timeframe_bearish_veto_applies_even_when_rsi_is_oversold():
+    # Observed SWING entries were explicitly rejected by Entry v2 because both
+    # 1h/4h context was bearish, but the previous selective veto only applied
+    # the missing-structure rule when RSI >= 49.
+    strategy = {"rsi5m": 26.03, "swing_score": 80, "swing_signal": "BUY"}
+    assert selective_entry_veto(
+        strategy,
+        {
+            "trade_mode": "SWING",
+            "approved": False,
+            "failed_gate": "SWING_HIGHER_TIMEFRAMES_BEARISH",
+        },
+        trade_mode="SWING",
+    ) == "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
+
+
+def test_swing_higher_timeframe_veto_does_not_block_scalp_lane():
+    strategy = {"rsi5m": 26.03, "scalp_score": 65, "scalp_signal": "BUY"}
+    assert selective_entry_veto(
+        strategy,
+        {"failed_gate": "SWING_HIGHER_TIMEFRAMES_BEARISH"},
+        trade_mode="SCALP",
+    ) is None
+
+
+def test_unrelated_swing_structure_failure_keeps_existing_rsi_calibration():
+    strategy = {"rsi5m": 26.03, "swing_score": 80, "swing_signal": "BUY"}
+    assert selective_entry_veto(
+        strategy,
+        {"failed_gate": "SWING_STRUCTURE_OR_HTF_ALIGNMENT_MISSING"},
+        trade_mode="SWING",
+    ) is None
