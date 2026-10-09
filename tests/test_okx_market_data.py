@@ -194,3 +194,63 @@ def test_isolated_okx_lab_rejects_persisted_candles_from_binance_or_unknown_sour
     assert shadow_main._lab_kline_payload_matches_venue([
         {"open_time": 1000, "close": 1.0},
     ]) is False
+
+
+def test_selected_venue_websocket_health_reports_both_okx_connections(monkeypatch):
+    import shadow_main
+
+    class FakeStream:
+        def snapshot(self):
+            return {
+                "available": True,
+                "mode": "PAPER_VENUE_LAB_OKX_WS",
+                "connected": True,
+                "public_connected": True,
+                "business_connected": False,
+                "event_stream_healthy": False,
+                "stream_count": 110,
+                "expected_kline_streams": 88,
+                "symbols_with_latest_kline": 88,
+                "expected_tickers": 22,
+                "tickers_with_latest": 22,
+                "events_total": 1500,
+                "closed_kline_events": 88,
+                "reconnects": 0,
+                "parse_errors": 0,
+                "last_event_age_seconds": 0.2,
+                "last_error": None,
+            }
+
+    monkeypatch.setattr(shadow_main, "PAPER_VENUE_MODE", "OKX_ONLY_LAB")
+    monkeypatch.setattr(shadow_main, "_okx_market_stream", FakeStream())
+    monkeypatch.setattr(
+        shadow_main,
+        "_binance_market_stream",
+        type("WrongVenue", (), {"snapshot": lambda self: (_ for _ in ()).throw(AssertionError("wrong venue"))})(),
+    )
+
+    venue, snapshot = shadow_main._selected_venue_websocket_snapshot()
+
+    assert venue == "OKX"
+    assert snapshot["public_connected"] is True
+    assert snapshot["business_connected"] is False
+    assert snapshot["event_stream_healthy"] is False
+
+
+def test_selected_venue_websocket_health_never_falls_back_to_binance_in_okx_mode(monkeypatch):
+    import shadow_main
+
+    monkeypatch.setattr(shadow_main, "PAPER_VENUE_MODE", "OKX_ONLY_LAB")
+    monkeypatch.setattr(shadow_main, "_okx_market_stream", None)
+    monkeypatch.setattr(
+        shadow_main,
+        "_binance_market_stream",
+        type("WrongVenue", (), {"snapshot": lambda self: {"connected": True, "event_stream_healthy": True}})(),
+    )
+
+    venue, snapshot = shadow_main._selected_venue_websocket_snapshot()
+
+    assert venue == "OKX"
+    assert snapshot["available"] is False
+    assert snapshot["connected"] is False
+    assert snapshot["reason"] == "SELECTED_VENUE_STREAM_UNAVAILABLE"
