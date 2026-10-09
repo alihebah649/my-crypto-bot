@@ -26,7 +26,7 @@ def test_entry_v2_passes_raw_candles_to_structural_stop(monkeypatch):
 
     def spy(*, trade_mode, entry_price, candles_by_timeframe):
         seen.update({tf: len(candles) for tf, candles in candles_by_timeframe.items()})
-        return StructuralStopCandidate(trade_mode, 9.0, "5m_PIVOT_LOW", "5m", 2)
+        return StructuralStopCandidate(trade_mode, None, None, None, None)
 
     monkeypatch.setattr(
         "engine.entry_v2_adapter.calculate_structural_stop_candidate",
