@@ -159,14 +159,14 @@ class OKXMarketStream:
         asyncio.run(self._run_loop())
 
     async def _heartbeat(self, websocket) -> None:
+        # Each OKX connection is independent: ticker traffic on the public
+        # socket must not suppress heartbeats on the quieter business candle
+        # socket. A lightweight ping every 20 seconds keeps both paths alive.
         while not self._stop.is_set():
             await asyncio.sleep(20.0)
             if self._stop.is_set():
                 return
-            with self._lock:
-                last_event = self._last_event_at
-            if last_event is None or time.time() - last_event >= 15.0:
-                await websocket.send("ping")
+            await websocket.send("ping")
 
     def _set_connection_state(self, connection: str, connected: bool, *, error: str | None = None) -> None:
         with self._lock:
