@@ -74,6 +74,8 @@ def test_okx_subscriptions_are_batched_and_use_spot_instrument_ids():
     batches = stream.subscription_batches
     flattened = [arg for batch in batches for arg in batch]
     assert len(stream.subscription_args) == 110
+    assert len(stream.ticker_subscription_args) == 22
+    assert len(stream.candle_subscription_args) == 88
     assert [len(batch) for batch in batches] == [40, 40, 30]
     assert all(len(batch) <= 40 for batch in batches)
     assert flattened[0] == {"channel": "tickers", "instId": "COIN0-USDT"}
@@ -85,9 +87,21 @@ def test_okx_stream_reports_subscription_and_parse_health():
     stream = OKXMarketStream(["BTCUSDT"], intervals=("5m",))
     initial = stream.snapshot(now=1000.0)
     assert initial["mode"] == "PAPER_VENUE_LAB_OKX_WS"
+    assert initial["public_url"].endswith("/ws/v5/public")
+    assert initial["business_url"].endswith("/ws/v5/business")
+    assert initial["public_connected"] is False
+    assert initial["business_connected"] is False
     assert initial["expected_tickers"] == 1
     assert initial["expected_kline_streams"] == 1
     assert initial["event_stream_healthy"] is False
 
     stream._consume_message('not-json')
     assert stream.snapshot()["parse_errors"] == 1
+
+
+def test_okx_health_requires_both_public_and_business_connections():
+    stream = OKXMarketStream(["BTCUSDT"], intervals=("5m",))
+    stream._set_connection_state("public", True)
+    assert stream.snapshot()["connected"] is False
+    stream._set_connection_state("business", True)
+    assert stream.snapshot()["connected"] is True
