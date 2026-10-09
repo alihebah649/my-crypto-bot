@@ -34,6 +34,7 @@ def test_okx_stream_consumes_spot_ticker_snapshot():
     snapshot = stream.snapshot()
     assert snapshot["tickers_with_latest"] == 1
     assert snapshot["ticker_events"] == 1
+    assert snapshot["parse_errors"] == 0
 
 
 def test_okx_stream_consumes_closed_candle_and_updates_history():
