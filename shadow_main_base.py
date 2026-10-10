@@ -1328,6 +1328,60 @@ def _send_telegram_with_trade_type(message: str) -> bool:
         try:
             symbol_index = next(i for i, line in enumerate(lines) if line.startswith("Symbol:"))
             lines.insert(symbol_index + 1, f"Trade Type: {mode}")
+
+            # Include the captured structural-stop shadow diagnostics in each
+            # Paper BUY alert so future trades can be reviewed from Telegram.
+            # This is report-only: it never changes the active execution stop.
+            trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
+            captures_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
+            report_modes = []
+            if score.get("scalp_signal") == "BUY":
+                report_modes.append("SCALP")
+            if score.get("swing_signal") == "BUY":
+                report_modes.append("SWING")
+            if not report_modes:
+                report_modes.append(mode if mode in {"SCALP", "SWING"} else _current_trade_mode["value"])
+
+            diagnostic_lines = [
+                "PAPER DIAGNOSTIC — STRUCTURAL STOP (SHADOW ONLY)"
+            ]
+            for report_mode in report_modes:
+                captured = captures_by_mode.get(report_mode, {}) or {}
+                atr_stop = captured.get("atr_stop_loss")
+                candidate = captured.get("structural_stop_candidate")
+                source = captured.get("structural_stop_source") or "UNKNOWN"
+                timeframe = captured.get("structural_stop_timeframe") or "UNKNOWN"
+                distance = captured.get("structural_stop_distance_percent")
+                would_widen = captured.get("structural_stop_would_widen_current_model")
+
+                def _diagnostic_price(value):
+                    try:
+                        number = float(value)
+                        return f"{number:.10g}" if number > 0 else "UNKNOWN"
+                    except (TypeError, ValueError):
+                        return "UNKNOWN"
+
+                if would_widen is True:
+                    comparison = "WOULD_WIDEN"
+                elif would_widen is False and candidate is not None and atr_stop is not None:
+                    comparison = "WOULD_NOT_WIDEN"
+                else:
+                    comparison = "UNKNOWN"
+
+                try:
+                    distance_text = f"{float(distance):.4f}%" if distance is not None else "UNKNOWN"
+                except (TypeError, ValueError):
+                    distance_text = "UNKNOWN"
+
+                diagnostic_lines.extend([
+                    f"{report_mode}:",
+                    f"  Current 2x ATR stop: {_diagnostic_price(atr_stop)}",
+                    f"  Structural candidate: {_diagnostic_price(candidate)}",
+                    f"  Source: {source} / {timeframe}",
+                    f"  Structural distance: {distance_text}",
+                    f"  Comparison: {comparison}",
+                ])
+            lines[symbol_index + 2:symbol_index + 2] = diagnostic_lines
             message = "\n".join(lines)
         except StopIteration:
             pass
