@@ -57,15 +57,16 @@ def _recovery_follow_through_shadow(
     bearish_context: bool,
 ) -> dict[str, Any]:
     """Counterfactual only: evaluate two closed 5m bars of recovery follow-through."""
+    applicable = bool(trade_mode == "SCALP" and recovery_candidate and bearish_context)
     closed = _closed(candles_5m)
     if len(closed) < 2:
         return {
             "schema_version": 1,
             "shadow_only": True,
-            "applicable": trade_mode == "SCALP" and recovery_candidate and bearish_context,
+            "applicable": applicable,
             "available": False,
             "follow_through_confirmed": None,
-            "would_be_action": "INSUFFICIENT_DATA",
+            "would_be_action": "INSUFFICIENT_DATA" if applicable else "NOT_APPLICABLE",
             "reason": "TWO_CLOSED_5M_CANDLES_REQUIRED",
             "closed_candles_used": len(closed),
         }
@@ -81,10 +82,10 @@ def _recovery_follow_through_shadow(
         return {
             "schema_version": 1,
             "shadow_only": True,
-            "applicable": trade_mode == "SCALP" and recovery_candidate and bearish_context,
+            "applicable": applicable,
             "available": False,
             "follow_through_confirmed": None,
-            "would_be_action": "INSUFFICIENT_DATA",
+            "would_be_action": "INSUFFICIENT_DATA" if applicable else "NOT_APPLICABLE",
             "reason": "INVALID_CLOSED_CANDLE_FIELDS",
             "closed_candles_used": len(closed),
         }
