@@ -71,3 +71,21 @@ def test_recovery_follow_through_reports_insufficient_data_instead_of_allowing()
     assert result["available"] is False
     assert result["follow_through_confirmed"] is None
     assert result["would_be_action"] == "INSUFFICIENT_DATA"
+
+
+def test_non_bearish_context_is_not_applicable_even_when_two_closed_candles_are_unavailable():
+    # Only one candle is closed; the last candle is still forming.
+    candles = [
+        {"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
+        {"open": 101.0, "high": 104.0, "low": 100.5, "close": 103.0},
+    ]
+    result = _recovery_follow_through_shadow(
+        candles,
+        trade_mode="SCALP",
+        recovery_candidate=True,
+        bearish_context=False,
+    )
+
+    assert result["applicable"] is False
+    assert result["available"] is False
+    assert result["would_be_action"] == "NOT_APPLICABLE"
