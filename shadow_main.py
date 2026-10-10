@@ -46,6 +46,7 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
+from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
@@ -1209,7 +1210,12 @@ def _market_health_notify(state: str, detail: str, *, force: bool = False) -> No
     with _MARKET_HEALTH_LOCK:
         changed = state != _MARKET_HEALTH_STATE
         heartbeat_due = (now - _MARKET_HEALTH_LAST_ALERT_AT) >= _MARKET_HEALTH_HEARTBEAT_SECONDS
-        if not force and not changed and not heartbeat_due:
+        if not _should_notify_market_health(
+            venue_mode=PAPER_VENUE_MODE,
+            changed=changed,
+            heartbeat_due=heartbeat_due,
+            force=force,
+        ):
             return
         _MARKET_HEALTH_STATE = state
         _MARKET_HEALTH_LAST_ALERT_AT = now
