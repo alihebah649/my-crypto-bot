@@ -61,6 +61,7 @@ class BinanceMarketStream:
         self._runtime_kline_manager_cache_last_flush_at = 0.0
         self._runtime_ticker_ws_hits = 0
         self._runtime_ticker_rest_fallbacks = 0
+        self._runtime_ticker_rest_fallbacks_suppressed = 0
         self._runtime_kline_ws_overlays = 0
         self._runtime_integration_installed = False
 
@@ -421,6 +422,14 @@ class BinanceMarketStream:
         def fetch_tickers(symbols=None):
             requested = [str(s).upper() for s in (symbols if symbols is not None else self.symbols)]
             result: dict[str, dict] = {}
+            # Do not make a Binance REST fallback batch before this process has
+            # successfully served at least one fresh WebSocket ticker. Render
+            # restarts begin with an empty stream buffer; that cold-start batch
+            # can trigger HTTP 418 while returning no useful data. Capture this
+            # before consuming any ticker rows in the current call so the first
+            # observation remains WebSocket-only.
+            with self._lock:
+                ws_fallback_ready = self._runtime_ticker_ws_hits > 0
             ws_symbols = [s for s in requested if s in binance_set]
             fallback_symbols = []
             for symbol in ws_symbols:
@@ -432,14 +441,27 @@ class BinanceMarketStream:
                     with self._lock:
                         self._runtime_ticker_ws_hits += 1
             if fallback_symbols:
-                fallback = original_ticker_fetch(fallback_symbols)
-                for symbol, ticker in fallback.items():
-                    row = dict(ticker)
-                    row.setdefault("market_data_source", "BINANCE")
-                    row["market_data_transport"] = "REST_FALLBACK"
-                    result[symbol] = row
+                try:
+                    stream_state = self.snapshot()
+                    websocket_healthy = bool(stream_state.get("event_stream_healthy"))
+                except Exception:
+                    websocket_healthy = False
+                # Keep REST fallback for an isolated missing/stale ticker only
+                # after the WebSocket lane has already demonstrated useful,
+                # healthy data. If the stream is cold or down, fail closed for
+                # this cycle and let the next market cycle consume WS snapshots.
+                if ws_fallback_ready and result and websocket_healthy:
+                    fallback = original_ticker_fetch(fallback_symbols)
+                    for symbol, ticker in fallback.items():
+                        row = dict(ticker)
+                        row.setdefault("market_data_source", "BINANCE")
+                        row["market_data_transport"] = "REST_FALLBACK"
+                        result[symbol] = row
+                        with self._lock:
+                            self._runtime_ticker_rest_fallbacks += 1
+                else:
                     with self._lock:
-                        self._runtime_ticker_rest_fallbacks += 1
+                        self._runtime_ticker_rest_fallbacks_suppressed += len(fallback_symbols)
             bybit_symbols = [s for s in requested if s in bybit_set and s not in binance_set]
             if bybit_symbols:
                 for symbol, ticker in original_ticker_fetch(bybit_symbols).items():
@@ -552,7 +574,7 @@ class BinanceMarketStream:
             latest_ticker_count = len(self._latest_ticker)
             history_key_count = len(self._runtime_kline_history)
             history_rows = sum(len(rows) for rows in self._runtime_kline_history.values())
-            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
+            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "ticker_rest_fallbacks_suppressed": self._runtime_ticker_rest_fallbacks_suppressed, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
 
 
 def _float(value: Any) -> float:
