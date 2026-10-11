@@ -72,7 +72,42 @@ def test_relay_bootstrap_seeds_candles_without_faking_live_health():
     assert feed._events_total == 0
     assert feed._last_event_at is None
     assert feed._fresh_ticker("BTCUSDT") is None
-    assert feed.snapshot()["event_stream_healthy"] is False
+    health = feed.snapshot()
+    assert health["event_stream_healthy"] is False
+    assert health["kline_coverage_by_interval"] == {
+        "5m": 0, "15m": 0, "1h": 0, "4h": 0
+    }
+    assert health["missing_kline_series"] == [
+        "BTCUSDT:15m", "BTCUSDT:1h", "BTCUSDT:4h", "BTCUSDT:5m"
+    ]
+
+    # A real live event should change only its own series coverage.
+    now_ms = int(time.time() * 1000)
+    live_message = {
+        "stream": "btcusdt@kline_5m",
+        "data": {
+            "e": "kline",
+            "E": now_ms,
+            "s": "BTCUSDT",
+            "k": {
+                "t": now_ms - 1_000,
+                "T": now_ms + 299_000,
+                "i": "5m",
+                "o": "100",
+                "h": "101",
+                "l": "99",
+                "c": "100.5",
+                "v": "10",
+                "q": "1000",
+                "x": False,
+            },
+        },
+    }
+    feed._consume_message(json.dumps(live_message))
+    health = feed.snapshot()
+    assert health["kline_coverage_by_interval"]["5m"] == 1
+    assert health["symbols_with_latest_kline"] == 1
+    assert "BTCUSDT:5m" not in health["missing_kline_series"]
 
 
 def test_relay_mode_never_falls_back_to_direct_binance_rest(monkeypatch):
