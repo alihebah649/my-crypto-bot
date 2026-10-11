@@ -115,6 +115,16 @@ _BINANCE_MARKET_DATA_SYMBOLS, _BYBIT_MARKET_DATA_SYMBOLS, _OKX_MARKET_DATA_SYMBO
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
 _OKX_MARKET_DATA_SYMBOL_SET = set(_OKX_MARKET_DATA_SYMBOLS)
+
+# The WebSocket adapter installs fetchers inside shadow_main_legacy, while this
+# file runs in shadow_main.py's namespace. Publish the exact ownership sets so
+# the adapter does not infer an obsolete 50/50 split when MAIN is Binance-only.
+_legacy._BINANCE_MARKET_DATA_SYMBOLS = _BINANCE_MARKET_DATA_SYMBOLS
+_legacy._BYBIT_MARKET_DATA_SYMBOLS = _BYBIT_MARKET_DATA_SYMBOLS
+_legacy._OKX_MARKET_DATA_SYMBOLS = _OKX_MARKET_DATA_SYMBOLS
+_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
+_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
+_legacy._OKX_MARKET_DATA_SYMBOL_SET = set(_OKX_MARKET_DATA_SYMBOLS)
 _binance_guard = {
     "state": "READY",
     "status_code": None,
