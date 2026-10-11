@@ -379,3 +379,76 @@ def test_custom_paper_stream_keeps_only_5m_and_15m_high_frequency_intervals():
     assert "btcusdt@kline_1h" not in feed.stream_names
     assert "btcusdt@kline_4h" not in feed.stream_names
     assert "ethusdt@ticker" in feed.stream_names
+
+
+def test_runtime_ticker_adapter_defers_cold_start_rest_until_ws_is_healthy():
+    import sys
+    import time
+    import types
+
+    symbols = ["BTCUSDT", "ETHUSDT"]
+    rest_calls = []
+
+    def fake_ticker_fetch(requested):
+        requested = list(requested)
+        rest_calls.append(requested)
+        return {
+            symbol: {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "market_data_source": "BINANCE",
+            }
+            for symbol in requested
+        }
+
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = fake_ticker_fetch
+    fake_legacy.fetch_klines = lambda symbol, interval, limit: []
+    fake_legacy.fetch_strategy_data = lambda: None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = set(symbols)
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._binance_ws_market_data_integration_installed = False
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+
+        feed = BinanceMarketStream(symbols, intervals=("5m", "15m"))
+        feed._install_runtime_integration()
+        feed._fresh_ticker = lambda symbol: None
+
+        # A cold, empty WS buffer must not trigger a batch of REST requests.
+        assert fake_legacy.fetch_24h_tickers(symbols) == {}
+        assert rest_calls == []
+
+        # The first observed WS ticker still stays REST-free for this cycle.
+        # The next cycle may use REST for a single missing ticker only if the
+        # WS stream is healthy and has already served useful data.
+        feed._fresh_ticker = lambda symbol: (
+            {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "market_data_source": "BINANCE",
+                "market_data_transport": "WEBSOCKET",
+            }
+            if symbol == "BTCUSDT"
+            else None
+        )
+        feed._connected = True
+        feed._last_event_at = time.time()
+
+        first = fake_legacy.fetch_24h_tickers(symbols)
+        assert set(first) == {"BTCUSDT"}
+        assert rest_calls == []
+
+        second = fake_legacy.fetch_24h_tickers(symbols)
+        assert set(second) == set(symbols)
+        assert rest_calls == [["ETHUSDT"]]
+        integration = feed.snapshot()["runtime_integration"]
+        assert integration["ticker_rest_fallbacks"] == 1
+        assert integration["ticker_rest_fallbacks_suppressed"] == 3
+    finally:
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous_legacy
