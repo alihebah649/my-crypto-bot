@@ -149,7 +149,20 @@ def test_btc_crash_guard_preserves_existing_fetch_when_mtf_history_is_short():
         shadow_main,
         "_mtf_candles",
         {"BTCUSDT": {"1h": short_hourly}},
-    ), patch.object(shadow_main, "_original_fetch_klines", side_effect=succeed):
+    ), patch.object(
+        shadow_main._legacy,
+        "market_data_manager",
+        None,
+    ), patch.object(
+        shadow_main._legacy,
+        "_market_data_kline_refresh_symbols",
+        None,
+        create=True,
+    ), patch.object(
+        shadow_main,
+        "_original_fetch_klines",
+        side_effect=succeed,
+    ):
         rows = shadow_main._guarded_fetch_klines("BTCUSDT", "1h", 6)
 
     assert rows == fetched
