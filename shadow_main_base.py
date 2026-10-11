@@ -147,8 +147,9 @@ _market_data_manager = MarketDataManager(
 _legacy.market_data_manager = _market_data_manager
 _legacy._market_data_manager_installed = True
 
-# Optional Binance Lab warm-start from the GitHub-published market snapshot.
-# Main/MIXED remains unchanged unless the URL is explicitly configured.
+# Warm-start Binance-owned market data only when the release-asset URL is
+# explicitly configured. MIXED mode hydrates Binance's shard only; it must never
+# populate Bybit-owned cache entries with Binance candles.
 _BINANCE_MARKET_DATA_SNAPSHOT_URL = os.getenv(
     "BINANCE_MARKET_DATA_SNAPSHOT_URL", ""
 ).strip()
@@ -165,12 +166,16 @@ try:
 except (TypeError, ValueError):
     _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = 21600.0
 
-if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
+if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"} and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
+    _snapshot_cache_symbols = (
+        _BINANCE_MARKET_DATA_SYMBOLS if PAPER_VENUE_MODE == "MIXED" else TRADING_SYMBOLS
+    )
     try:
         _snapshot_result = hydrate_market_data_manager(
             _market_data_manager,
             _BINANCE_MARKET_DATA_SNAPSHOT_URL,
             TRADING_SYMBOLS,
+            cache_symbols=_snapshot_cache_symbols,
             max_stale_seconds=max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
             bootstrap_max_stale_seconds=max(
                 max(60.0, _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE),
@@ -178,22 +183,24 @@ if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
             ),
         )
         _legacy.logger.info(
-            "[BINANCE-SNAPSHOT] loaded=%s bootstrap_stale=%s entry_fresh=%s symbols=%s entries=%s age=%.1fs",
+            "[BINANCE-SNAPSHOT] loaded=%s bootstrap_stale=%s entry_fresh=%s "
+            "universe_symbols=%s cache_symbols=%s entries=%s age=%.1fs",
             bool(_snapshot_result.get("loaded")),
             bool(_snapshot_result.get("bootstrap_stale")),
             bool(_snapshot_result.get("entry_fresh")),
             _snapshot_result.get("symbols", 0),
+            _snapshot_result.get("cache_symbols", 0),
             _snapshot_result.get("cache_entries_written", 0),
             float(_snapshot_result.get("age_seconds", 0.0)),
         )
     except BinanceSnapshotError as exc:
         _legacy.logger.warning(
-            "[BINANCE-SNAPSHOT] rejected: %s; continuing with existing WS-only fallback",
+            "[BINANCE-SNAPSHOT] rejected: %s; falling back to guarded market-data fetches",
             exc,
         )
     except Exception as exc:
         _legacy.logger.warning(
-            "[BINANCE-SNAPSHOT] load failed: %s; continuing with existing WS-only fallback",
+            "[BINANCE-SNAPSHOT] load failed: %s; falling back to guarded market-data fetches",
             exc,
         )
 
@@ -1067,14 +1074,15 @@ def _seed_binance_lab_stream_from_manager_cache(stream) -> int:
     return seeded
 
 
-# Venue Lab WebSocket feeds.
-# MIXED keeps the existing 5m/15m Binance stream contract for the main bot.
-# Each isolated lab uses all four strategy timeframes from its own venue.
+# Venue WebSocket feeds.
+# Binance uses all strategy timeframes in MIXED as well as its isolated lab.
+# The GitHub snapshot provides historical bootstrap; WebSocket streams then keep
+# 5m/15m entry data and 1h/4h context current without periodic Binance REST pulls.
 _binance_market_stream = None
 _bybit_market_stream = None
 _okx_market_stream = None
 if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"}:
-    _binance_ws_intervals = ("5m", "15m", "1h", "4h") if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB" else ("5m", "15m")
+    _binance_ws_intervals = ("5m", "15m", "1h", "4h")
     _binance_market_stream = BinanceMarketStream(
         TRADING_SYMBOLS,
         intervals=_binance_ws_intervals,
