@@ -1398,22 +1398,8 @@ def _paper_engine_health():
 @app.get("/paper/shadow-evidence-report")
 def _paper_shadow_evidence_report():
     """On-demand aggregate report for stop/recovery experiments; never an execution gate."""
-    try:
-        analysis = _entry_v2_runtime_capture.historical_analysis()
-        payload = _build_entry_v2_shadow_report_endpoint_payload(
-            analysis,
-            venue_mode=str(PAPER_VENUE_MODE or "UNKNOWN"),
-        )
-        return jsonify(payload), 200 if payload.get("available") else 503
-    except Exception:
-        _legacy.logger.exception("Paper shadow evidence report generation failed")
-        return jsonify({
-            "available": False,
-            "mode": "PAPER",
-            "venue_mode": str(PAPER_VENUE_MODE or "UNKNOWN"),
-            "shadow_only": True,
-            "reason": "REPORT_GENERATION_FAILED",
-        }), 503
+    payload = _safe_paper_shadow_evidence_report_payload()
+    return jsonify(payload), 200 if payload.get("available") else 503
 
 
 

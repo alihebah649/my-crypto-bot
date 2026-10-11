@@ -33,6 +33,20 @@ def test_paper_buy_message_contains_bot_identity_and_trade_type(monkeypatch):
         "_PAPER_BOT_IDENTITY",
         ("BYBIT LAB", "BYBIT ONLY / 22 SYMBOLS"),
     )
+    monkeypatch.setattr(
+        shadow_main_base.runtime,
+        "last_entry_diagnostics",
+        {
+            "BTCUSDT": {
+                "entry_v2_shadow_by_mode": {
+                    "SCALP": {
+                        "atr_stop_loss": 98.0,
+                        "structural_stop_candidate": 97.0,
+                    }
+                }
+            }
+        },
+    )
     monkeypatch.setattr(shadow_main_base._legacy, "latest_scores", {
         "BTCUSDT": {
             "scalp_signal": "BUY",
@@ -48,6 +62,8 @@ def test_paper_buy_message_contains_bot_identity_and_trade_type(monkeypatch):
     message = sent["message"]
     assert message.startswith("🤖 BOT: BYBIT LAB\n🏷️ VENUE: BYBIT ONLY / 22 SYMBOLS\n")
     assert "Trade Type: SCALP" in message
+    assert "PAPER DIAGNOSTIC — STRUCTURAL STOP (SHADOW ONLY)" not in message
+    assert "Current 2x ATR stop" not in message
     assert "PAPER ONLY" in message
 
 
