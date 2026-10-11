@@ -147,19 +147,12 @@ _market_data_manager = MarketDataManager(
 _legacy.market_data_manager = _market_data_manager
 _legacy._market_data_manager_installed = True
 
-# Warm-start Binance-owned market data from the GitHub-published public snapshot.
-# MIXED mode validates the entire 22-symbol snapshot but only hydrates Binance's
-# own shard; Bybit-owned cache entries must never be populated with Binance data.
-_DEFAULT_BINANCE_MARKET_DATA_SNAPSHOT_URL = (
-    "https://github.com/alihebah649/my-crypto-bot/releases/download/"
-    "market-data/latest-market-data.json"
-)
-_configured_snapshot_url = os.getenv("BINANCE_MARKET_DATA_SNAPSHOT_URL")
-_BINANCE_MARKET_DATA_SNAPSHOT_URL = (
-    str(_configured_snapshot_url).strip()
-    if _configured_snapshot_url is not None
-    else _DEFAULT_BINANCE_MARKET_DATA_SNAPSHOT_URL
-)
+# Warm-start Binance-owned market data only when the release-asset URL is
+# explicitly configured. MIXED mode hydrates Binance's shard only; it must never
+# populate Bybit-owned cache entries with Binance candles.
+_BINANCE_MARKET_DATA_SNAPSHOT_URL = os.getenv(
+    "BINANCE_MARKET_DATA_SNAPSHOT_URL", ""
+).strip()
 try:
     _BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE = float(
         os.getenv("BINANCE_MARKET_DATA_SNAPSHOT_MAX_AGE", "900")
