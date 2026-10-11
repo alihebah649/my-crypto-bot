@@ -165,3 +165,18 @@ def test_live_candle_update_does_not_reset_rest_refresh_clock():
 
     assert state.last_rest_refresh_at == rest_refresh_time
     assert state.snapshot["_relay_meta"]["last_rest_refresh_at_ms"] == rest_refresh_ms
+
+
+
+def test_persisted_rest_refresh_clock_is_not_advanced_by_live_candles(tmp_path):
+    source = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
+    source._merge_rest_snapshot(_snapshot(rows_per_interval=165))
+    rest_refresh_ms = source.snapshot["_relay_meta"]["last_rest_refresh_at_ms"]
+
+    # A later live candle advances market-snapshot time, but not the REST refresh clock.
+    source.snapshot["generated_at_ms"] = rest_refresh_ms + 600_000
+    source._write_snapshot_atomic(source.snapshot)
+
+    restored = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
+    assert restored.load_persisted_snapshot()
+    assert int(restored.last_rest_refresh_at * 1000) == rest_refresh_ms
