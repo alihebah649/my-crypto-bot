@@ -622,6 +622,11 @@ class BinanceMarketStream:
                         limit,
                     )
 
+            # A relay connection must never expose partial history as if it
+            # were a strategy-ready series. It also must not fall back to REST.
+            if self.relay_url and len(rows) < int(limit):
+                return []
+
             # Preserve the existing Paper kline wave scheduler for cold starts.
             # A symbol outside the claimed wave waits for its scheduler slot
             # rather than creating a startup REST burst.
