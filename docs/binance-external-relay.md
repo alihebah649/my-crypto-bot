@@ -16,8 +16,9 @@ retry that response.
 
 - A small always-on Docker host outside Render, with persistent storage at
   `/data` and outbound TLS/WebSocket connectivity to Binance.
-- For Railway, set the service Root Directory to `market_data_relay` so the
-  Dockerfile and its self-contained `tools` bootstrap module form the build context.
+- For Railway, use the native Python buildpack with Root Directory `market_data_relay`,
+  build command `pip install -r requirements.txt`, and start command `python app.py`.
+  The non-default `Dockerfile.container` is only for manual Docker deployments.
 - A DNS name and TLS termination (for example, Caddy or the host's managed HTTPS
   ingress) so the downstream endpoint is `wss://.../stream`.
 - One randomly generated shared bearer token of at least 32 characters.
@@ -31,7 +32,7 @@ endpoints require `Authorization: Bearer <token>`.
 From the repository root:
 
 ```sh
-docker build -f Dockerfile -t binance-market-data-relay market_data_relay
+docker build -f Dockerfile.container -t binance-market-data-relay market_data_relay
 mkdir -p ./relay-data
 docker run -d --name binance-market-data-relay --restart unless-stopped \
   -p 127.0.0.1:8080:8080 -v "$PWD/relay-data:/data" \
