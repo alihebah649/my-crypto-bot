@@ -27,7 +27,6 @@ from tools.binance_market_data_relay import (
     INTERVALS,
     SYMBOLS,
     RelayError,
-    _validate_snapshot,
     fetch_snapshot,
 )
 
@@ -63,18 +62,49 @@ def authorized(authorization_header: str | None, expected_token: str) -> bool:
 
 
 def _snapshot_is_valid(snapshot: Any) -> bool:
+    """Validate the complete relay snapshot without depending on bot internals."""
     if not isinstance(snapshot, dict):
         return False
-    try:
-        _validate_snapshot(
-            snapshot,
-            SYMBOLS,
-            now=time.time(),
-            max_stale_seconds=BOOTSTRAP_MAX_AGE_SECONDS,
-            bootstrap_max_stale_seconds=BOOTSTRAP_MAX_AGE_SECONDS,
-        )
-    except Exception:
+    if _int(snapshot.get("schema_version")) != 1:
         return False
+    if str(snapshot.get("source", "")) != "binance_spot_public_rest":
+        return False
+    generated_ms = _int(snapshot.get("generated_at_ms"))
+    if generated_ms <= 0:
+        return False
+    now = time.time()
+    age = now - generated_ms / 1000.0
+    if age < -30.0 or age > BOOTSTRAP_MAX_AGE_SECONDS:
+        return False
+    symbols = snapshot.get("symbols")
+    if not isinstance(symbols, Mapping) or set(symbols) != set(SYMBOLS):
+        return False
+    if _int(snapshot.get("symbol_count"), -1) != len(SYMBOLS):
+        return False
+    now_ms = int(now * 1000)
+    required = {"open_time", "close_time", "open", "high", "low", "close", "volume"}
+    for symbol in SYMBOLS:
+        item = symbols.get(symbol)
+        if not isinstance(item, Mapping):
+            return False
+        if not isinstance(item.get("ticker"), Mapping):
+            return False
+        klines = item.get("klines")
+        if not isinstance(klines, Mapping):
+            return False
+        for interval, limit in CLIENT_HISTORY_LIMITS.items():
+            rows = klines.get(interval)
+            if not isinstance(rows, list) or len(rows) < limit:
+                return False
+            previous_open = -1
+            for row in rows:
+                if not isinstance(row, Mapping) or not required.issubset(row):
+                    return False
+                open_time = _int(row.get("open_time"))
+                close_time = _int(row.get("close_time"))
+                if open_time <= previous_open or close_time <= open_time or close_time >= now_ms:
+                    return False
+                previous_open = open_time
     return True
 
 
