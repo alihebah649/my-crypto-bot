@@ -129,24 +129,40 @@ def hydrate_market_data_manager(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     persist: bool = True,
     bootstrap_max_stale_seconds: float = DEFAULT_BOOTSTRAP_MAX_STALE_SECONDS,
+    cache_symbols: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch and seed the existing cache; fail closed on malformed/stale data."""
+    """Fetch the full snapshot, then seed only the requested venue lane.
+
+    expected_symbols describes the complete snapshot universe. cache_symbols
+    optionally narrows which of those validated symbols are written to this
+    runtime's cache, allowing MIXED mode to seed Binance-owned symbols without
+    importing Binance candles into symbols whose authoritative feed is Bybit.
+    """
     if not str(snapshot_url).strip():
         return {"enabled": False, "loaded": False, "reason": "URL_NOT_CONFIGURED"}
+
+    expected = tuple(dict.fromkeys(str(symbol).upper() for symbol in expected_symbols))
+    selected = expected if cache_symbols is None else tuple(
+        dict.fromkeys(str(symbol).upper() for symbol in cache_symbols)
+    )
+    unknown_selected = set(selected) - set(expected)
+    if unknown_selected:
+        raise BinanceSnapshotError(
+            "cache_symbols contains symbols outside the validated universe"
+        )
 
     current = time.time() if now is None else float(now)
     snapshot = _fetch_json(snapshot_url, timeout=timeout)
     symbols, generated_at, bootstrap_stale = _validate_snapshot(
         snapshot,
-        expected_symbols,
+        expected,
         now=current,
         max_stale_seconds=max_stale_seconds,
         bootstrap_max_stale_seconds=bootstrap_max_stale_seconds,
     )
 
     written = 0
-    for symbol in expected_symbols:
-        symbol = str(symbol).upper()
+    for symbol in selected:
         payload = symbols[symbol]
 
         ticker = payload.get("ticker")
@@ -183,6 +199,7 @@ def hydrate_market_data_manager(
         "bootstrap_stale": bool(bootstrap_stale),
         "entry_fresh": not bootstrap_stale,
         "symbols": len(symbols),
+        "cache_symbols": len(selected),
         "cache_entries_written": written,
     }
 
