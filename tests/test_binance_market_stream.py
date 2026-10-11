@@ -452,3 +452,93 @@ def test_runtime_ticker_adapter_defers_cold_start_rest_until_ws_is_healthy():
             sys.modules.pop("shadow_main_legacy", None)
         else:
             sys.modules["shadow_main_legacy"] = previous_legacy
+
+def test_main_binance_only_relay_uses_websocket_for_all_symbols_without_rest_fallback():
+    import sys
+    import time
+    import types
+
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    rest_calls = {"ticker": [], "kline": []}
+
+    def fake_ticker_fetch(requested):
+        requested = list(requested)
+        rest_calls["ticker"].append(requested)
+        return {
+            symbol: {"symbol": symbol, "lastPrice": 100.0, "market_data_source": "BINANCE"}
+            for symbol in requested
+        }
+
+    def fake_kline_fetch(symbol, interval, limit):
+        rest_calls["kline"].append((symbol, interval, limit))
+        return []
+
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = fake_ticker_fetch
+    fake_legacy.fetch_klines = fake_kline_fetch
+    fake_legacy.fetch_strategy_data = None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = set(symbols)
+    # An explicitly empty set means no Bybit-owned symbols; the adapter must
+    # not mistake it for a missing legacy attribute and infer a half split.
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._binance_ws_market_data_integration_installed = False
+
+    previous_legacy = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+        feed = BinanceMarketStream(
+            symbols,
+            intervals=("5m", "15m", "1h", "4h"),
+            relay_url="wss://relay.example/stream",
+            relay_token="test-token",
+        )
+
+        def fresh_ticker(symbol):
+            return {
+                "symbol": symbol,
+                "lastPrice": 100.0,
+                "received_at": time.time(),
+                "market_data_source": "BINANCE",
+                "market_data_transport": "WEBSOCKET",
+            }
+
+        def complete_history(symbol, interval, limit):
+            return [
+                {
+                    "open_time": index + 1,
+                    "close_time": index + 2,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 10.0,
+                    "is_closed": True,
+                    "market_data_source": "BINANCE",
+                    "market_data_transport": "WEBSOCKET",
+                }
+                for index in range(limit)
+            ]
+
+        feed._fresh_ticker = fresh_ticker
+        feed._runtime_kline_snapshot_rows = complete_history
+        feed._install_runtime_integration()
+
+        tickers = fake_legacy.fetch_24h_tickers(symbols)
+        assert set(tickers) == set(symbols)
+        assert all(
+            tickers[symbol]["market_data_transport"] == "WEBSOCKET"
+            for symbol in symbols
+        )
+        for symbol in symbols:
+            for interval in ("5m", "15m", "1h", "4h"):
+                rows = fake_legacy.fetch_klines(symbol, interval, 3)
+                assert len(rows) == 3
+                assert all(row["market_data_source"] == "BINANCE" for row in rows)
+
+        assert rest_calls == {"ticker": [], "kline": []}
+    finally:
+        if previous_legacy is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous_legacy
+
