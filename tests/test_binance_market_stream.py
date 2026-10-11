@@ -226,6 +226,10 @@ def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_
     original_flag = getattr(
         legacy, "_binance_ws_market_data_integration_installed", None
     )
+    legacy_binance_attr = getattr(
+        legacy, "_BINANCE_MARKET_DATA_SYMBOL_SET", None
+    )
+    had_binance_attr = hasattr(legacy, "_BINANCE_MARKET_DATA_SYMBOL_SET")
     legacy_bybit_attr = getattr(
         legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET", None
     )
@@ -249,6 +253,10 @@ def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_
         legacy.fetch_24h_tickers = fake_ticker_fetch
         legacy.fetch_klines = fake_kline_fetch
         legacy._binance_ws_market_data_integration_installed = False
+        # Simulate the legacy adapter before shadow_main_base publishes the
+        # exact source groups into this module.
+        if had_binance_attr:
+            del legacy._BINANCE_MARKET_DATA_SYMBOL_SET
         if had_bybit_attr:
             del legacy._BYBIT_MARKET_DATA_SYMBOL_SET
 
@@ -279,6 +287,10 @@ def test_runtime_ticker_adapter_routes_complementary_bybit_lane_when_legacy_set_
             legacy.__dict__.pop("_binance_ws_market_data_integration_installed", None)
         else:
             legacy._binance_ws_market_data_integration_installed = original_flag
+        if had_binance_attr:
+            legacy._BINANCE_MARKET_DATA_SYMBOL_SET = legacy_binance_attr
+        else:
+            legacy.__dict__.pop("_BINANCE_MARKET_DATA_SYMBOL_SET", None)
         if had_bybit_attr:
             legacy._BYBIT_MARKET_DATA_SYMBOL_SET = legacy_bybit_attr
         else:
