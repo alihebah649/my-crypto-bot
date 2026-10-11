@@ -127,3 +127,57 @@ def test_rest_refresh_merge_does_not_overwrite_newer_live_candle():
     rows = state.snapshot["symbols"][symbol]["klines"]["5m"]
     assert rows[-1]["close"] == "999"
     assert rows[-1]["_relay_transport"] == "WEBSOCKET"
+
+
+
+def test_live_candle_update_does_not_reset_rest_refresh_clock():
+    state = RelayState(token="r" * 64, snapshot_path="/tmp/nonexistent-relay-cache.json")
+    state._merge_rest_snapshot(_snapshot(rows_per_interval=165))
+    rest_refresh_time = state.last_rest_refresh_at
+    rest_refresh_ms = int(rest_refresh_time * 1000)
+
+    now_ms = int(time.time() * 1000)
+    symbol = SYMBOLS[0]
+    event = {
+        "stream": f"{symbol.lower()}@kline_5m",
+        "data": {
+            "e": "kline",
+            "E": now_ms,
+            "s": symbol,
+            "k": {
+                "t": now_ms - 300_000,
+                "T": now_ms - 1,
+                "i": "5m",
+                "o": "100",
+                "h": "102",
+                "l": "99",
+                "c": "101",
+                "v": "25",
+                "q": "2525",
+                "n": 12,
+                "V": "12",
+                "Q": "1212",
+                "x": True,
+            },
+        },
+    }
+    state._apply_market_event(json.dumps(event))
+
+    assert state.last_rest_refresh_at == rest_refresh_time
+    assert state.snapshot["_relay_meta"]["last_rest_refresh_at_ms"] == rest_refresh_ms
+
+
+
+def test_persisted_rest_refresh_clock_is_not_advanced_by_live_candles(tmp_path):
+    source = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
+    source._merge_rest_snapshot(_snapshot(rows_per_interval=165))
+    rest_refresh_ms = source.snapshot["_relay_meta"]["last_rest_refresh_at_ms"]
+
+    # The market timestamp may be newer than the last successful REST repair.
+    persisted_rest_refresh_ms = rest_refresh_ms - 600_000
+    source.snapshot["_relay_meta"]["last_rest_refresh_at_ms"] = persisted_rest_refresh_ms
+    source._write_snapshot_atomic(source.snapshot)
+
+    restored = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
+    assert restored.load_persisted_snapshot()
+    assert int(restored.last_rest_refresh_at * 1000) == persisted_rest_refresh_ms

@@ -7,10 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RELAY_SNAPSHOT_PATH=/data/latest-market-data.json
 
 WORKDIR /app
-COPY market_data_relay/requirements.txt /tmp/relay-requirements.txt
+COPY requirements.txt /tmp/relay-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/relay-requirements.txt
 COPY tools /app/tools
-COPY market_data_relay /app/market_data_relay
+COPY app.py /app/market_data_relay/app.py
+COPY __init__.py /app/market_data_relay/__init__.py
 RUN mkdir -p /data
 VOLUME ["/data"]
 EXPOSE 8080
