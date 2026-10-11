@@ -119,3 +119,35 @@ def test_relay_mode_never_falls_back_to_direct_binance_rest(monkeypatch):
             sys.modules.pop("shadow_main_legacy", None)
         else:
             sys.modules["shadow_main_legacy"] = previous
+
+
+def test_relay_mode_fails_closed_when_bootstrap_history_is_short():
+    rest_calls = []
+    fake_legacy = types.ModuleType("shadow_main_legacy")
+    fake_legacy.fetch_24h_tickers = lambda requested=None: {}
+    fake_legacy.fetch_klines = lambda symbol, interval, limit: (
+        rest_calls.append((symbol, interval, limit)) or []
+    )
+    fake_legacy.fetch_strategy_data = lambda: None
+    fake_legacy._BINANCE_MARKET_DATA_SYMBOL_SET = {"BTCUSDT"}
+    fake_legacy._BYBIT_MARKET_DATA_SYMBOL_SET = set()
+    fake_legacy._binance_ws_market_data_integration_installed = False
+    previous = sys.modules.get("shadow_main_legacy")
+    try:
+        sys.modules["shadow_main_legacy"] = fake_legacy
+        feed = BinanceMarketStream(
+            ["BTCUSDT"],
+            intervals=("5m", "15m", "1h", "4h"),
+            relay_url="wss://relay.example.test/stream",
+            relay_token="r" * 64,
+        )
+        feed._install_runtime_integration()
+        short_snapshot = _relay_snapshot(rows_by_interval={"5m": 1, "15m": 1, "1h": 1, "4h": 1})
+        feed._consume_relay_snapshot(short_snapshot)
+        assert fake_legacy.fetch_klines("BTCUSDT", "5m", 60) == []
+        assert rest_calls == []
+    finally:
+        if previous is None:
+            sys.modules.pop("shadow_main_legacy", None)
+        else:
+            sys.modules["shadow_main_legacy"] = previous
