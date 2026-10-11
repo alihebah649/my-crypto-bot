@@ -197,7 +197,7 @@ class RelayState:
         # Older snapshots did not store a separate REST-refresh timestamp. Use
         # their generated time once; live candle updates must never reset this clock.
         fallback_refresh_ms = _int(payload.get("generated_at_ms"))
-        self.last_rest_refresh_at = max(meta_refresh_ms, fallback_refresh_ms) / 1000.0
+        self.last_rest_refresh_at = (meta_refresh_ms if meta_refresh_ms > 0 else fallback_refresh_ms) / 1000.0
         LOG.info(
             "snapshot loaded from disk generated_at_ms=%s symbols=%d",
             payload.get("generated_at_ms"),
