@@ -539,13 +539,13 @@ class BinanceMarketStream:
         if not binance_set:
             split = len(self.symbols) // 2
             binance_set = set(self.symbols[:split])
+        has_bybit_symbol_set = hasattr(legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET")
         bybit_set = set(getattr(legacy, "_BYBIT_MARKET_DATA_SYMBOL_SET", ()))
-        # shadow_main_base owns the venue split, but the legacy compatibility
-        # module does not expose its Bybit symbol set. When that compatibility
-        # attribute is absent, derive the complementary lane from the same
-        # symbol universe used to derive the Binance lane above. This keeps
-        # the WS adapter from silently dropping all Bybit tickers.
-        if not bybit_set:
+        # Older standalone integration contexts may not publish a Bybit set;
+        # preserve their historical split only when the attribute is absent.
+        # An explicitly empty set is meaningful for Binance-only MAIN and must
+        # not be expanded into an inferred Bybit lane.
+        if not has_bybit_symbol_set:
             bybit_set = set(self.symbols) - binance_set
 
         def fetch_tickers(symbols=None):
