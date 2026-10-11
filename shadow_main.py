@@ -1606,7 +1606,6 @@ def _venue_websocket_health_loop() -> None:
                     snapshot.get("tickers_with_latest"),
                     snapshot.get("expected_tickers"),
                     snapshot.get("missing_ticker_symbols", [])[:8],
-                    snapshot.get("expected_tickers"),
                     snapshot.get("events_total"),
                     snapshot.get("closed_kline_events"),
                     snapshot.get("reconnects"),
