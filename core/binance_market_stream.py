@@ -704,11 +704,78 @@ class BinanceMarketStream:
         current = time.time() if now is None else float(now)
         with self._lock:
             last_age = None if self._last_event_at is None else max(0.0, current - self._last_event_at)
-            latest_kline_count = len(self._latest_kline)
+            expected_kline_keys = {
+                (symbol, interval)
+                for symbol in self.symbols
+                for interval in self.intervals
+            }
+            present_kline_keys = set(self._latest_kline)
+            missing_kline_series = sorted(
+                f"{symbol}:{interval}"
+                for symbol, interval in expected_kline_keys - present_kline_keys
+            )
+            kline_coverage_by_interval = {
+                interval: sum(
+                    1 for symbol in self.symbols
+                    if (symbol, interval) in present_kline_keys
+                )
+                for interval in self.intervals
+            }
+            missing_ticker_symbols = sorted(
+                symbol for symbol in self.symbols if symbol not in self._latest_ticker
+            )
+            latest_kline_count = len(present_kline_keys)
             latest_ticker_count = len(self._latest_ticker)
             history_key_count = len(self._runtime_kline_history)
             history_rows = sum(len(rows) for rows in self._runtime_kline_history.values())
-            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "transport": "EXTERNAL_RELAY" if self.relay_url else "BINANCE_DIRECT", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "ticker_rest_fallbacks_suppressed": self._runtime_ticker_rest_fallbacks_suppressed, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
+            return {
+                "available": True,
+                "mode": "PAPER_AUTHORITATIVE_BINANCE_WS",
+                "transport": "EXTERNAL_RELAY" if self.relay_url else "BINANCE_DIRECT",
+                "connected": self._connected,
+                "stream_count": self.stream_count,
+                "symbol_count": len(self.symbols),
+                "intervals": list(self.intervals),
+                "symbols_with_latest_kline": latest_kline_count,
+                "expected_kline_streams": len(expected_kline_keys),
+                "kline_coverage_by_interval": kline_coverage_by_interval,
+                "missing_kline_series": missing_kline_series,
+                "tickers_with_latest": latest_ticker_count,
+                "expected_tickers": len(self.symbols),
+                "missing_ticker_symbols": missing_ticker_symbols,
+                "coverage_kline_percent": round(
+                    latest_kline_count / float(max(1, len(expected_kline_keys))) * 100.0, 2
+                ),
+                "coverage_ticker_percent": round(
+                    latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2
+                ),
+                "last_event_age_seconds": None if last_age is None else round(last_age, 3),
+                "event_stream_healthy": bool(
+                    self._connected and last_age is not None and last_age <= self.stale_after_seconds
+                ),
+                "stale_after_seconds": self.stale_after_seconds,
+                "events_total": self._events_total,
+                "kline_events": self._kline_events,
+                "ticker_events": self._ticker_events,
+                "closed_kline_events": self._closed_kline_events,
+                "reconnects": self._reconnects,
+                "parse_errors": self._parse_errors,
+                "last_error": self._last_error,
+                "runtime_integration": {
+                    "installed": self._runtime_integration_installed,
+                    "ticker_ws_hits": self._runtime_ticker_ws_hits,
+                    "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks,
+                    "ticker_rest_fallbacks_suppressed": self._runtime_ticker_rest_fallbacks_suppressed,
+                    "kline_ws_overlays": self._runtime_kline_ws_overlays,
+                    "kline_rest_seeds": self._runtime_kline_rest_seed_count,
+                    "kline_rest_retries": self._runtime_kline_rest_retry_count,
+                    "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds,
+                    "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes,
+                    "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes,
+                    "kline_history_keys": history_key_count,
+                    "kline_history_rows": history_rows,
+                },
+            }
 
 
 def _float(value: Any) -> float:
