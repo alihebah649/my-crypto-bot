@@ -111,6 +111,64 @@ def test_kline_cache_avoids_second_exchange_request_when_healthy():
     assert calls == [("ADAUSDT", "5m", 60)]
 
 
+def test_btc_crash_guard_reuses_current_cycle_mtf_hourly_series():
+    reset_guard()
+    hourly = [
+        {"open_time": index, "close": 100.0 + index}
+        for index in range(60)
+    ]
+
+    with patch.object(shadow_main, "_mtf_candles", {"BTCUSDT": {"1h": hourly}}):
+        with patch.object(
+            shadow_main,
+            "_original_fetch_klines",
+            side_effect=AssertionError("redundant BTC 1h REST request"),
+        ):
+            rows = shadow_main._guarded_fetch_klines("BTCUSDT", "1h", 6)
+
+    assert rows == hourly[-6:]
+    assert rows is not hourly
+    assert rows[0] is not hourly[-6]
+    assert rows[-1]["open_time"] == 59
+
+
+def test_btc_crash_guard_preserves_existing_fetch_when_mtf_history_is_short():
+    reset_guard()
+    short_hourly = [{"open_time": 1, "close": 100.0} for _ in range(5)]
+    fetched = [
+        {"open_time": index, "close": 200.0 + index}
+        for index in range(6)
+    ]
+    calls = []
+
+    def succeed(symbol, interval, limit):
+        calls.append((symbol, interval, limit))
+        return fetched
+
+    with patch.object(
+        shadow_main,
+        "_mtf_candles",
+        {"BTCUSDT": {"1h": short_hourly}},
+    ), patch.object(
+        shadow_main._legacy,
+        "market_data_manager",
+        None,
+    ), patch.object(
+        shadow_main._legacy,
+        "_market_data_kline_refresh_symbols",
+        None,
+        create=True,
+    ), patch.object(
+        shadow_main,
+        "_original_fetch_klines",
+        side_effect=succeed,
+    ):
+        rows = shadow_main._guarded_fetch_klines("BTCUSDT", "1h", 6)
+
+    assert rows == fetched
+    assert calls == [("BTCUSDT", "1h", 6)]
+
+
 def test_binance_metrics_exposes_own_traffic_separately_from_ip_wide_weight():
     import sitecustomize
 

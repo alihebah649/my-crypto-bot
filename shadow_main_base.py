@@ -652,6 +652,31 @@ def _lab_kline_cold_start(
 
 def _guarded_fetch_klines(symbol: str, interval: str, limit: int):
     symbol = str(symbol).upper()
+
+    # The legacy market cycle separately requests only six BTC 1h candles for
+    # the crash guard, after this same cycle has already loaded BTC's full 1h
+    # MTF series. Reuse that series' tail when available instead of issuing a
+    # second REST request for the same timeframe. The MTF cache expires sooner
+    # (3300s) than the standalone 1h kline cache (3610s); if the MTF series is
+    # absent or too short, keep the established guarded-fetch path unchanged.
+    if symbol == "BTCUSDT" and str(interval) == "1h" and int(limit) == 6:
+        try:
+            mtf_by_symbol = _mtf_candles.get(symbol, {})
+            mtf_hourly = (
+                mtf_by_symbol.get("1h", [])
+                if isinstance(mtf_by_symbol, dict)
+                else []
+            )
+            if isinstance(mtf_hourly, list) and len(mtf_hourly) >= 6:
+                return [
+                    dict(candle) if isinstance(candle, dict) else candle
+                    for candle in mtf_hourly[-6:]
+                ]
+        except Exception:
+            # A failed cache reuse must not replace the original crash-guard
+            # fetch/cache fallback.
+            pass
+
     key = (symbol, str(interval), int(limit))
     now = time.time()
     ttl = _KLINE_CACHE_TTL.get(str(interval), 60.0)
