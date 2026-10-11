@@ -1329,59 +1329,6 @@ def _send_telegram_with_trade_type(message: str) -> bool:
             symbol_index = next(i for i, line in enumerate(lines) if line.startswith("Symbol:"))
             lines.insert(symbol_index + 1, f"Trade Type: {mode}")
 
-            # Include the captured structural-stop shadow diagnostics in each
-            # Paper BUY alert so future trades can be reviewed from Telegram.
-            # This is report-only: it never changes the active execution stop.
-            trace = runtime.last_entry_diagnostics.get(symbol, {}) or {}
-            captures_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
-            report_modes = []
-            if score.get("scalp_signal") == "BUY":
-                report_modes.append("SCALP")
-            if score.get("swing_signal") == "BUY":
-                report_modes.append("SWING")
-            if not report_modes:
-                report_modes.append(mode if mode in {"SCALP", "SWING"} else _current_trade_mode["value"])
-
-            diagnostic_lines = [
-                "PAPER DIAGNOSTIC — STRUCTURAL STOP (SHADOW ONLY)"
-            ]
-            for report_mode in report_modes:
-                captured = captures_by_mode.get(report_mode, {}) or {}
-                atr_stop = captured.get("atr_stop_loss")
-                candidate = captured.get("structural_stop_candidate")
-                source = captured.get("structural_stop_source") or "UNKNOWN"
-                timeframe = captured.get("structural_stop_timeframe") or "UNKNOWN"
-                distance = captured.get("structural_stop_distance_percent")
-                would_widen = captured.get("structural_stop_would_widen_current_model")
-
-                def _diagnostic_price(value):
-                    try:
-                        number = float(value)
-                        return f"{number:.10g}" if number > 0 else "UNKNOWN"
-                    except (TypeError, ValueError):
-                        return "UNKNOWN"
-
-                if would_widen is True:
-                    comparison = "WOULD_WIDEN"
-                elif would_widen is False and candidate is not None and atr_stop is not None:
-                    comparison = "WOULD_NOT_WIDEN"
-                else:
-                    comparison = "UNKNOWN"
-
-                try:
-                    distance_text = f"{float(distance):.4f}%" if distance is not None else "UNKNOWN"
-                except (TypeError, ValueError):
-                    distance_text = "UNKNOWN"
-
-                diagnostic_lines.extend([
-                    f"{report_mode}:",
-                    f"  Current 2x ATR stop: {_diagnostic_price(atr_stop)}",
-                    f"  Structural candidate: {_diagnostic_price(candidate)}",
-                    f"  Source: {source} / {timeframe}",
-                    f"  Structural distance: {distance_text}",
-                    f"  Comparison: {comparison}",
-                ])
-            lines[symbol_index + 2:symbol_index + 2] = diagnostic_lines
             message = "\n".join(lines)
         except StopIteration:
             pass
@@ -1416,9 +1363,45 @@ def _home():
 app.view_functions["home"] = _home
 
 
+def _safe_paper_shadow_evidence_report_payload() -> dict:
+    """Build the existing aggregate Entry v2 report for Paper diagnostics only.
+
+    Runtime capture/build symbols are installed by shadow_main.py after this
+    base module is executed, so resolve them at call time. Missing or broken
+    report instrumentation must never make the primary diagnostics unavailable.
+    """
+    venue_mode = str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN")
+    unavailable = {
+        "available": False,
+        "mode": "PAPER",
+        "venue_mode": venue_mode,
+        "shadow_only": True,
+        "reason": "REPORT_BUILDER_UNAVAILABLE",
+    }
+    capture = globals().get("_entry_v2_runtime_capture")
+    builder = globals().get("_build_entry_v2_shadow_report_endpoint_payload")
+    historical_analysis = getattr(capture, "historical_analysis", None)
+    if not callable(historical_analysis) or not callable(builder):
+        return unavailable
+
+    try:
+        analysis = historical_analysis()
+        report = builder(analysis, venue_mode=venue_mode)
+        if not isinstance(report, dict):
+            return {**unavailable, "reason": "INVALID_REPORT_PAYLOAD"}
+        return report
+    except Exception as exc:  # diagnostic enrichment must fail open
+        _legacy.logger.exception("Paper shadow evidence report generation failed")
+        return {
+            **unavailable,
+            "reason": "REPORT_GENERATION_FAILED",
+            "error": type(exc).__name__,
+        }
+
+
 def _diagnostics():
     rows = sorted(_legacy.latest_scores.values(), key=lambda item: item.get("score", 0), reverse=True)
-    return jsonify({
+    payload = {
         "mode": "PAPER", "symbol_count": len(TRADING_SYMBOLS), "data_count": len(rows),
         "buy_count": sum(1 for row in rows if row.get("signal") == "BUY"),
         "score_threshold": BUY_SCORE_THRESHOLD,
@@ -1429,7 +1412,20 @@ def _diagnostics():
         "score_errors": getattr(_legacy, "last_score_diagnostics", {}),
         "market_data_guard": _market_data_guard_snapshot(),
         "entry_diagnostics": runtime.last_entry_diagnostics,
-    }), 200
+    }
+    try:
+        payload["shadow_evidence_report"] = _safe_paper_shadow_evidence_report_payload()
+    except Exception as exc:  # final isolation boundary for optional report data
+        _legacy.logger.exception("Paper diagnostics report attachment failed")
+        payload["shadow_evidence_report"] = {
+            "available": False,
+            "mode": "PAPER",
+            "venue_mode": str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN"),
+            "shadow_only": True,
+            "reason": "REPORT_GENERATION_FAILED",
+            "error": type(exc).__name__,
+        }
+    return jsonify(payload), 200
 
 
 app.view_functions["diagnostics"] = _diagnostics
