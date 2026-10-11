@@ -8,6 +8,7 @@ REST remains a cold-start/stale-data fallback only.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 import time
@@ -23,10 +24,27 @@ _RUNTIME_KLINE_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
 class BinanceMarketStream:
     """Binance Spot ticker + kline stream used by the Paper market-data layer."""
 
-    def __init__(self, symbols: Iterable[str], *, intervals: Iterable[str] = DEFAULT_INTERVALS, base_url: str = DEFAULT_BASE_URL, reconnect_min_seconds: float = 2.0, reconnect_max_seconds: float = 60.0, stale_after_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        symbols: Iterable[str],
+        *,
+        intervals: Iterable[str] = DEFAULT_INTERVALS,
+        base_url: str = DEFAULT_BASE_URL,
+        relay_url: str | None = None,
+        relay_token: str | None = None,
+        reconnect_min_seconds: float = 2.0,
+        reconnect_max_seconds: float = 60.0,
+        stale_after_seconds: float = 30.0,
+    ) -> None:
         self.symbols = tuple(dict.fromkeys(str(s).upper() for s in symbols if str(s).strip()))
         self.intervals = tuple(dict.fromkeys(str(i) for i in intervals))
         self.base_url = str(base_url).rstrip("/")
+        self.relay_url = str(relay_url or "").strip()
+        self.relay_token = str(relay_token or "").strip()
+        if self.relay_url and not self.relay_token:
+            raise ValueError("BINANCE_MARKET_DATA_RELAY_TOKEN is required when relay URL is configured")
+        if self.relay_url and not self.relay_url.startswith(("wss://", "ws://")):
+            raise ValueError("Binance market-data relay URL must use ws:// or wss://")
         self.reconnect_min_seconds = max(0.5, float(reconnect_min_seconds))
         self.reconnect_max_seconds = max(self.reconnect_min_seconds, float(reconnect_max_seconds))
         self.stale_after_seconds = max(1.0, float(stale_after_seconds))
@@ -104,7 +122,20 @@ class BinanceMarketStream:
         first_connect = True
         while not self._stop.is_set():
             try:
-                async with websockets.connect(self.build_url(), ping_interval=20, ping_timeout=20, close_timeout=5, max_size=4 * 1024 * 1024) as websocket:
+                target_url = self.relay_url or self.build_url()
+                connect_kwargs = {
+                    "ping_interval": 20,
+                    "ping_timeout": 20,
+                    "close_timeout": 5,
+                    "max_size": 4 * 1024 * 1024,
+                }
+                if self.relay_url:
+                    # websockets 12-13 use extra_headers; newer releases use
+                    # additional_headers. Support both public API variants.
+                    parameters = inspect.signature(websockets.connect).parameters
+                    header_option = "additional_headers" if "additional_headers" in parameters else "extra_headers"
+                    connect_kwargs[header_option] = {"Authorization": f"Bearer {self.relay_token}"}
+                async with websockets.connect(target_url, **connect_kwargs) as websocket:
                     with self._lock:
                         self._connected = True
                         self._last_error = None
@@ -131,6 +162,12 @@ class BinanceMarketStream:
     def _consume_message(self, message: str | bytes) -> None:
         try:
             raw = json.loads(message)
+            if isinstance(raw, Mapping) and raw.get("type") == "snapshot":
+                snapshot = raw.get("snapshot")
+                if not isinstance(snapshot, Mapping):
+                    raise ValueError("external relay bootstrap snapshot is invalid")
+                self._consume_relay_snapshot(snapshot)
+                return
             payload = raw.get("data", raw) if isinstance(raw, Mapping) else raw
             if not isinstance(payload, Mapping):
                 return
@@ -147,6 +184,98 @@ class BinanceMarketStream:
             with self._lock:
                 self._parse_errors += 1
                 self._last_error = f"{type(exc).__name__}: {exc}"
+
+
+    def _consume_relay_snapshot(self, snapshot: Mapping[str, Any]) -> None:
+        """Seed history from the relay without treating the snapshot as live data.
+
+        Snapshot candles are historical bootstrap only. This deliberately does
+        not advance the live-event clock or refresh the canonical manager cache;
+        new entries still require fresh ticker/closed-candle observations.
+        """
+        if int(snapshot.get("schema_version", 0)) != 1:
+            raise ValueError("unsupported external relay snapshot schema")
+        if str(snapshot.get("source", "")) != "binance_spot_public_rest":
+            raise ValueError("unexpected external relay snapshot source")
+        symbols_payload = snapshot.get("symbols")
+        if not isinstance(symbols_payload, Mapping):
+            raise ValueError("external relay snapshot symbols are invalid")
+        payload_symbols = {str(symbol).upper() for symbol in symbols_payload}
+        if not set(self.symbols).issubset(payload_symbols):
+            raise ValueError("external relay snapshot does not cover subscribed symbols")
+        if int(snapshot.get("symbol_count", 0)) != len(symbols_payload):
+            raise ValueError("external relay snapshot symbol_count mismatch")
+
+        now = time.time()
+        generated_at_ms = _int(snapshot.get("generated_at_ms"))
+        now_ms = int(now * 1000)
+        for symbol in self.symbols:
+            item = symbols_payload.get(symbol)
+            if not isinstance(item, Mapping):
+                raise ValueError(f"external relay snapshot payload is missing {symbol}")
+            raw_ticker = item.get("ticker")
+            if isinstance(raw_ticker, Mapping):
+                ticker_event_ms = _int(
+                    raw_ticker.get("_relay_event_time_ms")
+                    or raw_ticker.get("event_time")
+                    or generated_at_ms
+                )
+                ticker_received_at = min(now, ticker_event_ms / 1000.0) if ticker_event_ms > 0 else 0.0
+                ticker = {
+                    "symbol": symbol,
+                    "lastPrice": _float(raw_ticker.get("lastPrice", raw_ticker.get("c"))),
+                    "bidPrice": _float(raw_ticker.get("bidPrice", raw_ticker.get("b"))),
+                    "askPrice": _float(raw_ticker.get("askPrice", raw_ticker.get("a"))),
+                    "quoteVolume": _float(raw_ticker.get("quoteVolume", raw_ticker.get("q"))),
+                    "priceChangePercent": _float(raw_ticker.get("priceChangePercent", raw_ticker.get("P"))),
+                    "event_time": ticker_event_ms,
+                    "received_at": ticker_received_at,
+                    "market_data_source": "BINANCE",
+                    "market_data_transport": "RELAY_BOOTSTRAP",
+                }
+                with self._lock:
+                    self._latest_ticker[symbol] = ticker
+
+            raw_klines = item.get("klines")
+            if not isinstance(raw_klines, Mapping):
+                raise ValueError(f"external relay klines are missing for {symbol}")
+            for interval in self.intervals:
+                raw_rows = raw_klines.get(interval)
+                if not isinstance(raw_rows, list):
+                    raise ValueError(f"external relay history is missing for {symbol} {interval}")
+                rows: list[dict[str, Any]] = []
+                for row in raw_rows:
+                    if not isinstance(row, Mapping):
+                        continue
+                    open_time = _int(row.get("open_time"))
+                    close_time = _int(row.get("close_time"))
+                    if open_time <= 0 or close_time <= 0 or close_time >= now_ms:
+                        continue
+                    rows.append({
+                        "open_time": open_time,
+                        "close_time": close_time,
+                        "open": _float(row.get("open")),
+                        "high": _float(row.get("high")),
+                        "low": _float(row.get("low")),
+                        "close": _float(row.get("close")),
+                        "volume": _float(row.get("volume")),
+                        "quote_volume": _float(row.get("quote_volume")),
+                        "is_closed": True,
+                        "event_time": generated_at_ms,
+                        "received_at": min(now, close_time / 1000.0),
+                        "market_data_source": "BINANCE",
+                        "market_data_transport": "RELAY_BOOTSTRAP",
+                    })
+                rows.sort(key=lambda candle: _int(candle.get("open_time")))
+                self._seed_runtime_kline_history(
+                    symbol,
+                    interval,
+                    rows,
+                    required_limit=_RUNTIME_KLINE_HISTORY_LIMITS.get(interval, 60),
+                )
+                if rows:
+                    with self._lock:
+                        self._latest_closed_kline[(symbol, interval)] = dict(rows[-1])
 
     def _consume_ticker(self, payload: Mapping[str, Any], now: float) -> None:
         symbol = str(payload.get("s") or "").upper()
@@ -450,7 +579,7 @@ class BinanceMarketStream:
                 # after the WebSocket lane has already demonstrated useful,
                 # healthy data. If the stream is cold or down, fail closed for
                 # this cycle and let the next market cycle consume WS snapshots.
-                if ws_fallback_ready and result and websocket_healthy:
+                if ws_fallback_ready and result and websocket_healthy and not self.relay_url:
                     fallback = original_ticker_fetch(fallback_symbols)
                     for symbol, ticker in fallback.items():
                         row = dict(ticker)
@@ -517,7 +646,7 @@ class BinanceMarketStream:
             with self._lock:
                 seeded = key in self._runtime_kline_seeded
 
-            if not seeded:
+            if not seeded and not self.relay_url:
                 with self._lock:
                     last_attempt = self._runtime_kline_seed_last_attempt.get(key, 0.0)
                     can_attempt = now - last_attempt >= 300.0
@@ -574,7 +703,7 @@ class BinanceMarketStream:
             latest_ticker_count = len(self._latest_ticker)
             history_key_count = len(self._runtime_kline_history)
             history_rows = sum(len(rows) for rows in self._runtime_kline_history.values())
-            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "ticker_rest_fallbacks_suppressed": self._runtime_ticker_rest_fallbacks_suppressed, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
+            return {"available": True, "mode": "PAPER_AUTHORITATIVE_BINANCE_WS", "transport": "EXTERNAL_RELAY" if self.relay_url else "BINANCE_DIRECT", "connected": self._connected, "stream_count": self.stream_count, "symbol_count": len(self.symbols), "intervals": list(self.intervals), "symbols_with_latest_kline": latest_kline_count, "expected_kline_streams": len(self.symbols) * len(self.intervals), "tickers_with_latest": latest_ticker_count, "expected_tickers": len(self.symbols), "coverage_kline_percent": round(latest_kline_count / float(max(1, len(self.symbols) * len(self.intervals))) * 100.0, 2), "coverage_ticker_percent": round(latest_ticker_count / float(max(1, len(self.symbols))) * 100.0, 2), "last_event_age_seconds": None if last_age is None else round(last_age, 3), "event_stream_healthy": bool(self._connected and last_age is not None and last_age <= self.stale_after_seconds), "stale_after_seconds": self.stale_after_seconds, "events_total": self._events_total, "kline_events": self._kline_events, "ticker_events": self._ticker_events, "closed_kline_events": self._closed_kline_events, "reconnects": self._reconnects, "parse_errors": self._parse_errors, "last_error": self._last_error, "runtime_integration": {"installed": self._runtime_integration_installed, "ticker_ws_hits": self._runtime_ticker_ws_hits, "ticker_rest_fallbacks": self._runtime_ticker_rest_fallbacks, "ticker_rest_fallbacks_suppressed": self._runtime_ticker_rest_fallbacks_suppressed, "kline_ws_overlays": self._runtime_kline_ws_overlays, "kline_rest_seeds": self._runtime_kline_rest_seed_count, "kline_rest_retries": self._runtime_kline_rest_retry_count, "kline_manager_cache_seeds": self._runtime_kline_manager_cache_seeds, "kline_manager_cache_writes": self._runtime_kline_manager_cache_writes, "kline_manager_cache_flushes": self._runtime_kline_manager_cache_flushes, "kline_history_keys": history_key_count, "kline_history_rows": history_rows}}
 
 
 def _float(value: Any) -> float:
