@@ -29,6 +29,7 @@ from core.brain_market_regime import derive_market_breadth
 from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
+from core.market_data_source_policy import market_data_symbol_groups
 from core.binance_market_stream import BinanceMarketStream
 from core.binance_snapshot_consumer import BinanceSnapshotError, hydrate_market_data_manager
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
@@ -68,6 +69,14 @@ PAPER_VENUE_MODE = os.getenv("PAPER_VENUE_MODE", "MIXED").strip().upper()
 if PAPER_VENUE_MODE not in {"MIXED", "BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
     raise ValueError(f"Unsupported PAPER_VENUE_MODE: {PAPER_VENUE_MODE}")
 PAPER_VENUE_LAB = PAPER_VENUE_MODE != "MIXED"
+# Optional source-only override for MAIN. Keep PAPER_VENUE_MODE=MIXED so the
+# main bot retains its existing Paper execution/persistence semantics; isolated
+# labs cannot be affected by this flag.
+_PAPER_MAIN_BINANCE_ONLY = (
+    PAPER_VENUE_MODE == "MIXED"
+    and os.getenv("PAPER_MAIN_BINANCE_ONLY", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 _BYBIT_MARKET_DATA_REST = os.getenv("BYBIT_MARKET_DATA_REST_URL", "https://api.bybit.com").strip()
 _BYBIT_BACKOFF_SECONDS = 300.0
 _BYBIT_BLOCK_UNTIL = 0.0
@@ -96,23 +105,13 @@ _OKX_GUARD = {
 }
 _okx_client = OKXMarketDataClient(base_url=_OKX_MARKET_DATA_REST)
 
-_market_data_split = len(TRADING_SYMBOLS) // 2
-if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
-    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
-    _BYBIT_MARKET_DATA_SYMBOLS = ()
-    _OKX_MARKET_DATA_SYMBOLS = ()
-elif PAPER_VENUE_MODE == "BYBIT_ONLY_LAB":
-    _BINANCE_MARKET_DATA_SYMBOLS = ()
-    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
-    _OKX_MARKET_DATA_SYMBOLS = ()
-elif PAPER_VENUE_MODE == "OKX_ONLY_LAB":
-    _BINANCE_MARKET_DATA_SYMBOLS = ()
-    _BYBIT_MARKET_DATA_SYMBOLS = ()
-    _OKX_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS)
-else:
-    _BINANCE_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[:_market_data_split])
-    _BYBIT_MARKET_DATA_SYMBOLS = tuple(TRADING_SYMBOLS[_market_data_split:])
-    _OKX_MARKET_DATA_SYMBOLS = ()
+_BINANCE_MARKET_DATA_SYMBOLS, _BYBIT_MARKET_DATA_SYMBOLS, _OKX_MARKET_DATA_SYMBOLS = (
+    market_data_symbol_groups(
+        TRADING_SYMBOLS,
+        PAPER_VENUE_MODE,
+        main_binance_only=_PAPER_MAIN_BINANCE_ONLY,
+    )
+)
 _BINANCE_MARKET_DATA_SYMBOL_SET = set(_BINANCE_MARKET_DATA_SYMBOLS)
 _BYBIT_MARKET_DATA_SYMBOL_SET = set(_BYBIT_MARKET_DATA_SYMBOLS)
 _OKX_MARKET_DATA_SYMBOL_SET = set(_OKX_MARKET_DATA_SYMBOLS)
@@ -221,8 +220,9 @@ def _correlation_candle_loader(symbol: str):
     snapshot = _market_data_manager.get_for_analysis("5m", key)
     return snapshot.payload if snapshot is not None else []
 _legacy.logger.info(
-    "[MARKET-DATA-CONFIG] owner=shadow_main_base venue_mode=%s ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
+    "[MARKET-DATA-CONFIG] owner=shadow_main_base venue_mode=%s market_data_policy=%s ticker_groups=%d ticker_batch_size=%d ticker_interval=%.1fs kline_waves=%d kline_interval=%.1fs",
     PAPER_VENUE_MODE,
+    "BINANCE_ONLY_MAIN" if _PAPER_MAIN_BINANCE_ONLY else "VENUE_SHARDED",
     len(_market_data_manager.ticker_groups()),
     _market_data_manager.ticker_batch_size,
     _market_data_manager.ticker_group_interval_seconds,
@@ -896,6 +896,9 @@ def _market_data_guard_snapshot() -> dict:
         "symbols": list(_OKX_MARKET_DATA_SYMBOLS),
     }
     snapshot["venue_mode"] = PAPER_VENUE_MODE
+    snapshot["market_data_policy"] = (
+        "BINANCE_ONLY_MAIN" if _PAPER_MAIN_BINANCE_ONLY else "VENUE_SHARDED"
+    )
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
         "bybit_symbols": list(_BYBIT_MARKET_DATA_SYMBOLS),
