@@ -150,6 +150,8 @@ _legacy._market_data_manager_installed = True
 # Warm-start Binance-owned market data only when the release-asset URL is
 # explicitly configured. MIXED mode hydrates Binance's shard only; it must never
 # populate Bybit-owned cache entries with Binance candles.
+_BINANCE_MARKET_DATA_RELAY_WS_URL = os.getenv("BINANCE_MARKET_DATA_RELAY_WS_URL", "").strip()
+_BINANCE_MARKET_DATA_RELAY_TOKEN = os.getenv("BINANCE_MARKET_DATA_RELAY_TOKEN", "").strip()
 _BINANCE_MARKET_DATA_SNAPSHOT_URL = os.getenv(
     "BINANCE_MARKET_DATA_SNAPSHOT_URL", ""
 ).strip()
@@ -166,7 +168,11 @@ try:
 except (TypeError, ValueError):
     _BINANCE_MARKET_DATA_SNAPSHOT_BOOTSTRAP_MAX_AGE = 21600.0
 
-if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"} and _BINANCE_MARKET_DATA_SNAPSHOT_URL:
+if (
+    PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"}
+    and _BINANCE_MARKET_DATA_SNAPSHOT_URL
+    and not _BINANCE_MARKET_DATA_RELAY_WS_URL
+):
     _snapshot_cache_symbols = (
         _BINANCE_MARKET_DATA_SYMBOLS if PAPER_VENUE_MODE == "MIXED" else TRADING_SYMBOLS
     )
@@ -203,6 +209,10 @@ if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"} and _BINANCE_MARKET_DATA_SN
             "[BINANCE-SNAPSHOT] load failed: %s; falling back to guarded market-data fetches",
             exc,
         )
+elif PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"} and _BINANCE_MARKET_DATA_RELAY_WS_URL:
+    _legacy.logger.info(
+        "[BINANCE-SNAPSHOT] GitHub snapshot skipped; external live relay supplies the bootstrap"
+    )
 
 
 def _correlation_candle_loader(symbol: str):
@@ -1086,6 +1096,8 @@ if PAPER_VENUE_MODE in {"MIXED", "BINANCE_ONLY_LAB"}:
     _binance_market_stream = BinanceMarketStream(
         TRADING_SYMBOLS,
         intervals=_binance_ws_intervals,
+        relay_url=_BINANCE_MARKET_DATA_RELAY_WS_URL,
+        relay_token=_BINANCE_MARKET_DATA_RELAY_TOKEN,
     )
     if PAPER_VENUE_MODE == "BINANCE_ONLY_LAB":
         _seed_binance_lab_stream_from_manager_cache(_binance_market_stream)

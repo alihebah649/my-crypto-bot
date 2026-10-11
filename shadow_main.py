@@ -1588,11 +1588,12 @@ def _venue_websocket_health_loop() -> None:
                 )
             else:
                 _legacy.logger.info(
-                    "[%s-WS-HEALTH] mode=%s available=%s connected=%s healthy=%s streams=%s "
+                    "[%s-WS-HEALTH] mode=%s transport=%s available=%s connected=%s healthy=%s streams=%s "
                     "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s closed_kline=%s "
                     "reconnects=%s parse_errors=%s last_event_age=%s last_error=%s",
                     venue,
                     snapshot.get("venue_mode", globals().get("PAPER_VENUE_MODE", "MIXED")),
+                    snapshot.get("transport", "BINANCE_DIRECT" if venue == "BINANCE" else "NATIVE"),
                     snapshot.get("available", True),
                     snapshot.get("connected"),
                     snapshot.get("event_stream_healthy"),
