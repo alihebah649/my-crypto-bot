@@ -100,3 +100,43 @@ def test_score_result_marks_old_snapshot_stale_without_changing_signal():
     assert audit["cache_expired"] is True
     assert audit["decision_candle_close_time_ms"] == candles[-1]["close_time"]
     assert result["scalp_signal"] == "BUY"
+
+def test_manager_kline_trace_uses_explicit_relay_and_websocket_provenance():
+    from types import SimpleNamespace
+
+    class EmptyCache:
+        def get(self, key):
+            return None
+
+    now = time.time()
+    relay_candles = [
+        {**_candle(int((now - 600) * 1000), int((now - 300) * 1000)),
+         "market_data_source": "BINANCE", "market_data_transport": "RELAY_BOOTSTRAP"},
+        {**_candle(int((now - 300) * 1000), int(now * 1000)),
+         "market_data_source": "BINANCE", "market_data_transport": "WEBSOCKET"},
+    ]
+    legacy = LegacyStub()
+    legacy.fetch_klines = lambda symbol, interval, limit: relay_candles
+
+    install(
+        legacy=legacy,
+        kline_cache={},
+        kline_cache_lock=threading.RLock(),
+        kline_cache_ttl={"5m": 310.0},
+    )
+    legacy._market_data_runtime_trace_bind_manager(
+        SimpleNamespace(cache=EmptyCache())
+    )
+
+    returned = legacy.fetch_klines("BTCUSDT", "5m", 2)
+    assert returned == relay_candles
+
+    snapshot = legacy._market_data_runtime_trace_snapshot()
+    assert snapshot["source_counts"]["BINANCE_RELAY_AND_WEBSOCKET"] == 1
+    event = next(
+        row for row in reversed(snapshot["last_events"])
+        if row.get("event") == "MANAGED_KLINE"
+    )
+    assert event["source"] == "BINANCE_RELAY_AND_WEBSOCKET"
+    assert event["manager_cache_fetched_at"] is None
+
