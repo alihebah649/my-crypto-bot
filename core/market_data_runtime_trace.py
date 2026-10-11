@@ -59,6 +59,40 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         except Exception:
             return None, key
 
+    def _market_data_metadata_source(result: Any) -> str | None:
+        """Prefer explicit source metadata carried on the returned candles.
+
+        Relay bootstrap and live WebSocket rows intentionally bypass the
+        persistent MarketDataManager cache until enough history is accumulated.
+        Missing cache timestamps therefore do not imply an unknown/REST source.
+        """
+        if not isinstance(result, list):
+            return None
+        sources: set[str] = set()
+        transports: set[str] = set()
+        for row in result:
+            if not isinstance(row, dict):
+                continue
+            source_value = str(row.get("market_data_source") or "").strip().upper()
+            transport_value = str(row.get("market_data_transport") or "").strip().upper()
+            if source_value:
+                sources.add(source_value)
+            if transport_value:
+                transports.add(transport_value)
+        if len(sources) != 1 or not transports:
+            return None
+        source = next(iter(sources))
+        if source == "BINANCE":
+            if transports == {"RELAY_BOOTSTRAP"}:
+                return "BINANCE_RELAY_BOOTSTRAP"
+            if transports == {"WEBSOCKET"}:
+                return "BINANCE_WEBSOCKET"
+            if transports.issubset({"RELAY_BOOTSTRAP", "WEBSOCKET"}):
+                return "BINANCE_RELAY_AND_WEBSOCKET"
+        if len(transports) == 1:
+            return f"{source}_{next(iter(transports))}"
+        return None
+
     def _record_manager_kline(symbol: str, interval: str, limit: int, result: Any, before: Any, before_age: float | None):
         now = time.time()
         after, key = _manager_cache_snapshot(symbol, interval, limit)
@@ -72,7 +106,12 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             after_fetched_at = None if after is None else float(after.fetched_at)
         except (TypeError, ValueError):
             pass
-        if before_fetched_at is None and after_fetched_at is not None:
+        metadata_source = _market_data_metadata_source(result)
+        if metadata_source is not None:
+            # Candle-carried provenance is more specific than the persistence
+            # layer: WS/relay data can be served before it is written to cache.
+            source = metadata_source
+        elif before_fetched_at is None and after_fetched_at is not None:
             source = "REFRESHED"
         elif before_fetched_at is not None and after_fetched_at != before_fetched_at:
             source = "REFRESHED"
