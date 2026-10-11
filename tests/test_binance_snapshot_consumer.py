@@ -71,6 +71,51 @@ def test_hydrates_cache_with_expected_limits(monkeypatch, tmp_path: Path) -> Non
 
 
 
+def test_hydrates_only_selected_venue_symbols_from_full_snapshot(monkeypatch, tmp_path: Path) -> None:
+    now = time.time()
+    monkeypatch.setattr(
+        "core.binance_snapshot_consumer._fetch_json",
+        lambda url, timeout: _snapshot(int(now * 1000)),
+    )
+    manager = MarketDataManager(
+        PersistentMarketDataCache(tmp_path / "cache.json"),
+        ticker_symbols=SYMBOLS,
+    )
+
+    result = hydrate_market_data_manager(
+        manager,
+        "https://example.invalid/latest.json",
+        SYMBOLS,
+        cache_symbols=["BTCUSDT"],
+        now=now,
+    )
+
+    assert result["loaded"] is True
+    assert result["symbols"] == len(SYMBOLS)
+    assert result["cache_symbols"] == 1
+    assert result["cache_entries_written"] == 5
+    assert manager.cache.get("5m:BTCUSDT:60") is not None
+    assert manager.cache.get("1h:BTCUSDT:60") is not None
+    assert manager.cache.get("ticker:BTCUSDT") is not None
+    assert manager.cache.get("5m:ETHUSDT:60") is None
+    assert manager.cache.get("ticker:ETHUSDT") is None
+
+
+def test_rejects_snapshot_cache_symbols_outside_expected_universe(tmp_path: Path) -> None:
+    manager = MarketDataManager(
+        PersistentMarketDataCache(tmp_path / "cache.json"),
+        ticker_symbols=SYMBOLS,
+    )
+
+    with pytest.raises(BinanceSnapshotError, match="outside the validated universe"):
+        hydrate_market_data_manager(
+            manager,
+            "https://example.invalid/latest.json",
+            SYMBOLS,
+            cache_symbols=["BNBUSDT"],
+        )
+
+
 def test_accepts_bounded_stale_snapshot_as_bootstrap(monkeypatch, tmp_path: Path) -> None:
     now = time.time()
     snapshot = _snapshot(int((now - 5 * 3600) * 1000))
