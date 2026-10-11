@@ -142,10 +142,10 @@ def hydrate_market_data_manager(
         return {"enabled": False, "loaded": False, "reason": "URL_NOT_CONFIGURED"}
 
     expected = tuple(dict.fromkeys(str(symbol).upper() for symbol in expected_symbols))
-    selected = expected if cache_symbols is None else tuple(
+    selected_symbols = expected if cache_symbols is None else tuple(
         dict.fromkeys(str(symbol).upper() for symbol in cache_symbols)
     )
-    unknown_selected = set(selected) - set(expected)
+    unknown_selected = set(selected_symbols) - set(expected)
     if unknown_selected:
         raise BinanceSnapshotError(
             "cache_symbols contains symbols outside the validated universe"
@@ -162,7 +162,7 @@ def hydrate_market_data_manager(
     )
 
     written = 0
-    for symbol in selected:
+    for symbol in selected_symbols:
         payload = symbols[symbol]
 
         ticker = payload.get("ticker")
@@ -179,10 +179,10 @@ def hydrate_market_data_manager(
         klines = payload["klines"]
         for interval, limit in DEFAULT_LIMITS.items():
             rows = [_normalise_candle(row) for row in klines[interval]]
-            selected = rows[-limit:]
+            selected_rows = rows[-limit:]
             manager.cache.put(
                 f"{interval}:{symbol}:{limit}",
-                selected,
+                selected_rows,
                 fetched_at=generated_at,
                 persist=False,
             )
@@ -199,7 +199,7 @@ def hydrate_market_data_manager(
         "bootstrap_stale": bool(bootstrap_stale),
         "entry_fresh": not bootstrap_stale,
         "symbols": len(symbols),
-        "cache_symbols": len(selected),
+        "cache_symbols": len(selected_symbols),
         "cache_entries_written": written,
     }
 
