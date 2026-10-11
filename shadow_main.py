@@ -1589,7 +1589,8 @@ def _venue_websocket_health_loop() -> None:
             else:
                 _legacy.logger.info(
                     "[%s-WS-HEALTH] mode=%s transport=%s available=%s connected=%s healthy=%s streams=%s "
-                    "kline_coverage=%s/%s ticker_coverage=%s/%s events=%s closed_kline=%s "
+                    "kline_coverage=%s/%s kline_by_interval=%s missing_kline=%s "
+                    "ticker_coverage=%s/%s missing_tickers=%s events=%s closed_kline=%s "
                     "reconnects=%s parse_errors=%s last_event_age=%s last_error=%s",
                     venue,
                     snapshot.get("venue_mode", globals().get("PAPER_VENUE_MODE", "MIXED")),
@@ -1600,7 +1601,11 @@ def _venue_websocket_health_loop() -> None:
                     snapshot.get("stream_count"),
                     snapshot.get("symbols_with_latest_kline"),
                     snapshot.get("expected_kline_streams"),
+                    snapshot.get("kline_coverage_by_interval", {}),
+                    snapshot.get("missing_kline_series", [])[:8],
                     snapshot.get("tickers_with_latest"),
+                    snapshot.get("expected_tickers"),
+                    snapshot.get("missing_ticker_symbols", [])[:8],
                     snapshot.get("expected_tickers"),
                     snapshot.get("events_total"),
                     snapshot.get("closed_kline_events"),
