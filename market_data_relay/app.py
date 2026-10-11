@@ -172,6 +172,7 @@ class RelayState:
         self._rest_backoff = 30.0
         self._message_count = 0
         self._closed_candle_count = 0
+        self.last_rest_refresh_at = 0.0
 
     @property
     def upstream_url(self) -> str:
@@ -191,6 +192,12 @@ class RelayState:
             LOG.warning("persisted snapshot rejected; a fresh REST bootstrap is required")
             return False
         self.snapshot = payload
+        meta = payload.get("_relay_meta", {})
+        meta_refresh_ms = _int(meta.get("last_rest_refresh_at_ms")) if isinstance(meta, Mapping) else 0
+        # Older snapshots did not store a separate REST-refresh timestamp. Use
+        # their generated time once; live candle updates must never reset this clock.
+        fallback_refresh_ms = _int(payload.get("generated_at_ms"))
+        self.last_rest_refresh_at = max(meta_refresh_ms, fallback_refresh_ms) / 1000.0
         LOG.info(
             "snapshot loaded from disk generated_at_ms=%s symbols=%d",
             payload.get("generated_at_ms"),
@@ -361,6 +368,8 @@ class RelayState:
                     ][-int(RELAY_HISTORY_LIMITS[interval]):]
         fresh["generated_at_ms"] = max(now_ms, _int(fresh.get("generated_at_ms")))
         fresh["generated_at"] = _utc_iso(_int(fresh["generated_at_ms"]))
+        fresh["_relay_meta"] = {"last_rest_refresh_at_ms": now_ms}
+        self.last_rest_refresh_at = now_ms / 1000.0
         self.snapshot = fresh
         self._apply_early_messages()
         self._snapshot_dirty = True
@@ -384,9 +393,12 @@ class RelayState:
     async def refresh_loop(self) -> None:
         while not self._stop.is_set():
             now = time.time()
-            snapshot_ms = _int((self.snapshot or {}).get("generated_at_ms"))
-            snapshot_age = max(0.0, now - snapshot_ms / 1000.0) if snapshot_ms > 0 else float("inf")
-            if self.snapshot is None or snapshot_age > REST_REFRESH_AFTER_SECONDS:
+            seconds_since_rest_refresh = (
+                max(0.0, now - self.last_rest_refresh_at)
+                if self.last_rest_refresh_at > 0
+                else float("inf")
+            )
+            if self.snapshot is None or seconds_since_rest_refresh >= REST_REFRESH_AFTER_SECONDS:
                 if now >= self._rest_retry_after:
                     try:
                         fresh = await asyncio.to_thread(fetch_snapshot)
@@ -394,9 +406,9 @@ class RelayState:
                             raise RelayError("fetched REST snapshot failed validation")
                         self._merge_rest_snapshot(fresh)
                         LOG.info(
-                            "REST bootstrap refreshed symbols=%d age_before_refresh=%.1fs",
+                            "REST bootstrap refreshed symbols=%d seconds_since_previous_rest_refresh=%.1fs",
                             len(fresh["symbols"]),
-                            snapshot_age,
+                            seconds_since_rest_refresh,
                         )
                         self.last_refresh_error = None
                         self._rest_backoff = 30.0
