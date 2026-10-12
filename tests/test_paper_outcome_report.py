@@ -69,3 +69,43 @@ def test_daily_report_handles_empty_day_without_inventing_profit():
     assert "الصفقات: 0" in report
     assert "صافي بعد الرسوم: —" in report
     assert "0.00$" not in report
+
+
+def test_daily_report_wrapper_appends_durable_outcome_diagnostics(monkeypatch):
+    import shadow_main
+
+    class FakeStore:
+        last_error = None
+
+        def read_time_range(self, *_args):
+            return []
+
+    monkeypatch.setattr(shadow_main, "_paper_outcome_store", FakeStore())
+    monkeypatch.setattr(
+        shadow_main,
+        "_paper_original_daily_report_with_outcomes",
+        lambda _date=None: "existing daily report",
+    )
+    monkeypatch.setattr(
+        shadow_main._legacy,
+        "_durable_paper_outcomes_for_local_date",
+        lambda _date: [
+            {
+                "symbol": "BTCUSDT",
+                "trade_mode": "SCALP",
+                "realized_pnl": -0.50,
+                "gross_pnl": -0.40,
+                "fees": 0.10,
+                "market_data_source": "BINANCE",
+                "close_reason": "STOP_LOSS",
+                "strategy": {"score": 65, "scalp_score": 65},
+            }
+        ],
+    )
+
+    report = shadow_main._daily_report_with_outcome_diagnostics("2026-10-11")
+
+    assert report.startswith("existing daily report")
+    assert "تحليل الصفقات المغلقة" in report
+    assert "صافي بعد الرسوم: -0.50$" in report
+    assert "STOP_LOSS" in report
