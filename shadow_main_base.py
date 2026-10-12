@@ -1471,8 +1471,17 @@ def _diagnostics():
         "market_data_guard": _market_data_guard_snapshot(),
         "entry_diagnostics": runtime.last_entry_diagnostics,
     }
-    # Keep the core diagnostics route fast and bounded. The aggregate Entry v2
-    # report reads historical evidence separately at /paper/shadow-evidence-report.
+    # Keep the core diagnostics route fast and bounded. Do not execute the
+    # historical aggregate query as part of this request; use the dedicated
+    # report endpoint when that deeper analysis is needed.
+    payload["shadow_evidence_report"] = {
+        "available": False,
+        "mode": "PAPER",
+        "venue_mode": str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN"),
+        "shadow_only": True,
+        "reason": "NOT_EMBEDDED_TO_KEEP_DIAGNOSTICS_FAST",
+        "endpoint": "/paper/shadow-evidence-report",
+    }
     payload["shadow_evidence_report_endpoint"] = "/paper/shadow-evidence-report"
     return jsonify(payload), 200
 
