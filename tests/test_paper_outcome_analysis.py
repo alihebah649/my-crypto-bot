@@ -218,3 +218,56 @@ def test_paper_outcome_analysis_endpoint_reports_store_read_failure(monkeypatch)
     assert payload["available"] is False
     assert payload["reason"] == "PAPER_OUTCOME_READ_FAILED"
     assert "private connection detail" not in repr(payload)
+
+def test_analysis_exposes_mode_source_close_and_schema_cohorts():
+    scalp_bybit_stop = _record(
+        "cross-1", symbol="BTCUSDT", mode="SCALP", pnl=-0.6, gross=-0.5,
+        fees=0.1, score=68, close_reason="STOP_LOSS", source="BYBIT",
+    )
+    scalp_binance_trail = _record(
+        "cross-2", symbol="ETHUSDT", mode="SCALP", pnl=0.3, gross=0.4,
+        fees=0.1, score=72, close_reason="TRAILING_STOP", source="BINANCE",
+    )
+    swing_bybit_stop = _record(
+        "cross-3", symbol="SOLUSDT", mode="SWING", pnl=-0.5, gross=-0.4,
+        fees=0.1, score=84, close_reason="STOP_LOSS", source="BYBIT",
+    )
+    swing_binance_trail = _record(
+        "cross-4", symbol="ADAUSDT", mode="SWING", pnl=0.4, gross=0.5,
+        fees=0.1, score=90, close_reason="TRAILING_STOP", source="BINANCE",
+    )
+
+    scalp_bybit_stop.update({
+        "schema_version": 2,
+        "execution_market_data_source": "BINANCE",
+    })
+    scalp_binance_trail.update({
+        "schema_version": 2,
+        "execution_market_data_source": "BINANCE",
+    })
+    swing_bybit_stop.update({
+        "schema_version": 1,
+        "execution_market_data_source": "BYBIT",
+    })
+    # Model an older row that predates versioned entry/source attribution.
+    swing_binance_trail["execution_market_data_source"] = "UNKNOWN"
+
+    result = build_paper_outcome_analysis([
+        scalp_bybit_stop,
+        scalp_binance_trail,
+        swing_bybit_stop,
+        swing_binance_trail,
+    ])
+
+    assert result["by_trade_mode_and_market_data_source"]["SCALP::BYBIT"]["records"] == 1
+    assert result["by_trade_mode_and_market_data_source"]["SCALP::BYBIT"]["net_pnl"] == -0.6
+    assert result["by_trade_mode_and_market_data_source"]["SWING::BINANCE"]["records"] == 1
+    assert result["by_trade_mode_and_close_reason"]["SCALP::STOP_LOSS"]["records"] == 1
+    assert result["by_trade_mode_and_close_reason"]["SWING::TRAILING_STOP"]["records"] == 1
+    assert result["by_trade_mode_and_execution_market_data_source"]["SWING::BYBIT"]["records"] == 1
+    assert result["by_evidence_schema_version"]["2"]["records"] == 2
+    assert result["by_evidence_schema_version"]["1"]["records"] == 1
+    assert result["by_evidence_schema_version"]["UNKNOWN"]["records"] == 1
+    assert result["data_quality"]["records_missing_schema_version"] == 1
+    assert result["data_quality"]["records_missing_execution_market_data_source"] == 1
+
