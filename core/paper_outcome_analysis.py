@@ -77,9 +77,41 @@ def _pattern(record: Mapping[str, Any]) -> str:
 
 
 def _market_regime(record: Mapping[str, Any]) -> str:
+    """Use captured regime labels, then fall back to the captured MTF facts.
+
+    Older Paper records often preserve MTF bias/strength while leaving
+    market_regime and symbol_regime unset. This fallback is diagnostic only:
+    it classifies saved context and never recalculates a live trading decision.
+    """
     regime = _mapping(record.get("regime"))
-    market = regime.get("market") or regime.get("symbol")
-    return _label(market)
+    for value in (regime.get("market"), regime.get("symbol")):
+        label = _label(value)
+        if label != "UNKNOWN":
+            return label
+
+    # Mirror the Brain regime hierarchy when an explicit higher-timeframe
+    # directional flag was captured.
+    if regime.get("mtf_higher_timeframes_bearish") is True:
+        return "BEAR"
+    if regime.get("mtf_higher_timeframes_bullish") is True:
+        return "BULL"
+
+    bias = _label(regime.get("mtf_bias"))
+    if bias in {"BULL", "BULLISH", "UPTREND"}:
+        return "BULL"
+    if bias in {"BEAR", "BEARISH", "DOWNTREND"}:
+        return "BEAR"
+    if bias in {"NEUTRAL", "SIDEWAYS", "TRANSITION", "MIXED"}:
+        return "TRANSITION"
+
+    mtf_net = _number(regime.get("mtf_net"))
+    if mtf_net is not None:
+        if mtf_net > 0:
+            return "BULL"
+        if mtf_net < 0:
+            return "BEAR"
+        return "TRANSITION"
+    return "UNKNOWN"
 
 
 def _aggregate(records: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -146,6 +178,34 @@ def _grouped(
     }
 
 
+def _reason_values(record: Mapping[str, Any], source: str) -> set[str]:
+    if source == "entry_v2":
+        values = _mapping(record.get("entry_v2")).get("reasons", [])
+    elif source == "recovery_trigger":
+        values = _mapping(record.get("entry_forensics")).get("recovery_trigger_reasons", [])
+    elif source == "scalp_gate":
+        values = _mapping(record.get("strategy")).get("scalp_gate_reasons", [])
+    else:
+        return set()
+    if not isinstance(values, (list, tuple, set)):
+        return set()
+    return {_label(value) for value in values if value}
+
+
+def _grouped_reasons(
+    records: list[Mapping[str, Any]],
+    source: str,
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for record in records:
+        for reason in _reason_values(record, source):
+            grouped[reason].append(record)
+    return {
+        key: _aggregate(grouped[key])
+        for key in sorted(grouped, key=lambda item: (-len(grouped[item]), item))
+    }
+
+
 def build_paper_outcome_analysis(
     records: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -153,31 +213,16 @@ def build_paper_outcome_analysis(
 
     Groupings are diagnostic only. Score bands are relative to the preserved
     SCALP=65 and SWING=80 thresholds and never imply a recommendation to change
-    those thresholds.
+    those thresholds. Reason groups overlap because a trade may carry multiple
+    tags, and the source-specific groups must not be summed.
     """
     rows = [record for record in records if isinstance(record, Mapping)]
-    entry_reason_records: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for record in rows:
-        reasons: set[str] = set()
-        v2_reasons = _mapping(record.get("entry_v2")).get("reasons", [])
-        if isinstance(v2_reasons, (list, tuple, set)):
-            reasons.update(_label(value) for value in v2_reasons if value)
-        forensics = _mapping(record.get("entry_forensics"))
-        recovery_reasons = forensics.get("recovery_trigger_reasons", [])
-        if isinstance(recovery_reasons, (list, tuple, set)):
-            reasons.update(_label(value) for value in recovery_reasons if value)
-        scalp_reasons = _mapping(record.get("strategy")).get("scalp_gate_reasons", [])
-        if isinstance(scalp_reasons, (list, tuple, set)):
-            reasons.update(_label(value) for value in scalp_reasons if value)
-        for reason in reasons:
-            entry_reason_records[reason].append(record)
-
-    outcome_totals = _aggregate(rows)
+    regimes = [_market_regime(row) for row in rows]
     return {
         "schema_version": 1,
         "report_type": "PAPER_CLOSED_OUTCOME_ANALYSIS",
         "record_count": len(rows),
-        "totals": outcome_totals,
+        "totals": _aggregate(rows),
         "by_trade_mode": _grouped(rows, lambda row: row.get("trade_mode")),
         "by_market_data_source": _grouped(
             rows,
@@ -188,12 +233,12 @@ def build_paper_outcome_analysis(
         "by_entry_score_band": _grouped(rows, _score_band),
         "by_pattern": _grouped(rows, _pattern),
         "by_market_regime": _grouped(rows, _market_regime),
-        # A trade can have multiple reasons; these reason groups intentionally
-        # overlap and therefore must not be summed as if they were disjoint.
-        "by_entry_reason": {
-            key: _aggregate(entry_reason_records[key])
-            for key in sorted(entry_reason_records, key=lambda item: (-len(entry_reason_records[item]), item))
-        },
+        # Backward-compatible union of three different tag sources. Use the
+        # source-specific groups below to tell these classes apart.
+        "by_entry_reason": _grouped_combined_reasons(rows),
+        "by_entry_v2_reason": _grouped_reasons(rows, "entry_v2"),
+        "by_recovery_trigger_reason": _grouped_reasons(rows, "recovery_trigger"),
+        "by_scalp_gate_reason": _grouped_reasons(rows, "scalp_gate"),
         "data_quality": {
             "records_missing_trade_mode": sum(1 for row in rows if not row.get("trade_mode")),
             "records_missing_market_data_source": sum(
@@ -205,7 +250,25 @@ def build_paper_outcome_analysis(
                 )
             ),
             "records_missing_entry_context": sum(1 for row in rows if not row.get("entry_context_available")),
+            "records_missing_market_regime": sum(1 for regime in regimes if regime == "UNKNOWN"),
         },
+    }
+
+
+def _grouped_combined_reasons(records: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Legacy combined reason grouping, retained for API compatibility."""
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for record in records:
+        reasons = (
+            _reason_values(record, "entry_v2")
+            | _reason_values(record, "recovery_trigger")
+            | _reason_values(record, "scalp_gate")
+        )
+        for reason in reasons:
+            grouped[reason].append(record)
+    return {
+        key: _aggregate(grouped[key])
+        for key in sorted(grouped, key=lambda item: (-len(grouped[item]), item))
     }
 
 

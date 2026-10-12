@@ -102,6 +102,63 @@ def test_analysis_marks_missing_data_without_leaking_trade_identifiers():
     assert result["totals"]["records_missing_net_pnl"] == 1
     assert "SECRET-POS-123" not in repr(result)
 
+
+def test_market_regime_falls_back_to_captured_mtf_context():
+    record = _record(
+        "regime-fallback", symbol="BTCUSDT", mode="SCALP", pnl=-0.2, gross=-0.1,
+        fees=0.1, score=68, close_reason="STOP_LOSS", regime=None,
+    )
+    record["regime"] = {
+        "market": None,
+        "symbol": None,
+        "mtf_bias": "BEARISH",
+        "mtf_net": -2.0,
+    }
+
+    result = build_paper_outcome_analysis([record])
+
+    assert result["by_market_regime"]["BEAR"]["records"] == 1
+    assert result["data_quality"]["records_missing_market_regime"] == 0
+
+
+def test_regime_prefers_explicit_symbol_regime_and_reports_unknown_when_context_absent():
+    known = _record(
+        "known", symbol="ETHUSDT", mode="SCALP", pnl=0.1, gross=0.2, fees=0.1,
+        score=70, close_reason="TRAILING_STOP", regime=None,
+    )
+    known["regime"] = {"market": "UNKNOWN", "symbol": "RECOVERY", "mtf_net": -1.0}
+    unknown = _record(
+        "unknown", symbol="ADAUSDT", mode="SCALP", pnl=-0.1, gross=0.0, fees=0.1,
+        score=65, close_reason="STOP_LOSS", regime=None,
+    )
+    unknown["regime"] = {"market": None, "symbol": None}
+
+    result = build_paper_outcome_analysis([known, unknown])
+
+    assert result["by_market_regime"]["RECOVERY"]["records"] == 1
+    assert result["by_market_regime"]["UNKNOWN"]["records"] == 1
+    assert result["data_quality"]["records_missing_market_regime"] == 1
+
+
+def test_reason_breakdowns_preserve_source_provenance():
+    record = _record(
+        "reason-provenance", symbol="ARBUSDT", mode="SCALP", pnl=-0.3, gross=-0.2,
+        fees=0.1, score=69, close_reason="STOP_LOSS", reasons=["ENTRY_V2_SIGNAL"],
+    )
+    record["entry_forensics"]["recovery_trigger_reasons"] = ["RECOVERY_TRIGGER"]
+    record["strategy"]["scalp_gate_reasons"] = ["SCALP_GATE_TAG"]
+
+    result = build_paper_outcome_analysis([record])
+
+    assert result["by_entry_v2_reason"]["ENTRY_V2_SIGNAL"]["records"] == 1
+    assert result["by_recovery_trigger_reason"]["RECOVERY_TRIGGER"]["records"] == 1
+    assert result["by_scalp_gate_reason"]["SCALP_GATE_TAG"]["records"] == 1
+    # Legacy key remains for clients already consuming the combined union.
+    assert result["by_entry_reason"]["ENTRY_V2_SIGNAL"]["records"] == 1
+    assert result["by_entry_reason"]["RECOVERY_TRIGGER"]["records"] == 1
+    assert result["by_entry_reason"]["SCALP_GATE_TAG"]["records"] == 1
+
+
 def test_paper_outcome_analysis_endpoint_returns_aggregates_only(monkeypatch):
     import shadow_main
 
@@ -156,5 +213,3 @@ def test_paper_outcome_analysis_endpoint_reports_store_read_failure(monkeypatch)
     assert payload["available"] is False
     assert payload["reason"] == "PAPER_OUTCOME_READ_FAILED"
     assert "private connection detail" not in repr(payload)
-
-
