@@ -145,17 +145,22 @@ def test_reason_breakdowns_preserve_source_provenance():
         "reason-provenance", symbol="ARBUSDT", mode="SCALP", pnl=-0.3, gross=-0.2,
         fees=0.1, score=69, close_reason="STOP_LOSS", reasons=["ENTRY_V2_SIGNAL"],
     )
-    record["entry_forensics"]["recovery_trigger_reasons"] = ["RECOVERY_TRIGGER"]
+    record["entry_forensics"]["recovery_trigger_reasons"] = [
+        "5M_PRICE_RECOVERY",
+        "ENTRY_V2_TAG_LEAKED_INTO_TRIGGER_LIST",
+    ]
     record["strategy"]["scalp_gate_reasons"] = ["SCALP_GATE_TAG"]
 
     result = build_paper_outcome_analysis([record])
 
     assert result["by_entry_v2_reason"]["ENTRY_V2_SIGNAL"]["records"] == 1
-    assert result["by_recovery_trigger_reason"]["RECOVERY_TRIGGER"]["records"] == 1
+    assert result["by_recovery_trigger_reason"]["5M_PRICE_RECOVERY"]["records"] == 1
+    assert "ENTRY_V2_TAG_LEAKED_INTO_TRIGGER_LIST" not in result["by_recovery_trigger_reason"]
     assert result["by_scalp_gate_reason"]["SCALP_GATE_TAG"]["records"] == 1
-    # Legacy key remains for clients already consuming the combined union.
+    assert result["data_quality"]["records_with_unrecognized_recovery_trigger_reasons"] == 1
+    # Legacy key remains backward-compatible and retains the raw combined tags.
     assert result["by_entry_reason"]["ENTRY_V2_SIGNAL"]["records"] == 1
-    assert result["by_entry_reason"]["RECOVERY_TRIGGER"]["records"] == 1
+    assert result["by_entry_reason"]["ENTRY_V2_TAG_LEAKED_INTO_TRIGGER_LIST"]["records"] == 1
     assert result["by_entry_reason"]["SCALP_GATE_TAG"]["records"] == 1
 
 
