@@ -271,6 +271,42 @@ def test_analysis_exposes_mode_source_close_and_schema_cohorts():
     assert result["data_quality"]["records_missing_schema_version"] == 1
     assert result["data_quality"]["records_missing_execution_market_data_source"] == 1
 
+def test_analysis_groups_outcomes_by_utc_entry_day_and_handles_missing_dates():
+    from datetime import datetime, timezone
+
+    first = _record(
+        "date-1", symbol="BTCUSDT", mode="SCALP", pnl=-0.2, gross=-0.1,
+        fees=0.1, score=66, close_reason="STOP_LOSS", source="BINANCE",
+    )
+    # ISO timestamp timezone conversion must group by UTC day, not local date.
+    first.update({
+        "opened_at_utc": "2026-10-11T23:30:00-02:00",
+        "opened_at": datetime(2026, 10, 11, 20, tzinfo=timezone.utc).timestamp(),
+    })
+    second = _record(
+        "date-2", symbol="ETHUSDT", mode="SWING", pnl=0.3, gross=0.4,
+        fees=0.1, score=82, close_reason="TRAILING_STOP", source="BYBIT",
+    )
+    # Also accept epoch milliseconds when the UTC ISO field is absent.
+    second["opened_at"] = datetime(
+        2026, 10, 12, 2, tzinfo=timezone.utc
+    ).timestamp() * 1000
+    missing_date = _record(
+        "date-3", symbol="SOLUSDT", mode="SWING", pnl=-0.1, gross=0.0,
+        fees=0.1, score=80, close_reason="STOP_LOSS", source="BINANCE",
+    )
+
+    result = build_paper_outcome_analysis([first, second, missing_date])
+
+    assert result["by_entry_day_utc"]["2026-10-12"]["records"] == 2
+    assert result["by_entry_day_and_trade_mode"]["2026-10-12::SCALP"]["records"] == 1
+    assert result["by_entry_day_and_trade_mode"]["2026-10-12::SWING"]["records"] == 1
+    assert result["by_entry_day_and_market_data_source"]["2026-10-12::BYBIT"]["records"] == 1
+    assert result["by_entry_day_and_market_data_source"]["2026-10-12::BINANCE"]["records"] == 1
+    assert result["by_entry_day_utc"]["UNKNOWN"]["records"] == 1
+    assert result["data_quality"]["records_missing_entry_opened_at"] == 1
+
+
 def test_unknown_source_placeholders_count_as_missing_but_known_fallback_wins():
     missing_source = _record(
         "source-unknown-1", symbol="BTCUSDT", mode="SCALP", pnl=-0.2, gross=-0.1,
