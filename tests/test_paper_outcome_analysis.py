@@ -271,3 +271,20 @@ def test_analysis_exposes_mode_source_close_and_schema_cohorts():
     assert result["data_quality"]["records_missing_schema_version"] == 1
     assert result["data_quality"]["records_missing_execution_market_data_source"] == 1
 
+def test_unknown_source_placeholders_count_as_missing_but_known_fallback_wins():
+    missing_source = _record(
+        "source-unknown-1", symbol="BTCUSDT", mode="SCALP", pnl=-0.2, gross=-0.1,
+        fees=0.1, score=66, close_reason="STOP_LOSS", source="UNKNOWN",
+    )
+    nested_fallback = _record(
+        "source-unknown-2", symbol="ETHUSDT", mode="SWING", pnl=0.2, gross=0.3,
+        fees=0.1, score=82, close_reason="TRAILING_STOP", source="UNKNOWN",
+    )
+    nested_fallback["strategy"]["market_data_source"] = "BYBIT"
+
+    result = build_paper_outcome_analysis([missing_source, nested_fallback])
+
+    assert result["by_market_data_source"]["BYBIT"]["records"] == 1
+    assert result["by_market_data_source"]["UNKNOWN"]["records"] == 1
+    assert result["data_quality"]["records_missing_market_data_source"] == 1
+
