@@ -77,11 +77,24 @@ def build_paper_outcome_evidence(
         entry_stop_loss = None
         stop_distance_percent = 0.0
         stop_distance_invalid_reason = "NON_NUMERIC_STOP_OR_ENTRY"
-    market_data_source = str(
-        strategy.get("market_data_source")
-        or entry_context.get("market_data_source")
-        or "UNKNOWN"
-    ).upper()
+    position_metadata = getattr(position, "metadata", {}) or {}
+    if not isinstance(position_metadata, Mapping):
+        position_metadata = {}
+    market_data_source = "UNKNOWN"
+    # A strategy snapshot is the most specific source attribution. Some entry
+    # paths preserve that field only on the position metadata, so fall back to
+    # the metadata captured when the Paper position was opened. Ignore explicit
+    # UNKNOWN placeholders so they do not hide a valid fallback.
+    for source_value in (
+        strategy.get("market_data_source"),
+        entry_context.get("market_data_source"),
+        entry_metadata.get("market_data_source"),
+        position_metadata.get("market_data_source"),
+    ):
+        source_label = str(source_value or "").strip().upper()
+        if source_label and source_label not in {"UNKNOWN", "NONE", "NULL", "N/A"}:
+            market_data_source = source_label
+            break
     execution_market_data_source = str(
         entry_metadata.get("execution_market_data_source")
         or "BINANCE"

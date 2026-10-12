@@ -238,3 +238,71 @@ def test_paper_outcome_marks_current_stop_at_or_above_entry_as_invalid_forensics
     assert record["entry_forensics"]["stop_distance_valid"] is False
     assert record["entry_forensics"]["stop_distance_invalid_reason"] == "STOP_AT_OR_ABOVE_ENTRY"
     assert record["entry_forensics"]["stop_distance_source"] == "POSITION_CURRENT_STOP_FALLBACK"
+
+
+
+def test_market_data_source_falls_back_to_entry_metadata_when_snapshot_is_unknown():
+    position = SimpleNamespace(
+        position_id="POS-SOURCE-FALLBACK",
+        symbol="ARBUSDT",
+        opened_at=100.0,
+        closed_at=160.0,
+        quantity=1.0,
+        entry_price=100.0,
+        current_price=101.0,
+        highest_price=101.0,
+        max_profit_percent=1.0,
+        stop_loss=95.0,
+        take_profit=None,
+        gross_pnl=1.0,
+        realized_pnl=0.8,
+        total_fees=0.2,
+        close_reason=SimpleNamespace(name="TRAILING_STOP"),
+        entry_metadata={
+            "trade_mode": "SCALP",
+            "entry_stop_loss": 95.0,
+            "market_data_source": "BYBIT",
+            "execution_market_data_source": "BYBIT",
+        },
+        metadata={"market_data_source": "OKX"},
+        entry_context={
+            "strategy_score": {"market_data_source": "UNKNOWN"},
+        },
+        exit_metadata={"exit_price": 101.0},
+    )
+
+    record = build_paper_outcome_evidence(position)
+
+    assert record["market_data_source"] == "BYBIT"
+    assert record["strategy"]["market_data_source"] == "BYBIT"
+    assert record["entry_forensics"]["stop_distance_valid"] is True
+    assert record["entry_forensics"]["stop_distance_percent"] == 5.0
+
+
+def test_market_data_source_falls_back_to_position_metadata_when_entry_metadata_lacks_it():
+    position = SimpleNamespace(
+        position_id="POS-SOURCE-METADATA",
+        symbol="SOLUSDT",
+        opened_at=100.0,
+        closed_at=160.0,
+        quantity=1.0,
+        entry_price=100.0,
+        current_price=101.0,
+        highest_price=101.0,
+        max_profit_percent=1.0,
+        stop_loss=95.0,
+        take_profit=None,
+        gross_pnl=1.0,
+        realized_pnl=0.8,
+        total_fees=0.2,
+        close_reason=SimpleNamespace(name="TRAILING_STOP"),
+        entry_metadata={"trade_mode": "SWING", "entry_stop_loss": 95.0},
+        metadata={"market_data_source": "OKX"},
+        entry_context={},
+        exit_metadata={"exit_price": 101.0},
+    )
+
+    record = build_paper_outcome_evidence(position)
+
+    assert record["market_data_source"] == "OKX"
+    assert record["strategy"]["market_data_source"] == "OKX"
