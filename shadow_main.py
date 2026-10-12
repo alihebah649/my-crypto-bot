@@ -40,6 +40,7 @@ from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.paper_outcome_analysis import build_paper_outcome_analysis
+from core.paper_outcome_report import format_paper_outcome_report
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
 from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
@@ -105,6 +106,40 @@ _paper_outcome_store = (
 # global namespace, so the active durable store must be explicitly bound there;
 # otherwise the report silently falls back to process-local runtime positions.
 _legacy._paper_outcome_store = _paper_outcome_store
+
+# Extend the existing daily Telegram report with evidence-based aggregates.
+# This remains presentation-only and must never become a strategy/execution gate.
+_paper_original_daily_report_with_outcomes = _legacy.build_daily_report
+
+
+def _daily_report_with_outcome_diagnostics(date_key=None):
+    base_report = _paper_original_daily_report_with_outcomes(date_key)
+    store = _paper_outcome_store
+    if store is None or not callable(getattr(store, "read_time_range", None)):
+        return base_report
+
+    report_date = date_key or _legacy.datetime.now(_legacy.REPORT_TIMEZONE).strftime("%Y-%m-%d")
+    try:
+        outcomes = _legacy._durable_paper_outcomes_for_local_date(report_date)
+        if getattr(store, "last_error", None):
+            _legacy.logger.warning(
+                "Daily Paper outcome diagnostics unavailable: durable read failed"
+            )
+            return base_report + (
+                "\\n\\n🔬 تحليل الصفقات المغلقة — PAPER"
+                "\\n⚠ تعذر قراءة أدلة النتائج؛ لم تُحسب إحصاءات اليوم."
+            )
+        analysis = build_paper_outcome_analysis(outcomes)
+        return base_report + "\\n\\n" + format_paper_outcome_report(analysis)
+    except Exception:
+        _legacy.logger.exception("Daily Paper outcome diagnostics formatting failed")
+        return base_report + (
+            "\\n\\n🔬 تحليل الصفقات المغلقة — PAPER"
+            "\\n⚠ تعذر إنشاء التحليل؛ تقرير الصفقات الأساسي ما زال متاحًا."
+        )
+
+
+_legacy.build_daily_report = _daily_report_with_outcome_diagnostics
 runtime.brain_authority = brain_authority
 runtime.brain_authority_store = _brain_authority_store
 
