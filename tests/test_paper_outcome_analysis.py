@@ -81,7 +81,7 @@ def test_score_bands_are_relative_to_preserved_mode_thresholds():
         _record("w1", symbol="CUSDT", mode="SWING", pnl=-0.1, gross=0.0, fees=0.1,
                 score=80, close_reason="STOP_LOSS"),
         _record("w2", symbol="DUSDT", mode="SWING", pnl=0.2, gross=0.3, fees=0.1,
-                score=88, close_reason="TRAILING_STOP"),
+                score=92, close_reason="TRAILING_STOP"),
     ]
 
     result = build_paper_outcome_analysis(records)
