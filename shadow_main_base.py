@@ -1471,18 +1471,18 @@ def _diagnostics():
         "market_data_guard": _market_data_guard_snapshot(),
         "entry_diagnostics": runtime.last_entry_diagnostics,
     }
-    try:
-        payload["shadow_evidence_report"] = _safe_paper_shadow_evidence_report_payload()
-    except Exception as exc:  # final isolation boundary for optional report data
-        _legacy.logger.exception("Paper diagnostics report attachment failed")
-        payload["shadow_evidence_report"] = {
-            "available": False,
-            "mode": "PAPER",
-            "venue_mode": str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN"),
-            "shadow_only": True,
-            "reason": "REPORT_GENERATION_FAILED",
-            "error": type(exc).__name__,
-        }
+    # Keep the core diagnostics route fast and bounded. Do not execute the
+    # historical aggregate query as part of this request; use the dedicated
+    # report endpoint when that deeper analysis is needed.
+    payload["shadow_evidence_report"] = {
+        "available": False,
+        "mode": "PAPER",
+        "venue_mode": str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN"),
+        "shadow_only": True,
+        "reason": "NOT_EMBEDDED_TO_KEEP_DIAGNOSTICS_FAST",
+        "endpoint": "/paper/shadow-evidence-report",
+    }
+    payload["shadow_evidence_report_endpoint"] = "/paper/shadow-evidence-report"
     return jsonify(payload), 200
 
 

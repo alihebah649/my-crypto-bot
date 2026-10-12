@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import shadow_main_base as module
 
 
@@ -28,26 +26,24 @@ def _call_diagnostics():
         return response.get_json(), status
 
 
-def test_paper_diagnostics_includes_structural_stop_shadow_and_preserves_existing_fields(monkeypatch):
+def test_paper_diagnostics_preserves_fields_without_running_historical_report(monkeypatch):
     _install_diagnostic_fixtures(monkeypatch)
-    report = {
-        "available": True,
-        "mode": "PAPER",
-        "venue_mode": "MIXED",
-        "shadow_only": True,
-        "structural_stop_shadow": {
-            "shadow_only": True,
-            "capture_coverage": {"observed_captures": 4},
-        },
-    }
-    monkeypatch.setattr(module, "_safe_paper_shadow_evidence_report_payload", lambda: report)
+    calls = []
+
+    def unexpected_report_call():
+        calls.append(True)
+        raise AssertionError("diagnostics must not run the historical aggregate")
+
+    monkeypatch.setattr(module, "_safe_paper_shadow_evidence_report_payload", unexpected_report_call)
 
     payload, status = _call_diagnostics()
 
     assert status == 200
-    assert payload["shadow_evidence_report"]["structural_stop_shadow"]["capture_coverage"] == {
-        "observed_captures": 4,
-    }
+    assert calls == []
+    assert payload["shadow_evidence_report"]["available"] is False
+    assert payload["shadow_evidence_report"]["reason"] == "NOT_EMBEDDED_TO_KEEP_DIAGNOSTICS_FAST"
+    assert payload["shadow_evidence_report"]["endpoint"] == "/paper/shadow-evidence-report"
+    assert payload["shadow_evidence_report_endpoint"] == "/paper/shadow-evidence-report"
     assert payload["shadow_evidence_report"]["shadow_only"] is True
     assert {
         "mode",
@@ -68,39 +64,29 @@ def test_paper_diagnostics_includes_structural_stop_shadow_and_preserves_existin
     assert payload["swing_score_threshold"] == 80
 
 
-def test_shadow_report_failure_does_not_break_paper_diagnostics(monkeypatch):
+def test_historical_report_failure_cannot_break_core_paper_diagnostics(monkeypatch):
     _install_diagnostic_fixtures(monkeypatch)
-    capture = SimpleNamespace(
-        historical_analysis=lambda: (_ for _ in ()).throw(RuntimeError("test capture failure"))
-    )
-    monkeypatch.setattr(module, "_entry_v2_runtime_capture", capture, raising=False)
-    monkeypatch.setattr(
-        module,
-        "_build_entry_v2_shadow_report_endpoint_payload",
-        lambda analysis, venue_mode: {"available": True},
-        raising=False,
-    )
 
+    def unexpected_report_call():
+        raise RuntimeError("test capture failure")
+
+    monkeypatch.setattr(module, "_safe_paper_shadow_evidence_report_payload", unexpected_report_call)
     payload, status = _call_diagnostics()
 
     assert status == 200
-    report = payload["shadow_evidence_report"]
-    assert report["available"] is False
-    assert report["reason"] == "REPORT_GENERATION_FAILED"
+    assert payload["shadow_evidence_report"]["reason"] == "NOT_EMBEDDED_TO_KEEP_DIAGNOSTICS_FAST"
     assert payload["mode"] == "PAPER"
     assert payload["data_count"] == 1
     assert payload["market_data_guard"] == {"state": "READY"}
     assert payload["entry_diagnostics"] == {"BTCUSDT": {"entry_v2_shadow_by_mode": {}}}
 
 
-def test_missing_shadow_report_builder_is_explicit_and_safe(monkeypatch):
+def test_report_payload_is_available_at_separate_endpoint_even_when_not_embedded(monkeypatch):
     _install_diagnostic_fixtures(monkeypatch)
-    monkeypatch.setattr(module, "_entry_v2_runtime_capture", None, raising=False)
-    monkeypatch.setattr(module, "_build_entry_v2_shadow_report_endpoint_payload", None, raising=False)
-
     payload, status = _call_diagnostics()
 
     assert status == 200
     assert payload["shadow_evidence_report"]["available"] is False
-    assert payload["shadow_evidence_report"]["reason"] == "REPORT_BUILDER_UNAVAILABLE"
+    assert payload["shadow_evidence_report"]["reason"] == "NOT_EMBEDDED_TO_KEEP_DIAGNOSTICS_FAST"
+    assert payload["shadow_evidence_report_endpoint"] == "/paper/shadow-evidence-report"
     assert payload["mode"] == "PAPER"

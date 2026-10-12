@@ -48,6 +48,7 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
+from core.paper_entry_gate_summary import build_paper_entry_gate_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import build_paper_market_health_summary
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
@@ -1457,6 +1458,20 @@ def _paper_engine_health():
     return jsonify(payload), status_code
 
 
+@app.get("/paper/entry-gate-summary")
+def _paper_entry_gate_summary():
+    """Small, read-only entry diagnostic; avoid the full evidence report/trace payload."""
+    payload = build_paper_entry_gate_summary(
+        _legacy.latest_scores,
+        scalp_threshold=SCALP_SCORE_THRESHOLD,
+        swing_threshold=SWING_SCORE_THRESHOLD,
+        venue_mode=PAPER_VENUE_MODE,
+        entry_diagnostics=runtime.last_entry_diagnostics,
+    )
+    payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    return jsonify(payload), 200
+
+
 @app.get("/paper/shadow-evidence-report")
 def _paper_shadow_evidence_report():
     """On-demand aggregate report for stop/recovery experiments; never an execution gate."""
@@ -1527,11 +1542,12 @@ def _binance_rest_candles_for_compare(
     symbol: str,
     interval: str,
 ) -> tuple[list[dict], float | None]:
-    """Read fresh REST candles and their cache snapshot time.
+    """Read an existing cached REST snapshot without issuing a REST request.
 
-    The snapshot time is retained so a forming REST candle is never compared
-    against a newly closed WebSocket candle and mislabeled as a source
-    divergence.
+    The main relay/WebSocket mode deliberately avoids a cold-start REST seed
+    so it does not create a request burst against an IP already rate-limited by
+    Binance. When no cached REST snapshot exists, the comparator must report
+    that limitation rather than calling the REST window empty.
     """
     manager = getattr(_legacy, "market_data_manager", None)
     cache = getattr(manager, "cache", None)
@@ -1569,6 +1585,9 @@ def _binance_rest_ws_compare_once(symbol: str, interval: str) -> None:
             rest_candles,
             ws_candle,
             rest_snapshot_fetched_at=rest_snapshot_fetched_at,
+            rest_snapshot_available=(
+                rest_snapshot_fetched_at is not None or bool(rest_candles)
+            ),
         )
         result.update(
             {

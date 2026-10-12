@@ -67,8 +67,14 @@ def compare_rest_ws_candle(
     relative_tolerance: float = 1e-12,
     absolute_tolerance: float = 1e-12,
     rest_snapshot_fetched_at: float | None = None,
+    rest_snapshot_available: bool = True,
 ) -> dict[str, Any]:
-    """Compare one WS closed candle with the REST candle having the same open time."""
+    """Compare a WS closed candle with a cached REST candle of the same open time.
+
+    Callers that only inspect a cache must set rest_snapshot_available=False
+    when no REST snapshot exists. That is distinct from a successful REST
+    snapshot containing an empty or non-matching candle window.
+    """
     result: dict[str, Any] = {
         "status": "NO_WS_CLOSED_CANDLE",
         "open_time": None,
@@ -87,6 +93,19 @@ def compare_rest_ws_candle(
     result["open_time"] = ws_open_time
 
     ws_close_time = _as_int(ws_candle.get("close_time"))
+    if not rest_snapshot_available:
+        result.update({
+            "status": "REST_SNAPSHOT_UNAVAILABLE",
+            "rest_candle_count": len(rest_candles),
+            "rest_snapshot_fetched_at": (
+                None if rest_snapshot_fetched_at is None else float(rest_snapshot_fetched_at)
+            ),
+            "ws_close_time": ws_close_time,
+            "rest_window_relation": "NO_CACHED_REST_SNAPSHOT",
+            "reason": "NO_CACHED_REST_SNAPSHOT",
+        })
+        return result
+
     if (
         rest_snapshot_fetched_at is not None
         and ws_close_time is not None

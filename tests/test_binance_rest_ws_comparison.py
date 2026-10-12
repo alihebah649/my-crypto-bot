@@ -216,3 +216,25 @@ def test_compare_rest_ws_no_rest_match_reports_empty_rest_window():
     assert result["status"] == "NO_REST_MATCH"
     assert result["rest_candle_count"] == 0
     assert result["rest_window_relation"] == "REST_EMPTY"
+
+
+
+def test_compare_rest_ws_marks_missing_cached_snapshot_as_unavailable_not_empty():
+    ws = {
+        "open_time": 1000,
+        "open": 10.0,
+        "high": 11.0,
+        "low": 9.0,
+        "close": 10.5,
+        "volume": 25.0,
+        "close_time": 1299,
+        "is_closed": True,
+    }
+
+    result = compare_rest_ws_candle([], ws, rest_snapshot_available=False)
+
+    assert result["status"] == "REST_SNAPSHOT_UNAVAILABLE"
+    assert result["rest_candle_count"] == 0
+    assert result["rest_snapshot_fetched_at"] is None
+    assert result["rest_window_relation"] == "NO_CACHED_REST_SNAPSHOT"
+    assert result["reason"] == "NO_CACHED_REST_SNAPSHOT"
