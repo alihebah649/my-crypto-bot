@@ -11,6 +11,11 @@ from typing import Any
 
 
 _SCORE_THRESHOLDS = {"SCALP": 65.0, "SWING": 80.0}
+_VALID_RECOVERY_TRIGGER_REASONS = frozenset({
+    "5M_RSI_RISING",
+    "5M_PRICE_RECOVERY",
+    "5M_BULLISH_BODY",
+})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -178,7 +183,8 @@ def _grouped(
     }
 
 
-def _reason_values(record: Mapping[str, Any], source: str) -> set[str]:
+def _raw_reason_values(record: Mapping[str, Any], source: str) -> set[str]:
+    """Return captured tags unchanged by source, for compatibility reporting."""
     if source == "entry_v2":
         values = _mapping(record.get("entry_v2")).get("reasons", [])
     elif source == "recovery_trigger":
@@ -190,6 +196,14 @@ def _reason_values(record: Mapping[str, Any], source: str) -> set[str]:
     if not isinstance(values, (list, tuple, set)):
         return set()
     return {_label(value) for value in values if value}
+
+
+def _reason_values(record: Mapping[str, Any], source: str) -> set[str]:
+    """Return a source-specific group, rejecting foreign tags from trigger data."""
+    values = _raw_reason_values(record, source)
+    if source == "recovery_trigger":
+        return values & _VALID_RECOVERY_TRIGGER_REASONS
+    return values
 
 
 def _grouped_reasons(
@@ -251,6 +265,11 @@ def build_paper_outcome_analysis(
             ),
             "records_missing_entry_context": sum(1 for row in rows if not row.get("entry_context_available")),
             "records_missing_market_regime": sum(1 for regime in regimes if regime == "UNKNOWN"),
+            "records_with_unrecognized_recovery_trigger_reasons": sum(
+                1
+                for row in rows
+                if _raw_reason_values(row, "recovery_trigger") - _VALID_RECOVERY_TRIGGER_REASONS
+            ),
         },
     }
 
@@ -260,9 +279,9 @@ def _grouped_combined_reasons(records: list[Mapping[str, Any]]) -> dict[str, dic
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for record in records:
         reasons = (
-            _reason_values(record, "entry_v2")
-            | _reason_values(record, "recovery_trigger")
-            | _reason_values(record, "scalp_gate")
+            _raw_reason_values(record, "entry_v2")
+            | _raw_reason_values(record, "recovery_trigger")
+            | _raw_reason_values(record, "scalp_gate")
         )
         for reason in reasons:
             grouped[reason].append(record)
