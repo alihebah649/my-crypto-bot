@@ -6,6 +6,7 @@ records. It does not affect strategy, risk, Trade Manager, exits, or execution.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -49,6 +50,35 @@ def _first_known(*values: Any) -> Any:
         if _has_known_value(value):
             return value
     return None
+
+
+def _utc_day(value: Any) -> str | None:
+    """Return a UTC calendar day from a captured ISO timestamp or epoch value."""
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).date().isoformat()
+        numeric = _number(value)
+        if numeric is None:
+            return None
+        # Accommodate both epoch seconds and milliseconds in persisted evidence.
+        if abs(numeric) >= 1_000_000_000_000:
+            numeric /= 1000.0
+        return datetime.fromtimestamp(numeric, tz=timezone.utc).date().isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _entry_day(record: Mapping[str, Any]) -> str | None:
+    return _utc_day(
+        record.get("opened_at_utc")
+        if _has_known_value(record.get("opened_at_utc"))
+        else record.get("opened_at")
+    )
 
 
 def _selected_score(record: Mapping[str, Any]) -> float | None:
@@ -254,6 +284,20 @@ def build_paper_outcome_analysis(
         # Schema cohorts distinguish recent forensic captures from older rows
         # whose source/stop metadata was never persisted.
         "by_evidence_schema_version": _grouped(rows, lambda row: row.get("schema_version")),
+        # Group by entry/open date (not close date) so the cohort reflects the
+        # market-data policy at the time the signal was opened.
+        "by_entry_day_utc": _grouped(rows, _entry_day),
+        "by_entry_day_and_trade_mode": _grouped_pairs(
+            rows, _entry_day, lambda row: row.get("trade_mode")
+        ),
+        "by_entry_day_and_market_data_source": _grouped_pairs(
+            rows,
+            _entry_day,
+            lambda row: _first_known(
+                row.get("market_data_source"),
+                _mapping(row.get("strategy")).get("market_data_source"),
+            ),
+        ),
         "by_trade_mode": _grouped(rows, lambda row: row.get("trade_mode")),
         "by_market_data_source": _grouped(
             rows,
@@ -296,6 +340,7 @@ def build_paper_outcome_analysis(
         "data_quality": {
             "records_missing_trade_mode": sum(1 for row in rows if not row.get("trade_mode")),
             "records_missing_schema_version": sum(1 for row in rows if row.get("schema_version") is None),
+            "records_missing_entry_opened_at": sum(1 for row in rows if _entry_day(row) is None),
             "records_missing_market_data_source": sum(
                 1
                 for row in rows
