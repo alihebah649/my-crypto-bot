@@ -39,6 +39,7 @@ from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
+from core.paper_outcome_analysis import build_paper_outcome_analysis
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
 from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
@@ -1426,6 +1427,51 @@ def _paper_shadow_evidence_report():
     """On-demand aggregate report for stop/recovery experiments; never an execution gate."""
     payload = _safe_paper_shadow_evidence_report_payload()
     return jsonify(payload), 200 if payload.get("available") else 503
+
+
+@app.get("/paper/outcome-analysis")
+def _paper_outcome_analysis():
+    """Read-only aggregate analysis of closed Paper outcomes for this venue."""
+    store = globals().get("_paper_outcome_store")
+    venue_mode = str(globals().get("PAPER_VENUE_MODE", "UNKNOWN") or "UNKNOWN")
+    if store is None or not callable(getattr(store, "read_all", None)):
+        return jsonify({
+            "available": False,
+            "mode": "PAPER",
+            "venue_mode": venue_mode,
+            "reason": "PAPER_OUTCOME_STORE_UNAVAILABLE",
+        }), 503
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            _legacy.logger.error(
+                "Paper outcome analysis read failed: %s",
+                str(getattr(store, "last_error", "")).split(":", 1)[0],
+            )
+            return jsonify({
+                "available": False,
+                "mode": "PAPER",
+                "venue_mode": venue_mode,
+                "reason": "PAPER_OUTCOME_READ_FAILED",
+            }), 503
+        payload = build_paper_outcome_analysis(records)
+        payload.update({
+            "available": True,
+            "mode": "PAPER",
+            "venue_mode": venue_mode,
+            "source": "Postgres PAPER_OUTCOME",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
+        return jsonify(payload), 200
+    except Exception as exc:  # keep a diagnostics endpoint from affecting Paper execution
+        _legacy.logger.exception("Paper outcome aggregate analysis failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER",
+            "venue_mode": venue_mode,
+            "reason": "PAPER_OUTCOME_ANALYSIS_FAILED",
+            "error": type(exc).__name__,
+        }), 503
 
 
 
