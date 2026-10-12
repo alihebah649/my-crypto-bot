@@ -306,3 +306,43 @@ def test_market_data_source_falls_back_to_position_metadata_when_entry_metadata_
 
     assert record["market_data_source"] == "OKX"
     assert record["strategy"]["market_data_source"] == "OKX"
+
+
+def test_paper_outcome_preserves_entry_time_market_data_policy():
+    position = SimpleNamespace(
+        position_id="POS-POLICY-SNAPSHOT",
+        symbol="BTCUSDT",
+        opened_at=1_791_825_000.0,
+        closed_at=1_791_825_060.0,
+        quantity=1.0,
+        entry_price=100.0,
+        current_price=101.0,
+        highest_price=101.0,
+        max_profit_percent=1.0,
+        stop_loss=95.0,
+        take_profit=None,
+        gross_pnl=1.0,
+        realized_pnl=0.8,
+        total_fees=0.2,
+        close_reason=SimpleNamespace(name="TRAILING_STOP"),
+        entry_metadata={
+            "trade_mode": "SCALP",
+            "venue_mode": "MIXED",
+            "market_data_policy": "BINANCE_ONLY_MAIN",
+            "market_data_source": "BINANCE",
+            "entry_stop_loss": 95.0,
+        },
+        metadata={
+            "venue_mode": "BYBIT_ONLY_LAB",
+            "market_data_policy": "ISOLATED_VENUE_LAB",
+        },
+        entry_context={"strategy_score": {"market_data_source": "BINANCE"}},
+        exit_metadata={"exit_price": 101.0},
+    )
+
+    record = build_paper_outcome_evidence(position)
+
+    assert record["schema_version"] == 3
+    assert record["venue_mode"] == "MIXED"
+    assert record["market_data_policy"] == "BINANCE_ONLY_MAIN"
+

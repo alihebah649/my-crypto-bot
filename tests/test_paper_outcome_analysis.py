@@ -324,3 +324,46 @@ def test_unknown_source_placeholders_count_as_missing_but_known_fallback_wins():
     assert result["by_market_data_source"]["UNKNOWN"]["records"] == 1
     assert result["data_quality"]["records_missing_market_data_source"] == 1
 
+
+def test_analysis_groups_by_captured_policy_and_does_not_guess_legacy_rows():
+    binance_only = _record(
+        "policy-binance-main", symbol="BTCUSDT", mode="SCALP", pnl=0.2,
+        gross=0.3, fees=0.1, score=71, close_reason="TRAILING_STOP",
+        source="BINANCE",
+    )
+    binance_only.update({
+        "schema_version": 3,
+        "venue_mode": "MIXED",
+        "market_data_policy": "BINANCE_ONLY_MAIN",
+        "opened_at_utc": "2026-10-12T19:10:00+00:00",
+    })
+    sharded = _record(
+        "policy-sharded", symbol="ETHUSDT", mode="SWING", pnl=-0.3,
+        gross=-0.2, fees=0.1, score=82, close_reason="STOP_LOSS",
+        source="BYBIT",
+    )
+    sharded.update({
+        "schema_version": 2,
+        "venue_mode": "MIXED",
+        "market_data_policy": "VENUE_SHARDED",
+        "opened_at_utc": "2026-10-11T23:10:00+00:00",
+    })
+    legacy = _record(
+        "policy-legacy", symbol="SOLUSDT", mode="SWING", pnl=0.1,
+        gross=0.2, fees=0.1, score=84, close_reason="TRAILING_STOP",
+        source="BINANCE",
+    )
+    legacy["opened_at_utc"] = "2026-10-12T19:25:00+00:00"
+
+    result = build_paper_outcome_analysis([binance_only, sharded, legacy])
+
+    assert result["by_market_data_policy"]["BINANCE_ONLY_MAIN"]["records"] == 1
+    assert result["by_market_data_policy"]["VENUE_SHARDED"]["records"] == 1
+    assert result["by_market_data_policy"]["UNKNOWN"]["records"] == 1
+    assert result["by_venue_mode"]["MIXED"]["records"] == 2
+    assert result["by_venue_mode"]["UNKNOWN"]["records"] == 1
+    assert result["by_entry_day_and_market_data_policy"]["2026-10-12::BINANCE_ONLY_MAIN"]["records"] == 1
+    assert result["by_trade_mode_and_market_data_policy"]["SCALP::BINANCE_ONLY_MAIN"]["records"] == 1
+    assert result["data_quality"]["records_missing_market_data_policy"] == 1
+    assert result["data_quality"]["records_missing_venue_mode"] == 1
+

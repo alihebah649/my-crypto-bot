@@ -925,7 +925,18 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         }
         chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
+        # Freeze the exact market-data configuration at entry, so outcome
+        # cohorts remain valid after a later deploy changes the active policy.
+        venue_mode = str(PAPER_VENUE_MODE).strip().upper()
+        if _PAPER_MAIN_BINANCE_ONLY:
+            market_data_policy = "BINANCE_ONLY_MAIN"
+        elif PAPER_VENUE_LAB:
+            market_data_policy = "ISOLATED_VENUE_LAB"
+        else:
+            market_data_policy = "VENUE_SHARDED"
         position.entry_metadata["trade_mode"] = mode
+        position.entry_metadata["venue_mode"] = venue_mode
+        position.entry_metadata["market_data_policy"] = market_data_policy
         position.entry_metadata["market_data_source"] = market_data_source
         position.entry_metadata["execution_market_data_source"] = (
             market_data_source if PAPER_VENUE_MODE != "MIXED" else "BINANCE"
@@ -939,6 +950,8 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position.entry_metadata["entry_economics"] = deepcopy(economics)
         position.metadata["entry_economics"] = deepcopy(economics)
         position.metadata["trade_mode"] = mode
+        position.metadata["venue_mode"] = venue_mode
+        position.metadata["market_data_policy"] = market_data_policy
         position.metadata["market_data_source"] = market_data_source
         position.metadata["execution_market_data_source"] = (
             market_data_source if PAPER_VENUE_MODE != "MIXED" else "BINANCE"

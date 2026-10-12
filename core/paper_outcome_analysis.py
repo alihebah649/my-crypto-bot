@@ -284,6 +284,10 @@ def build_paper_outcome_analysis(
         # Schema cohorts distinguish recent forensic captures from older rows
         # whose source/stop metadata was never persisted.
         "by_evidence_schema_version": _grouped(rows, lambda row: row.get("schema_version")),
+        # Explicit entry-time configuration attribution. Legacy rows stay UNKNOWN;
+        # current process settings must never be used to relabel historical trades.
+        "by_market_data_policy": _grouped(rows, lambda row: row.get("market_data_policy")),
+        "by_venue_mode": _grouped(rows, lambda row: row.get("venue_mode")),
         # Group by entry/open date (not close date) so the cohort reflects the
         # market-data policy at the time the signal was opened.
         "by_entry_day_utc": _grouped(rows, _entry_day),
@@ -297,6 +301,9 @@ def build_paper_outcome_analysis(
                 row.get("market_data_source"),
                 _mapping(row.get("strategy")).get("market_data_source"),
             ),
+        ),
+        "by_entry_day_and_market_data_policy": _grouped_pairs(
+            rows, _entry_day, lambda row: row.get("market_data_policy")
         ),
         "by_trade_mode": _grouped(rows, lambda row: row.get("trade_mode")),
         "by_market_data_source": _grouped(
@@ -317,6 +324,11 @@ def build_paper_outcome_analysis(
                 row.get("market_data_source"),
                 _mapping(row.get("strategy")).get("market_data_source"),
             ),
+        ),
+        "by_trade_mode_and_market_data_policy": _grouped_pairs(
+            rows,
+            lambda row: row.get("trade_mode"),
+            lambda row: row.get("market_data_policy"),
         ),
         "by_trade_mode_and_execution_market_data_source": _grouped_pairs(
             rows,
@@ -350,6 +362,12 @@ def build_paper_outcome_analysis(
                         _mapping(row.get("strategy")).get("market_data_source"),
                     )
                 )
+            ),
+            "records_missing_market_data_policy": sum(
+                1 for row in rows if not _has_known_value(row.get("market_data_policy"))
+            ),
+            "records_missing_venue_mode": sum(
+                1 for row in rows if not _has_known_value(row.get("venue_mode"))
             ),
             "records_missing_execution_market_data_source": sum(
                 1
