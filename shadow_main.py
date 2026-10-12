@@ -47,6 +47,7 @@ from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
+from core.market_health_summary import build_paper_market_health_summary
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
@@ -1227,29 +1228,54 @@ def _market_health_notify(state: str, detail: str, *, force: bool = False) -> No
 
 
 def _observe_market_health() -> None:
-    snapshot = _market_data_guard_snapshot()
+    guard_snapshot = _market_data_guard_snapshot()
     data_count = len(_legacy.latest_scores or {})
     symbol_count = len(TRADING_SYMBOLS)
-    status_code = snapshot.get("status_code")
-    blocked = bool(snapshot.get("blocked"))
-    last_path = snapshot.get("last_path") or ""
-    retry_in = float(snapshot.get("blocked_for_seconds", 0.0) or 0.0)
+    status_code = guard_snapshot.get("status_code")
+    blocked = bool(guard_snapshot.get("blocked"))
+    last_path = guard_snapshot.get("last_path") or ""
+    retry_in = float(guard_snapshot.get("blocked_for_seconds", 0.0) or 0.0)
+
+    try:
+        active_venue, websocket_snapshot = _selected_venue_websocket_snapshot()
+    except Exception as exc:  # pragma: no cover - health reporting must remain isolated
+        active_venue = str(PAPER_VENUE_MODE or "UNKNOWN")
+        websocket_snapshot = {
+            "available": False,
+            "connected": False,
+            "event_stream_healthy": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+    summary = build_paper_market_health_summary(
+        scored_symbol_count=data_count,
+        symbol_count=symbol_count,
+        local_kline_cache_entries=guard_snapshot.get("kline_cache_entries", 0),
+        venue=active_venue,
+        websocket_snapshot=websocket_snapshot,
+    )
+
     # A previous 418/429 remains diagnostic history after the circuit
     # has reopened. Only report it as an active health state while the
     # local market-data guard is actually blocked.
     if status_code in {418, 429} and blocked:
         _market_health_notify(
             f"BINANCE RATE LIMIT {status_code}",
-            f"Path: {last_path}\nRetry in: {retry_in:.0f}s\nData: {data_count}/{symbol_count}",
+            f"Path: {last_path}\nRetry in: {retry_in:.0f}s\n{summary['detail']}",
         )
         return
     if blocked:
-        _market_health_notify("BINANCE CIRCUIT OPEN", f"Local protection is waiting; data: {data_count}/{symbol_count}\nRetry window: {retry_in:.0f}s")
+        _market_health_notify(
+            "BINANCE CIRCUIT OPEN",
+            f"Local protection is waiting; retry window: {retry_in:.0f}s\n{summary['detail']}",
+        )
         return
     if data_count <= 0:
-        _market_health_notify("MARKET DATA DOWN", f"No scored symbols available: 0/{symbol_count}\nLast guard status: {status_code or 'none'}")
+        _market_health_notify(
+            "MARKET DATA DOWN",
+            f"{summary['detail']}\nLast guard status: {status_code or 'none'}",
+        )
         return
-    _market_health_notify("MARKET DATA UP", f"Scored symbols: {data_count}/{symbol_count}\nKline cache: {snapshot.get('kline_cache_entries', 0)} entries")
+    _market_health_notify(summary["state"], summary["detail"])
 
 
 def _binance_metrics_snapshot_safe() -> dict:
