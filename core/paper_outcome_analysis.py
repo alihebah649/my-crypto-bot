@@ -37,6 +37,20 @@ def _label(value: Any) -> str:
     return result if result else "UNKNOWN"
 
 
+_UNAVAILABLE_LABELS = frozenset({"", "UNKNOWN", "NONE", "NULL", "N/A"})
+
+
+def _has_known_value(value: Any) -> bool:
+    return str(value or "").strip().upper() not in _UNAVAILABLE_LABELS
+
+
+def _first_known(*values: Any) -> Any:
+    for value in values:
+        if _has_known_value(value):
+            return value
+    return None
+
+
 def _selected_score(record: Mapping[str, Any]) -> float | None:
     strategy = _mapping(record.get("strategy"))
     mode = _label(record.get("trade_mode"))
@@ -243,8 +257,10 @@ def build_paper_outcome_analysis(
         "by_trade_mode": _grouped(rows, lambda row: row.get("trade_mode")),
         "by_market_data_source": _grouped(
             rows,
-            lambda row: row.get("market_data_source")
-            or _mapping(row.get("strategy")).get("market_data_source"),
+            lambda row: _first_known(
+                row.get("market_data_source"),
+                _mapping(row.get("strategy")).get("market_data_source"),
+            ),
         ),
         "by_execution_market_data_source": _grouped(
             rows, lambda row: row.get("execution_market_data_source")
@@ -253,8 +269,10 @@ def build_paper_outcome_analysis(
         "by_trade_mode_and_market_data_source": _grouped_pairs(
             rows,
             lambda row: row.get("trade_mode"),
-            lambda row: row.get("market_data_source")
-            or _mapping(row.get("strategy")).get("market_data_source"),
+            lambda row: _first_known(
+                row.get("market_data_source"),
+                _mapping(row.get("strategy")).get("market_data_source"),
+            ),
         ),
         "by_trade_mode_and_execution_market_data_source": _grouped_pairs(
             rows,
@@ -281,16 +299,17 @@ def build_paper_outcome_analysis(
             "records_missing_market_data_source": sum(
                 1
                 for row in rows
-                if not (
-                    row.get("market_data_source")
-                    or _mapping(row.get("strategy")).get("market_data_source")
+                if not _has_known_value(
+                    _first_known(
+                        row.get("market_data_source"),
+                        _mapping(row.get("strategy")).get("market_data_source"),
+                    )
                 )
             ),
             "records_missing_execution_market_data_source": sum(
                 1
                 for row in rows
-                if not row.get("execution_market_data_source")
-                or _label(row.get("execution_market_data_source")) == "UNKNOWN"
+                if not _has_known_value(row.get("execution_market_data_source"))
             ),
             "records_without_frozen_entry_stop": sum(
                 1
@@ -301,7 +320,9 @@ def build_paper_outcome_analysis(
             "records_missing_strategy_snapshot_source": sum(
                 1
                 for row in rows
-                if not _mapping(row.get("entry_forensics")).get("strategy_snapshot_source")
+                if not _has_known_value(
+                    _mapping(row.get("entry_forensics")).get("strategy_snapshot_source")
+                )
             ),
             "records_missing_entry_context": sum(1 for row in rows if not row.get("entry_context_available")),
             "records_missing_market_regime": sum(1 for regime in regimes if regime == "UNKNOWN"),
