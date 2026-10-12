@@ -32,6 +32,16 @@ def _iso(ts: Any) -> str | None:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
+def _captured_label(*values: Any) -> str:
+    """Return the first captured, known label without guessing current config."""
+    unavailable = {"", "UNKNOWN", "NONE", "NULL", "N/A"}
+    for value in values:
+        label = str(value or "").strip().upper()
+        if label not in unavailable:
+            return label
+    return "UNKNOWN"
+
+
 def build_paper_outcome_evidence(
     position: Any,
     *,
@@ -80,6 +90,16 @@ def build_paper_outcome_evidence(
     position_metadata = getattr(position, "metadata", {}) or {}
     if not isinstance(position_metadata, Mapping):
         position_metadata = {}
+    # These values are captured at entry. Do not infer them from the current
+    # runtime environment when generating outcomes for older positions.
+    venue_mode = _captured_label(
+        entry_metadata.get("venue_mode"),
+        position_metadata.get("venue_mode"),
+    )
+    market_data_policy = _captured_label(
+        entry_metadata.get("market_data_policy"),
+        position_metadata.get("market_data_policy"),
+    )
     market_data_source = "UNKNOWN"
     # A strategy snapshot is the most specific source attribution. Some entry
     # paths preserve that field only on the position metadata, so fall back to
@@ -138,12 +158,14 @@ def build_paper_outcome_evidence(
     )
 
     record = {
-        "schema_version": 2,
+        "schema_version": 3,
         "evidence_type": "PAPER_OUTCOME",
         "position_id": str(getattr(position, "position_id", "")),
         "symbol": str(getattr(position, "symbol", "")).upper(),
         "market_data_source": market_data_source,
         "execution_market_data_source": execution_market_data_source,
+        "venue_mode": venue_mode,
+        "market_data_policy": market_data_policy,
         "signal_entry_price": entry_metadata.get("signal_entry_price"),
         "execution_reference_price": entry_metadata.get("execution_reference_price"),
         "market_data_alignment": _safe(market_data_alignment),
