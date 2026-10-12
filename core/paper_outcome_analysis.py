@@ -37,6 +37,20 @@ def _label(value: Any) -> str:
     return result if result else "UNKNOWN"
 
 
+_UNAVAILABLE_LABELS = frozenset({"", "UNKNOWN", "NONE", "NULL", "N/A"})
+
+
+def _has_known_value(value: Any) -> bool:
+    return str(value or "").strip().upper() not in _UNAVAILABLE_LABELS
+
+
+def _first_known(*values: Any) -> Any:
+    for value in values:
+        if _has_known_value(value):
+            return value
+    return None
+
+
 def _selected_score(record: Mapping[str, Any]) -> float | None:
     strategy = _mapping(record.get("strategy"))
     mode = _label(record.get("trade_mode"))
@@ -237,13 +251,39 @@ def build_paper_outcome_analysis(
         "report_type": "PAPER_CLOSED_OUTCOME_ANALYSIS",
         "record_count": len(rows),
         "totals": _aggregate(rows),
+        # Schema cohorts distinguish recent forensic captures from older rows
+        # whose source/stop metadata was never persisted.
+        "by_evidence_schema_version": _grouped(rows, lambda row: row.get("schema_version")),
         "by_trade_mode": _grouped(rows, lambda row: row.get("trade_mode")),
         "by_market_data_source": _grouped(
             rows,
-            lambda row: row.get("market_data_source")
-            or _mapping(row.get("strategy")).get("market_data_source"),
+            lambda row: _first_known(
+                row.get("market_data_source"),
+                _mapping(row.get("strategy")).get("market_data_source"),
+            ),
+        ),
+        "by_execution_market_data_source": _grouped(
+            rows, lambda row: row.get("execution_market_data_source")
         ),
         "by_close_reason": _grouped(rows, lambda row: row.get("close_reason")),
+        "by_trade_mode_and_market_data_source": _grouped_pairs(
+            rows,
+            lambda row: row.get("trade_mode"),
+            lambda row: _first_known(
+                row.get("market_data_source"),
+                _mapping(row.get("strategy")).get("market_data_source"),
+            ),
+        ),
+        "by_trade_mode_and_execution_market_data_source": _grouped_pairs(
+            rows,
+            lambda row: row.get("trade_mode"),
+            lambda row: row.get("execution_market_data_source"),
+        ),
+        "by_trade_mode_and_close_reason": _grouped_pairs(
+            rows,
+            lambda row: row.get("trade_mode"),
+            lambda row: row.get("close_reason"),
+        ),
         "by_entry_score_band": _grouped(rows, _score_band),
         "by_pattern": _grouped(rows, _pattern),
         "by_market_regime": _grouped(rows, _market_regime),
@@ -255,12 +295,33 @@ def build_paper_outcome_analysis(
         "by_scalp_gate_reason": _grouped_reasons(rows, "scalp_gate"),
         "data_quality": {
             "records_missing_trade_mode": sum(1 for row in rows if not row.get("trade_mode")),
+            "records_missing_schema_version": sum(1 for row in rows if row.get("schema_version") is None),
             "records_missing_market_data_source": sum(
                 1
                 for row in rows
-                if not (
-                    row.get("market_data_source")
-                    or _mapping(row.get("strategy")).get("market_data_source")
+                if not _has_known_value(
+                    _first_known(
+                        row.get("market_data_source"),
+                        _mapping(row.get("strategy")).get("market_data_source"),
+                    )
+                )
+            ),
+            "records_missing_execution_market_data_source": sum(
+                1
+                for row in rows
+                if not _has_known_value(row.get("execution_market_data_source"))
+            ),
+            "records_without_frozen_entry_stop": sum(
+                1
+                for row in rows
+                if _mapping(row.get("entry_forensics")).get("stop_distance_source")
+                != "ENTRY_METADATA"
+            ),
+            "records_missing_strategy_snapshot_source": sum(
+                1
+                for row in rows
+                if not _has_known_value(
+                    _mapping(row.get("entry_forensics")).get("strategy_snapshot_source")
                 )
             ),
             "records_missing_entry_context": sum(1 for row in rows if not row.get("entry_context_available")),
@@ -271,6 +332,23 @@ def build_paper_outcome_analysis(
                 if _raw_reason_values(row, "recovery_trigger") - _VALID_RECOVERY_TRIGGER_REASONS
             ),
         },
+    }
+
+
+def _grouped_pairs(
+    records: list[Mapping[str, Any]],
+    left_key_fn,
+    right_key_fn,
+) -> dict[str, dict[str, Any]]:
+    """Aggregate a cross-tab without exporting raw closed-trade records."""
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for record in records:
+        pair = (_label(left_key_fn(record)), _label(right_key_fn(record)))
+        grouped[pair].append(record)
+    ordered = sorted(grouped, key=lambda pair: (-len(grouped[pair]), pair[0], pair[1]))
+    return {
+        f"{left}::{right}": _aggregate(grouped[(left, right)])
+        for left, right in ordered
     }
 
 
