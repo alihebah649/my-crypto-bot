@@ -294,6 +294,28 @@ def test_market_health_treats_expired_rate_limit_as_up_when_data_is_available(mo
             "kline_cache_entries": 89,
         },
     )
+    monkeypatch.setattr(
+        shadow_main,
+        "_selected_venue_websocket_snapshot",
+        lambda: (
+            "BINANCE",
+            {
+                "available": True,
+                "transport": "EXTERNAL_RELAY",
+                "connected": True,
+                "event_stream_healthy": True,
+                "symbols_with_latest_kline": 88,
+                "expected_kline_streams": 88,
+                "tickers_with_latest": 22,
+                "expected_tickers": 22,
+                "last_event_age_seconds": 0.02,
+                "runtime_integration": {
+                    "kline_history_keys": 88,
+                    "kline_history_rows": 8448,
+                },
+            },
+        ),
+    )
     monkeypatch.setattr(shadow_main._legacy, "latest_scores", {f"S{i}": {} for i in range(22)})
     monkeypatch.setattr(
         shadow_main._legacy,
