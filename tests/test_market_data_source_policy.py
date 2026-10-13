@@ -41,8 +41,6 @@ class MarketDataSymbolPolicyTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 class MarketDataPolicyLabelTests(unittest.TestCase):
     def test_main_binance_only_policy_is_distinct_from_mixed_venue_mode(self):
@@ -64,3 +62,6 @@ class MarketDataPolicyLabelTests(unittest.TestCase):
                 "ISOLATED_VENUE_LAB",
             )
 
+
+if __name__ == "__main__":
+    unittest.main()
