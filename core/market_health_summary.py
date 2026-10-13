@@ -16,6 +16,33 @@ def _nonnegative_int(value: Any) -> int:
         return 0
 
 
+def market_data_guard_alert_label(
+    *,
+    venue_mode: str,
+    status_code: Any,
+    blocked: bool,
+) -> str | None:
+    """Label a blocked market-data guard with the provider that owns it."""
+    if not blocked:
+        return None
+
+    mode = str(venue_mode or "MIXED").strip().upper()
+    venue = {
+        "OKX_ONLY_LAB": "OKX",
+        "BYBIT_ONLY_LAB": "BYBIT",
+    }.get(mode, "BINANCE")
+
+    try:
+        status = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        status = None
+
+    rate_limit_codes = {403, 429} if venue in {"OKX", "BYBIT"} else {418, 429}
+    if status in rate_limit_codes:
+        return f"{venue} RATE LIMIT {status}"
+    return f"{venue} CIRCUIT OPEN"
+
+
 def build_paper_market_health_summary(
     *,
     scored_symbol_count: int,
