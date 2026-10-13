@@ -29,3 +29,17 @@ def market_data_symbol_groups(
 
     split = len(universe) // 2
     return universe[:split], universe[split:], ()
+
+def market_data_policy_label(
+    venue_mode: str,
+    *,
+    main_binance_only: bool = False,
+) -> str:
+    """Describe the active data policy without conflating it with venue mode."""
+    mode = str(venue_mode or "MIXED").strip().upper()
+    if mode == "MIXED" and main_binance_only:
+        return "BINANCE_ONLY_MAIN"
+    if mode in {"BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"}:
+        return "ISOLATED_VENUE_LAB"
+    return "VENUE_SHARDED"
+
