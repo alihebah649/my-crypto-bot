@@ -1,6 +1,9 @@
 import unittest
 
-from core.market_data_source_policy import market_data_symbol_groups
+from core.market_data_source_policy import (
+    market_data_policy_label,
+    market_data_symbol_groups,
+)
 
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "LINKUSDT", "ADAUSDT")
@@ -36,6 +39,28 @@ class MarketDataSymbolPolicyTests(unittest.TestCase):
             market_data_symbol_groups(SYMBOLS, "BINANCE_ONLY_LAB"),
             (SYMBOLS, (), ()),
         )
+
+
+
+class MarketDataPolicyLabelTests(unittest.TestCase):
+    def test_main_binance_only_policy_is_distinct_from_mixed_venue_mode(self):
+        self.assertEqual(
+            market_data_policy_label("MIXED", main_binance_only=True),
+            "BINANCE_ONLY_MAIN",
+        )
+
+    def test_default_main_policy_remains_sharded(self):
+        self.assertEqual(
+            market_data_policy_label("MIXED"),
+            "VENUE_SHARDED",
+        )
+
+    def test_isolated_labs_have_an_explicit_policy_label(self):
+        for mode in ("BINANCE_ONLY_LAB", "BYBIT_ONLY_LAB", "OKX_ONLY_LAB"):
+            self.assertEqual(
+                market_data_policy_label(mode, main_binance_only=True),
+                "ISOLATED_VENUE_LAB",
+            )
 
 
 if __name__ == "__main__":

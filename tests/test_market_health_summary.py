@@ -1,4 +1,7 @@
-from core.market_health_summary import build_paper_market_health_summary
+from core.market_health_summary import (
+    build_paper_market_health_summary,
+    market_data_guard_alert_label,
+)
 
 
 def _healthy_binance_relay():
@@ -78,3 +81,30 @@ def test_market_health_is_down_when_no_symbols_are_scored():
     )
 
     assert result["state"] == "MARKET DATA DOWN"
+
+def test_guard_alert_labels_use_the_actual_market_data_venue():
+    assert market_data_guard_alert_label(
+        venue_mode="MIXED", status_code=429, blocked=True
+    ) == "BINANCE RATE LIMIT 429"
+    assert market_data_guard_alert_label(
+        venue_mode="OKX_ONLY_LAB", status_code=429, blocked=True
+    ) == "OKX RATE LIMIT 429"
+    assert market_data_guard_alert_label(
+        venue_mode="BYBIT_ONLY_LAB", status_code=429, blocked=True
+    ) == "BYBIT RATE LIMIT 429"
+    assert market_data_guard_alert_label(
+        venue_mode="OKX_ONLY_LAB", status_code=403, blocked=True
+    ) == "OKX RATE LIMIT 403"
+
+
+def test_guard_alerts_are_suppressed_when_the_local_guard_is_open():
+    assert market_data_guard_alert_label(
+        venue_mode="OKX_ONLY_LAB", status_code=429, blocked=False
+    ) is None
+
+
+def test_guard_circuit_open_label_is_provider_aware_without_http_status():
+    assert market_data_guard_alert_label(
+        venue_mode="OKX_ONLY_LAB", status_code=None, blocked=True
+    ) == "OKX CIRCUIT OPEN"
+

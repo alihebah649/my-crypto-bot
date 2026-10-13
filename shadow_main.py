@@ -50,7 +50,10 @@ from core.postgres_evidence_store import PostgresEvidenceStore, database_url_fro
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
-from core.market_health_summary import build_paper_market_health_summary
+from core.market_health_summary import (
+    build_paper_market_health_summary,
+    market_data_guard_alert_label,
+)
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
@@ -928,12 +931,10 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         # Freeze the exact market-data configuration at entry, so outcome
         # cohorts remain valid after a later deploy changes the active policy.
         venue_mode = str(PAPER_VENUE_MODE).strip().upper()
-        if _PAPER_MAIN_BINANCE_ONLY:
-            market_data_policy = "BINANCE_ONLY_MAIN"
-        elif PAPER_VENUE_LAB:
-            market_data_policy = "ISOLATED_VENUE_LAB"
-        else:
-            market_data_policy = "VENUE_SHARDED"
+        market_data_policy = market_data_policy_label(
+            PAPER_VENUE_MODE,
+            main_binance_only=_PAPER_MAIN_BINANCE_ONLY,
+        )
         position.entry_metadata["trade_mode"] = mode
         position.entry_metadata["venue_mode"] = venue_mode
         position.entry_metadata["market_data_policy"] = market_data_policy
@@ -1304,18 +1305,23 @@ def _observe_market_health() -> None:
         websocket_snapshot=websocket_snapshot,
     )
 
-    # A previous 418/429 remains diagnostic history after the circuit
-    # has reopened. Only report it as an active health state while the
-    # local market-data guard is actually blocked.
-    if status_code in {418, 429} and blocked:
+    # A previous rate-limit response remains diagnostic history after the
+    # circuit reopens. Only report it as active while that provider's guard
+    # is blocked; the label must match the active venue's actual guard.
+    guard_alert_label = market_data_guard_alert_label(
+        venue_mode=PAPER_VENUE_MODE,
+        status_code=status_code,
+        blocked=blocked,
+    )
+    if guard_alert_label and "RATE LIMIT" in guard_alert_label:
         _market_health_notify(
-            f"BINANCE RATE LIMIT {status_code}",
+            guard_alert_label,
             f"Path: {last_path}\nRetry in: {retry_in:.0f}s\n{summary['detail']}",
         )
         return
     if blocked:
         _market_health_notify(
-            "BINANCE CIRCUIT OPEN",
+            guard_alert_label or "MARKET DATA CIRCUIT OPEN",
             f"Local protection is waiting; retry window: {retry_in:.0f}s\n{summary['detail']}",
         )
         return
