@@ -29,7 +29,10 @@ from core.brain_market_regime import derive_market_breadth
 from core.brain_shadow_binding import attach_brain_shadow_entry
 from core.mtf_context_cache import MTFContextCache
 from core.market_data_manager import MarketDataManager, PersistentMarketDataCache
-from core.market_data_source_policy import market_data_symbol_groups
+from core.market_data_source_policy import (
+    market_data_policy_label,
+    market_data_symbol_groups,
+)
 from core.binance_market_stream import BinanceMarketStream
 from core.binance_snapshot_consumer import BinanceSnapshotError, hydrate_market_data_manager
 from core.bybit_market_data import BybitMarketDataClient, BybitMarketDataError
@@ -906,8 +909,9 @@ def _market_data_guard_snapshot() -> dict:
         "symbols": list(_OKX_MARKET_DATA_SYMBOLS),
     }
     snapshot["venue_mode"] = PAPER_VENUE_MODE
-    snapshot["market_data_policy"] = (
-        "BINANCE_ONLY_MAIN" if _PAPER_MAIN_BINANCE_ONLY else "VENUE_SHARDED"
+    snapshot["market_data_policy"] = market_data_policy_label(
+        PAPER_VENUE_MODE,
+        main_binance_only=_PAPER_MAIN_BINANCE_ONLY,
     )
     snapshot["source_split"] = {
         "binance_symbols": list(_BINANCE_MARKET_DATA_SYMBOLS),
@@ -1260,6 +1264,13 @@ _PAPER_BOT_IDENTITY = {
     PAPER_VENUE_MODE,
     ("UNKNOWN BOT", PAPER_VENUE_MODE),
 )
+# PAPER_VENUE_MODE remains MIXED for MAIN's existing Paper lifecycle,
+# but this opt-in policy assigns all MAIN market-data symbols to Binance.
+if _PAPER_MAIN_BINANCE_ONLY:
+    _PAPER_BOT_IDENTITY = (
+        "MAIN BOT",
+        "MIXED / BINANCE-ONLY DATA (22 SYMBOLS)",
+    )
 
 
 def _telegram_identity_header() -> str:
