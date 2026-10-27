@@ -14,6 +14,10 @@ def _position(mode: str):
 def test_lane_guard_matrix(monkeypatch):
     import shadow_main
 
+    # Isolate lane/position gating from the entry-quality gates.
+    monkeypatch.setattr(shadow_main, "_brain_authority_entry_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(shadow_main, "paper_entry_economics", lambda **kwargs: {"approved": True})
+
     cases = [
         ([], ["SCALP"]),
         (["SCALP"], []),

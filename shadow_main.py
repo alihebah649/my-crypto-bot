@@ -310,17 +310,78 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         )
     )
     if not context_complete:
-        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
-        trace.setdefault("brain_authority_by_mode", {})[lane] = {
+        trace = runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})
+        capture = (trace.get("entry_v2_shadow_by_mode", {}) or {})
+        lane_capture = capture.get(lane, {}) or {}
+        capture_id = lane_capture.get("capture_id")
+
+        missing_context = []
+        if lane_score.get("score") is None:
+            missing_context.append("lane_score")
+        if lane == "SWING":
+            if not (
+                "swing_signal" in score
+                or str(score.get("trade_mode", "")).upper() == "SWING"
+            ):
+                missing_context.append("swing_signal")
+        elif lane == "SCALP":
+            if not (
+                "scalp_confirmed_reversal" in score
+                or "scalp_recovery_confirmation" in score
+            ):
+                missing_context.append("scalp_reversal_or_recovery_confirmation")
+        else:
+            missing_context.append("supported_trade_mode")
+
+        try:
+            rejection_score = float(lane_score.get("score") or 0.0)
+        except (TypeError, ValueError):
+            rejection_score = 0.0
+        rejection = {
             "authority_version": GuardedBrainAuthority.VERSION,
-            "symbol": str(symbol).upper(),
+            "symbol": normalized,
             "trade_mode": lane,
             "stage": "ENTRY_GATE",
-            "decision_state": "BYPASS_INCOMPLETE_CONTEXT",
+            "strategy_action": str(lane_score.get("signal", "HOLD")).upper(),
+            "strategy_score": rejection_score,
+            "brain_action": "HOLD",
+            "brain_confidence": 0.0,
+            "brain_reason": "BRAIN_CONTEXT_INCOMPLETE",
+            "allowed": False,
+            "capture_id": str(capture_id) if capture_id else None,
+            "market_regime": "UNKNOWN",
+            "context": {
+                "context_complete": False,
+                "missing_required_context": missing_context,
+            },
+            "decision_state": "REJECTED_INCOMPLETE_CONTEXT",
             "reason": "BRAIN_CONTEXT_INCOMPLETE",
-            "allowed": True,
+            # A timestamp makes repeated incomplete candidates independently
+            # identifiable in the idempotent Postgres evidence store.
+            "observed_at": time.time(),
         }
-        return True
+        trace.setdefault("brain_authority_by_mode", {})[lane] = rejection
+        trace["brain_authority"] = rejection
+        trace["brain_authority_version"] = GuardedBrainAuthority.VERSION
+        trace["result"] = "REJECTED_BRAIN_AUTHORITY"
+        trace["execution"] = "NOT_RUN"
+        trace["brain_authority_rejection_reason"] = "BRAIN_CONTEXT_INCOMPLETE"
+        try:
+            if not _brain_authority_store.append(rejection):
+                runtime.last_entry_diagnostics.setdefault("__brain_authority__", {})[
+                    "persistence_error"
+                ] = _brain_authority_store.last_error
+        except Exception as exc:
+            runtime.last_entry_diagnostics.setdefault("__brain_authority__", {})[
+                "persistence_error"
+            ] = f"{type(exc).__name__}: {exc}"
+        _legacy.logger.info(
+            "BRAIN AUTHORITY BLOCK %s mode=%s reason=BRAIN_CONTEXT_INCOMPLETE missing=%s",
+            normalized,
+            lane,
+            ",".join(missing_context) or "unspecified",
+        )
+        return False
 
     btc_guard = globals().get("_last_btc_guard", {})
     market_view = derive_market_breadth(

@@ -98,6 +98,9 @@ def test_runtime_resolves_dual_candidate_to_selected_lane_only(monkeypatch):
         )
 
     monkeypatch.setattr(shadow_main, "_original_runtime_open_position", fake_open)
+    # This test covers lane resolution, not Brain completeness or target economics.
+    monkeypatch.setattr(shadow_main, "_brain_authority_entry_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(shadow_main, "paper_entry_economics", lambda **kwargs: {"approved": True})
     monkeypatch.setattr(shadow_main.runtime.repository, "update", lambda position: None)
     shadow_main.runtime.last_entry_diagnostics.pop("TESTUSDT", None)
 
