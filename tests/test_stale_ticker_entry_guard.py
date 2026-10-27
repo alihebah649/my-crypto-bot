@@ -27,6 +27,9 @@ def test_stale_ticker_blocks_new_entry(monkeypatch):
 def test_fresh_ticker_does_not_trigger_stale_entry_guard(monkeypatch):
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_active", False)
     monkeypatch.setattr(shadow_main, "_loss_cooldown", lambda symbol: 0.0)
+    # This test isolates ticker freshness, so permit independent entry-quality gates.
+    monkeypatch.setattr(shadow_main, "_brain_authority_entry_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(shadow_main, "paper_entry_economics", lambda **kwargs: {"approved": True})
     called = {"count": 0}
 
     class _Position:
