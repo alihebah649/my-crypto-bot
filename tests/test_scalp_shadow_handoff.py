@@ -23,6 +23,9 @@ def _position() -> Position:
 def test_shadow_entry_handoff_preserves_explicit_scalp_mode(monkeypatch):
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_active", False)
     monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
+    # Exercise explicit mode handoff independently of entry-quality validation.
+    monkeypatch.setattr(shadow_main, "_brain_authority_entry_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(shadow_main, "paper_entry_economics", lambda **kwargs: {"approved": True})
     symbol = "FETUSDT"
     captured = {}
     position = _position()
