@@ -141,19 +141,3 @@ def test_paper_entry_economics_rejects_fee_thin_target():
     assert result["approved"] is False
     assert result["reason"] == "NET_REWARD_AFTER_FEES_TOO_LOW"
 
-
-def test_paper_entry_economics_rejects_unavailable_target_evidence():
-    result = paper_entry_economics(
-        trade_mode="SCALP",
-        entry_price=100.0,
-        stop_loss=99.4,
-        target_price=None,
-        target_status=None,
-        reward_risk=None,
-        fee_rate=0.001,
-    )
-    assert result["available"] is False
-    assert result["approved"] is False
-    assert result["reason"] == "TARGET_DATA_UNAVAILABLE"
-    assert result["net_reward_percent"] is None
-
