@@ -58,11 +58,12 @@ def paper_entry_economics(
         "minimum_net_reward_percent": PAPER_MIN_NET_REWARD_PERCENT,
     }
 
-    # Entry v2 remains advisory: if no target evidence is available, record a
-    # bypass rather than inventing a target or vetoing a Legacy entry.
+    # A Paper entry must have a measurable target before it can be approved.
+    # Missing target evidence cannot establish positive expectancy after fees,
+    # so fail closed rather than treating absent economics as an approval.
     if not result["available"]:
         result.update({
-            "approved": True,
+            "approved": False,
             "reason": "TARGET_DATA_UNAVAILABLE",
             "net_reward_percent": None,
         })
