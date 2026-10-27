@@ -50,6 +50,9 @@ def test_shadow_entry_handoff_preserves_explicit_scalp_mode(monkeypatch):
 def test_invalid_strategy_mode_falls_back_to_swing(monkeypatch):
     monkeypatch.setattr(shadow_main, "_ticker_cache_stale_active", False)
     monkeypatch.setattr(shadow_main, "_ticker_stale_symbols", set())
+    # This fallback test is about mode normalization, not entry quality.
+    monkeypatch.setattr(shadow_main, "_brain_authority_entry_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(shadow_main, "paper_entry_economics", lambda **kwargs: {"approved": True})
     captured = {}
     position = _position()
 
