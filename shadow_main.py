@@ -310,17 +310,28 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         )
     )
     if not context_complete:
-        trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
-        trace.setdefault("brain_authority_by_mode", {})[lane] = {
+        trace = runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})
+        rejection = {
             "authority_version": GuardedBrainAuthority.VERSION,
-            "symbol": str(symbol).upper(),
+            "symbol": normalized,
             "trade_mode": lane,
             "stage": "ENTRY_GATE",
-            "decision_state": "BYPASS_INCOMPLETE_CONTEXT",
+            "decision_state": "REJECTED_INCOMPLETE_CONTEXT",
             "reason": "BRAIN_CONTEXT_INCOMPLETE",
-            "allowed": True,
+            "allowed": False,
         }
-        return True
+        trace.setdefault("brain_authority_by_mode", {})[lane] = rejection
+        trace["brain_authority"] = rejection
+        trace["brain_authority_version"] = GuardedBrainAuthority.VERSION
+        trace["result"] = "REJECTED_BRAIN_AUTHORITY"
+        trace["execution"] = "NOT_RUN"
+        trace["brain_authority_rejection_reason"] = "BRAIN_CONTEXT_INCOMPLETE"
+        _legacy.logger.info(
+            "BRAIN AUTHORITY BLOCK %s mode=%s reason=BRAIN_CONTEXT_INCOMPLETE",
+            normalized,
+            lane,
+        )
+        return False
 
     btc_guard = globals().get("_last_btc_guard", {})
     market_view = derive_market_breadth(
