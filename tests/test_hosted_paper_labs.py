@@ -540,6 +540,7 @@ def test_multiple_venue_cold_warmups_are_serialized():
         with lock:
             state["order"].append(f"{venue}_END")
             state["active"] -= 1
+        runner.labs[venue].universe_ready = True
 
     runner.labs["BYBIT"]._seed_history = (
         lambda: controlled_warmup("BYBIT", bybit_started, bybit_release)
@@ -576,6 +577,109 @@ def test_multiple_venue_cold_warmups_are_serialized():
     finally:
         bybit_release.set()
         okx_release.set()
+        runner.close()
+
+
+def test_sequential_warmup_resource_guard_cancels_current_and_later_venues(monkeypatch):
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    okx_stream = FakeStream("OKX", symbols)
+    rss = {"mb": 300.0}
+    monkeypatch.setattr(
+        HostedPaperLabRunner,
+        "_memory_mb",
+        staticmethod(lambda: rss["mb"]),
+    )
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        okx_stream=okx_stream,
+        database_url=None,
+        bybit_client=FakeWarmupClient(symbols),
+        okx_client=FakeWarmupClient(symbols),
+        enabled_venues=("BYBIT", "OKX"),
+        monitor_only=True,
+        scan_batch_size=2,
+    )
+    bybit_started = threading.Event()
+    okx_started = threading.Event()
+
+    def wait_until_cancelled():
+        bybit_started.set()
+        if runner.labs["BYBIT"]._warmup_stop.wait(timeout=2.0):
+            runner.labs["BYBIT"]._mark_warmup_cancelled()
+
+    runner.labs["BYBIT"]._seed_history = wait_until_cancelled
+    runner.labs["OKX"]._seed_history = lambda: okx_started.set()
+
+    try:
+        runner.start()
+        assert bybit_started.wait(timeout=1.0)
+        rss["mb"] = 405.0
+        runner.process_cycle()
+
+        sequencer = runner._warmup_sequence_thread
+        assert sequencer is not None
+        sequencer.join(timeout=2.0)
+
+        assert not sequencer.is_alive()
+        assert okx_started.is_set() is False
+        assert runner.snapshot()["warmup_sequence_status"] == "RESOURCE_GUARD"
+        assert runner.snapshot()["warmup_sequence_completed"] == []
+        assert runner.snapshot()["warmup_sequence_current"] is None
+        assert runner.snapshot()["monitor_streams_stopped_by_guard"] is True
+        assert binance_stream.started is True
+        assert bybit_stream.started is False
+        assert okx_stream.started is False
+    finally:
+        runner.close()
+
+
+def test_unready_warmup_stops_sequence_before_later_venues():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    okx_stream = FakeStream("OKX", symbols)
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        okx_stream=okx_stream,
+        database_url=None,
+        bybit_client=FakeWarmupClient(symbols),
+        okx_client=FakeWarmupClient(symbols),
+        enabled_venues=("BYBIT", "OKX"),
+        monitor_only=True,
+        scan_batch_size=2,
+    )
+    bybit_finished = threading.Event()
+    okx_started = threading.Event()
+
+    def failed_bybit_warmup():
+        runner.labs["BYBIT"].warmup_error = "SYMBOL_PREFLIGHT_FAILED"
+        runner.labs["BYBIT"].universe_ready = False
+        bybit_finished.set()
+
+    runner.labs["BYBIT"]._seed_history = failed_bybit_warmup
+    runner.labs["OKX"]._seed_history = lambda: okx_started.set()
+
+    try:
+        runner.start()
+        assert bybit_finished.wait(timeout=1.0)
+        sequencer = runner._warmup_sequence_thread
+        assert sequencer is not None
+        sequencer.join(timeout=1.0)
+
+        assert not sequencer.is_alive()
+        assert okx_started.is_set() is False
+        assert runner.snapshot()["warmup_sequence_status"] == "WARMUP_FAILED"
+        assert runner.snapshot()["warmup_sequence_completed"] == []
+        assert runner.snapshot()["warmup_sequence_current"] is None
+    finally:
         runner.close()
 
 
