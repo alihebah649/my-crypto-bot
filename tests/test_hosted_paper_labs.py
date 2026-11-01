@@ -701,7 +701,7 @@ def test_hosted_swing_candidate_obeys_symbol_loss_cooldown():
     try:
         losing = Position(
             position_id="bybit-recent-loss",
-            symbol="BTCUSDT",
+            symbol="ETHUSDT",
             side=PositionSide.LONG,
             status=PositionStatus.CLOSED,
             quantity=0.1,
