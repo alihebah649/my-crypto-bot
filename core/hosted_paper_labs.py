@@ -987,10 +987,13 @@ class _VenueLab:
             # Refresh all already-open positions every cycle; only a small
             # rotating slice of the universe is rescored for new entries.
             self._update_positions(current)
+            # Reconcile any position closed by this cycle's exit overlays or
+            # watchdog before considering another entry. A failed outcome
+            # write must block a same-cycle replacement trade.
+            self._persist_new_outcomes()
             if not scan_new_entries or not self.universe_ready or not self.symbols:
                 if not self.universe_ready:
                     self._record_block("VENUE_SPOT_UNIVERSE_NOT_READY")
-                self._persist_new_outcomes()
                 self._save_state()
                 self.last_cycle_seconds = round(time.monotonic() - started, 4)
                 return
@@ -1063,7 +1066,6 @@ class _VenueLab:
                             regime,
                         )
 
-            self._persist_new_outcomes()
             self._save_state()
             self.last_cycle_seconds = round(time.monotonic() - started, 4)
 
