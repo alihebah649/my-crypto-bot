@@ -167,6 +167,54 @@ def test_count_does_not_load_payload_rows():
 
 
 
+def test_summary_counts_records_without_loading_payload_rows():
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="PAPER_OUTCOME",
+        connect_factory=connect,
+    )
+    assert store.append({"position_id": "POS-1", "symbol": "BTCUSDT"}) is True
+    assert store.append({"position_id": "POS-2", "symbol": "ETHUSDT"}) is True
+
+    original_execute = _FakeConnection.execute
+
+    def guarded_execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split()).upper()
+        if normalized.startswith("SELECT PAYLOAD"):
+            raise AssertionError("summary() must not load JSONB payload rows")
+        return original_execute(self, sql, params)
+
+    _FakeConnection.execute = guarded_execute
+    try:
+        summary = store.summary()
+    finally:
+        _FakeConnection.execute = original_execute
+
+    assert summary["record_count"] == 2
+    assert summary["last_error"] is None
+
+
+def test_summary_preserves_database_connection_errors():
+    def connect(_url):
+        raise OSError("database unreachable")
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="PAPER_OUTCOME",
+        connect_factory=connect,
+    )
+
+    summary = store.summary()
+
+    assert summary["record_count"] == 0
+    assert summary["last_error"] == "OSError: database unreachable"
+
+
 def test_read_time_range_returns_only_records_in_requested_window():
     db = _FakeDatabase()
 

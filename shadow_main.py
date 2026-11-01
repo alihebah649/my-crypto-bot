@@ -153,6 +153,16 @@ def _probe_paper_evidence_store() -> None:
         return
     try:
         summary = _paper_outcome_store.summary()
+        last_error = summary.get("last_error")
+        if last_error:
+            error_type = str(last_error).split(":", 1)[0] or "UNKNOWN"
+            _legacy.logger.error(
+                "PAPER EVIDENCE STORAGE PROBE backend=%s status=FAILED records=%s error=%s",
+                summary.get("backend"),
+                summary.get("record_count"),
+                error_type,
+            )
+            return
         _legacy.logger.warning(
             "PAPER EVIDENCE STORAGE PROBE backend=%s status=READY records=%s",
             summary.get("backend"),
@@ -161,7 +171,7 @@ def _probe_paper_evidence_store() -> None:
     except Exception as exc:
         _legacy.logger.error(
             "PAPER EVIDENCE STORAGE PROBE backend=POSTGRES status=FAILED error=%s",
-            f"{type(exc).__name__}: {exc}",
+            type(exc).__name__,
         )
 
 
