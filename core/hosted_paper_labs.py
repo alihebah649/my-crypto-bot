@@ -146,6 +146,12 @@ class _VenueLab:
             position_repository=self.repository,
         )
         self.brain = GuardedBrainAuthority()
+        # Exit-watchdog regime observations must use this venue's own scored
+        # market breadth, never the MAIN Binance or another lab's snapshot.
+        self.runtime.exit_watchdog.brain_market_regime_provider = (
+            lambda _symbol: derive_market_breadth(self.latest_scores).regime
+            if self.latest_scores else "TRANSITION"
+        )
         self.outcomes = PostgresEvidenceStore(
             database_url,
             evidence_type=f"PAPER_OUTCOME_{venue}_HOSTED_LAB",
@@ -282,9 +288,9 @@ class _VenueLab:
             self._record_block("INVALID_STOP")
             return
 
-        btc_rows = frames.get("1h") or []
+        btc_rows = self.stream.get_kline_history("BTCUSDT", "1h", 60)
         btc_closed = btc_rows[:-1] if len(btc_rows) > 1 else btc_rows
-        if str(symbol).upper() != "BTCUSDT" and len(btc_closed) >= 3:
+        if len(btc_closed) >= 3:
             recent_high = max(float(row.get("close") or 0.0) for row in btc_closed[-3:])
             btc_current = float(btc_closed[-1].get("close") or 0.0)
             btc_crashing = bool(
@@ -430,7 +436,10 @@ class _VenueLab:
                 volume_usdt=float(ticker.get("quoteVolume") or 0.0),
                 ema100=float(score.get("ema100") or 0.0),
             )
-            self.runtime.evaluate_position(position.symbol)
+        # Run the normal Part-8 exit watchdog against only this venue's
+        # repository and market context (the provider was rebound at init).
+        if self.repository.get_open_positions():
+            self.runtime.run_exit_watchdog()
 
     def _persist_new_outcomes(self) -> None:
         for position in self.repository.get_closed_positions():
@@ -514,7 +523,8 @@ class _VenueLab:
                 self.scored_symbols += 1
 
             if batch and self.latest_scores:
-                regime = derive_market_breadth(self.latest_scores).regime
+                breadth_ready = len(self.latest_scores) >= len(self.symbols)
+                regime = derive_market_breadth(self.latest_scores).regime if breadth_ready else "TRANSITION"
                 for symbol in batch:
                     score = self.latest_scores.get(symbol)
                     if not isinstance(score, dict):
@@ -523,6 +533,9 @@ class _VenueLab:
                     if not isinstance(ticker, Mapping):
                         continue
                     if _entry_modes(score):
+                        if not breadth_ready:
+                            self._record_block("VENUE_MARKET_BREADTH_WARMING")
+                            continue
                         if self.persistence_error:
                             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
                             continue
