@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 
 from core.postgres_evidence_store import PostgresEvidenceStore
@@ -83,7 +84,13 @@ class PostgresPaperLabState:
         """
         account = execution_adapter.export_snapshot()
         account["market_prices"] = {}
-        positions = position_repository.export_snapshot()
+        # Part-6 rebuilds only the current daily, weekly and monthly loss
+        # windows. Keep all active positions plus 40 days of closed positions
+        # in the mutable state row; the complete trade history remains in the
+        # separate append-only PAPER_OUTCOME evidence stream.
+        positions = position_repository.export_snapshot(
+            closed_since_epoch=time.time() - 40.0 * 24.0 * 60.0 * 60.0
+        )
         state_hash = self._snapshot_hash(account, positions)
         if state_hash == self._last_state_hash:
             return False
