@@ -890,3 +890,84 @@ def test_hosted_lab_stop_fill_wrapper_records_stop_price_and_observed_price():
         assert result.exit_metadata["paper_stop_reason"] == "STOP_LOSS"
     finally:
         runner.close()
+
+
+
+def test_hosted_lab_part6_sees_main_lane_caps_per_independent_account():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["BYBIT"]
+    try:
+        for index in range(15):
+            lab.repository.add(Position(
+                position_id=f"bybit-scalp-{index}",
+                symbol=f"SCALP{index}USDT",
+                side=PositionSide.LONG,
+                status=PositionStatus.OPEN,
+                quantity=0.1,
+                entry_price=100.0,
+                current_price=100.0,
+                stop_loss=98.0,
+                take_profit=104.0,
+                entry_metadata={"trade_mode": "SCALP"},
+                metadata={"trade_mode": "SCALP"},
+            ))
+        for index in range(10):
+            lab.repository.add(Position(
+                position_id=f"bybit-swing-{index}",
+                symbol=f"SWING{index}USDT",
+                side=PositionSide.LONG,
+                status=PositionStatus.OPEN,
+                quantity=0.1,
+                entry_price=100.0,
+                current_price=100.0,
+                stop_loss=95.0,
+                take_profit=110.0,
+                entry_metadata={"trade_mode": "SWING"},
+                metadata={"trade_mode": "SWING"},
+            ))
+
+        account = lab.runtime.portfolio_provider.snapshot()
+        assert account.open_positions == 25
+        assert account.scalp_open_positions == 15
+        assert account.swing_open_positions == 10
+        assert lab.runtime.risk_config.exposure.max_scalp_positions == 15
+        assert lab.runtime.risk_config.exposure.max_swing_positions == 10
+        assert lab.runtime.risk_config.exposure.max_open_positions == 25
+
+        lab.runtime.update_market(
+            "OVER_CAP_SCALP",
+            price=100.0,
+            bid=99.99,
+            ask=100.01,
+            spread_percent=0.02,
+            atr=1.0,
+            volume_usdt=1_000_000.0,
+            ema100=95.0,
+        )
+        scalp_result = lab.runtime.open_position(
+            "OVER_CAP_SCALP", 100.0, 98.0, trade_mode="SCALP"
+        )
+        assert scalp_result is None
+        assert "MAX_OPEN_SCALP_POSITIONS" in str(
+            lab.runtime.last_entry_diagnostics["OVER_CAP_SCALP"]["risk_reason"]
+        )
+
+        lab.runtime.update_market(
+            "OVER_CAP_SWING",
+            price=100.0,
+            bid=99.99,
+            ask=100.01,
+            spread_percent=0.02,
+            atr=1.0,
+            volume_usdt=1_000_000.0,
+            ema100=95.0,
+        )
+        swing_result = lab.runtime.open_position(
+            "OVER_CAP_SWING", 100.0, 95.0, trade_mode="SWING"
+        )
+        assert swing_result is None
+        assert "MAX_OPEN_SWING_POSITIONS" in str(
+            lab.runtime.last_entry_diagnostics["OVER_CAP_SWING"]["risk_reason"]
+        )
+    finally:
+        runner.close()
