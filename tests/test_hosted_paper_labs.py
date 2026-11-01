@@ -207,10 +207,11 @@ def test_resource_guard_pauses_new_entries_without_stopping_existing_streams():
     database = FakeDatabase()
     runner = _runner(database)
     try:
+        runner.start()
         runner._max_memory_mb = 405.0
         runner.process_cycle()
         assert all(lab.pause_new_entries for lab in runner.labs.values())
         assert runner.snapshot()["memory_guard"] is True
-        assert all(lab.stream.started is False for lab in runner.labs.values())
+        assert all(lab.stream.started is True for lab in runner.labs.values())
     finally:
         runner.close()
