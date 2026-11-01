@@ -49,6 +49,10 @@ class _FakeConnection:
             return _FakeResult(rows=[(count,)])
         if normalized.startswith("SELECT PAYLOAD"):
             evidence_type = params[0]
+            if "IDENTITY_KEY = %S" in normalized:
+                identity_key = params[1]
+                payload = self.db.rows.get((evidence_type, identity_key))
+                return _FakeResult(rows=[(payload,)] if payload is not None else [])
             if "PAYLOAD ?" in normalized:
                 field = params[1]
                 start = str(params[3])
@@ -165,6 +169,66 @@ def test_count_does_not_load_payload_rows():
     finally:
         _FakeConnection.execute = original_execute
 
+
+
+def test_get_by_identity_fetches_only_the_matching_evidence_record(monkeypatch):
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="BRAIN_AUTHORITY",
+        connect_factory=connect,
+    )
+    for index in range(1500):
+        assert store.append({
+            "capture_id": f"CAP-{index}",
+            "symbol": "BTCUSDT",
+            "context": {"score": index},
+        }) is True
+
+    def fail_read_all():
+        raise AssertionError("identity lookup must not call read_all()")
+
+    monkeypatch.setattr(store, "read_all", fail_read_all)
+
+    assert store.get_by_identity("CAP-1499") == {
+        "capture_id": "CAP-1499",
+        "symbol": "BTCUSDT",
+        "context": {"score": 1499},
+    }
+    assert store.get_by_identity("MISSING") is None
+    assert store.get_by_identity("") is None
+
+
+def test_summary_counts_without_loading_evidence_payloads(monkeypatch):
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="BRAIN_SHADOW",
+        connect_factory=connect,
+    )
+    assert store.append({"capture_id": "CAP-1", "context": {"score": 80}}) is True
+    assert store.append({"capture_id": "CAP-2", "context": {"score": 81}}) is True
+
+    def fail_read_all():
+        raise AssertionError("summary must not call read_all()")
+
+    monkeypatch.setattr(store, "read_all", fail_read_all)
+
+    assert store.summary() == {
+        "backend": "postgres",
+        "schema_version": 1,
+        "evidence_type": "BRAIN_SHADOW",
+        "record_count": 2,
+        "last_error": None,
+    }
 
 
 def test_read_time_range_returns_only_records_in_requested_window():
