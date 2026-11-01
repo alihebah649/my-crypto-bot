@@ -49,6 +49,11 @@ from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.paper_runtime_memory import build_paper_runtime_memory_snapshot
+from core.paper_runtime_retention import (
+    compact_paper_order_history,
+    persist_or_confirm_paper_outcome,
+    prune_main_paper_history,
+)
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -457,18 +462,25 @@ def _emit_paper_outcome_evidence() -> int:
 
         if _paper_outcome_store is not None:
             try:
-                if not _paper_outcome_store.append(record):
+                if not persist_or_confirm_paper_outcome(_paper_outcome_store, record):
                     _legacy.logger.error(
-                        "Paper outcome evidence persistence failed position=%s error=%s",
+                        "Paper outcome evidence not confirmed durable position=%s error=%s",
                         position_id,
-                        _paper_outcome_store.last_error,
+                        getattr(_paper_outcome_store, "last_error", None),
                     )
+                    # Keep this position eligible for retry on the next
+                    # notification cycle. Never mark a failed write as logged.
+                    continue
             except Exception:
                 _legacy.logger.exception(
                     "Paper outcome evidence persistence raised position=%s",
                     position_id,
                 )
+                continue
 
+        # Without Postgres this is a local log-only deployment; avoid repeating
+        # the same log line, but do not prune closed positions without durable
+        # outcome evidence.
         _paper_outcome_evidence_logged_ids.add(position_id)
         emitted += 1
     return emitted
@@ -476,7 +488,26 @@ def _emit_paper_outcome_evidence() -> int:
 
 def _notify_closed_positions_with_evidence() -> int:
     _emit_paper_outcome_evidence()
-    return _paper_original_notify_closed_positions()
+    sent = _paper_original_notify_closed_positions()
+    try:
+        removed_positions = prune_main_paper_history(
+            runtime,
+            _paper_outcome_store,
+            _paper_outcome_evidence_logged_ids,
+        )
+        removed_orders = compact_paper_order_history(runtime.execution_adapter)
+        if removed_positions or removed_orders:
+            _legacy.logger.info(
+                "PAPER RUNTIME RETENTION pruned_positions=%s compacted_order_results=%s "
+                "position_window_days=40 order_history_limit=1000",
+                len(removed_positions),
+                removed_orders,
+            )
+    except Exception:
+        # Retention is maintenance only. It must not interrupt the Paper loop
+        # or suppress close notifications if a maintenance operation fails.
+        _legacy.logger.exception("Paper runtime retention maintenance failed")
+    return sent
 
 
 _notify_closed_positions = _notify_closed_positions_with_evidence
