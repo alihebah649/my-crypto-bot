@@ -141,7 +141,13 @@ class _VenueLab:
         self.venue = venue
         self.stream = stream
         self.owns_stream = bool(owns_stream)
-        self.symbols = tuple(str(s).upper() for s in symbols)
+        self.requested_symbols = tuple(str(s).upper() for s in symbols)
+        self.symbols = self.requested_symbols
+        self.unsupported_symbols: tuple[str, ...] = ()
+        self.universe_ready = warmup_client is None
+        self.warmup_error: str | None = None
+        self.warmup_seeded_series = 0
+        self.warmup_expected_series = len(self.symbols) * len(_INTERVALS)
         self.scan_batch_size = max(1, int(scan_batch_size))
         self.configured_scan_batch_size = self.scan_batch_size
         self.scan_cursor = 0
@@ -233,6 +239,58 @@ class _VenueLab:
     def _seed_history(self) -> None:
         seeded = 0
         failed = 0
+        # Check the exchange's current public Spot ticker universe once. This
+        # prevents one unsupported or delisted symbol from blocking breadth
+        # readiness for the entire venue. No trading/private API is involved.
+        try:
+            listing = self.warmup_client.fetch_tickers(self.requested_symbols)
+            supported = tuple(
+                symbol
+                for symbol in self.requested_symbols
+                if isinstance(listing, Mapping)
+                and isinstance(listing.get(symbol), Mapping)
+                and float(listing[symbol].get("lastPrice") or 0.0) > 0.0
+            )
+        except Exception as exc:
+            self.warmup_error = f"SYMBOL_PREFLIGHT_{type(exc).__name__}"
+            self.last_error = self.warmup_error
+            self.universe_ready = False
+            logger.error(
+                "[HOSTED-PAPER-LAB-PREFLIGHT] venue=%s failed=%s; new entries disabled",
+                self.venue,
+                self.warmup_error,
+            )
+            return
+
+        self.symbols = supported
+        self.unsupported_symbols = tuple(
+            symbol for symbol in self.requested_symbols if symbol not in set(supported)
+        )
+        self.warmup_expected_series = len(self.symbols) * len(_INTERVALS)
+        if not supported or "BTCUSDT" not in supported:
+            self.warmup_error = "BTCUSDT_OR_SPOT_UNIVERSE_UNAVAILABLE"
+            self.last_error = self.warmup_error
+            self.universe_ready = False
+            logger.error(
+                "[HOSTED-PAPER-LAB-PREFLIGHT] venue=%s supported=%d/%d btc_available=%s; "
+                "new entries disabled unsupported=%s",
+                self.venue,
+                len(supported),
+                len(self.requested_symbols),
+                "BTCUSDT" in supported,
+                ",".join(self.unsupported_symbols),
+            )
+            return
+
+        self.universe_ready = True
+        if self.unsupported_symbols:
+            logger.warning(
+                "[HOSTED-PAPER-LAB-PREFLIGHT] venue=%s supported=%d/%d unsupported=%s",
+                self.venue,
+                len(supported),
+                len(self.requested_symbols),
+                ",".join(self.unsupported_symbols),
+            )
         # One bounded cold-start seed per venue. After this, WebSocket updates
         # own the data; the runner never performs periodic REST polling.
         for symbol in self.symbols:
@@ -256,12 +314,19 @@ class _VenueLab:
                         type(exc).__name__,
                     )
                 time.sleep(0.15)
+        self.warmup_seeded_series = seeded
+        self.warmup_expected_series = len(self.symbols) * len(_INTERVALS)
+        if failed:
+            self.warmup_error = f"INCOMPLETE_COLD_START_HISTORY_{failed}_SERIES"
         logger.info(
-            "[HOSTED-PAPER-LAB-WARMUP] venue=%s seeded_series=%d/%d incomplete=%d",
+            "[HOSTED-PAPER-LAB-WARMUP] venue=%s seeded_series=%d/%d incomplete=%d "
+            "supported_symbols=%d/%d",
             self.venue,
             seeded,
-            len(self.symbols) * len(_INTERVALS),
+            self.warmup_expected_series,
             failed,
+            len(self.symbols),
+            len(self.requested_symbols),
         )
 
     def _frames(self, symbol: str) -> dict[str, list[dict[str, Any]]]:
@@ -728,7 +793,9 @@ class _VenueLab:
             # Refresh all already-open positions every cycle; only a small
             # rotating slice of the universe is rescored for new entries.
             self._update_positions(current)
-            if not scan_new_entries:
+            if not scan_new_entries or not self.universe_ready or not self.symbols:
+                if not self.universe_ready:
+                    self._record_block("VENUE_SPOT_UNIVERSE_NOT_READY")
                 self._persist_new_outcomes()
                 self._save_state()
                 self.last_cycle_seconds = round(time.monotonic() - started, 4)
@@ -763,7 +830,11 @@ class _VenueLab:
                 self.scored_symbols += 1
 
             if batch and self.latest_scores:
-                regime = derive_market_breadth(self.latest_scores).regime
+                breadth_ready = len(self.latest_scores) >= len(self.symbols)
+                regime = (
+                    derive_market_breadth(self.latest_scores).regime
+                    if breadth_ready else "TRANSITION"
+                )
                 for symbol in batch:
                     score = self.latest_scores.get(symbol)
                     if not isinstance(score, dict):
@@ -772,6 +843,9 @@ class _VenueLab:
                     if not isinstance(ticker, Mapping):
                         continue
                     if _entry_modes(score):
+                        if not breadth_ready:
+                            self._record_block("VENUE_MARKET_BREADTH_WARMING")
+                            continue
                         if self.persistence_error:
                             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
                             continue
@@ -802,6 +876,14 @@ class _VenueLab:
             "venue": self.venue,
             "enabled": True,
             "stream": stream,
+            "requested_symbols": len(self.requested_symbols),
+            "supported_symbols": list(self.symbols),
+            "supported_symbol_count": len(self.symbols),
+            "unsupported_symbols": list(self.unsupported_symbols),
+            "universe_ready": self.universe_ready,
+            "warmup_seeded_series": self.warmup_seeded_series,
+            "warmup_expected_series": self.warmup_expected_series,
+            "warmup_error": self.warmup_error,
             "cycles": self.cycles,
             "scored_symbols_total": self.scored_symbols,
             "entry_candidates": self.entry_candidates,
