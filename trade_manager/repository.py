@@ -149,7 +149,9 @@ class PositionRepository:
         with self._lock:
             counts: dict[str, int] = {}
             for position in self._positions.values():
-                status = getattr(position.status, "value", str(position.status))
+                status = getattr(position.status, "name", None)
+                if not status:
+                    status = getattr(position.status, "value", position.status)
                 key = str(status)
                 counts[key] = counts.get(key, 0) + 1
             return dict(sorted(counts.items()))
