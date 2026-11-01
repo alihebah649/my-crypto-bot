@@ -63,3 +63,25 @@ def test_prune_terminal_positions_keeps_active_recent_and_unpersisted_closed():
     assert repo.get("recent-closed") is recent_closed
     assert repo.get("old-closed-unpersisted") is old_unpersisted
     assert repo.get("active") is active
+
+
+
+def test_status_counts_reports_repository_lifecycle_without_changing_records():
+    repo = PositionRepository()
+    now = time.time()
+    positions = (
+        _position("open", PositionStatus.OPEN, 0.0),
+        _position("closed-a", PositionStatus.CLOSED, now),
+        _position("closed-b", PositionStatus.CLOSED, now),
+        _position("cancelled", PositionStatus.CANCELLED, now),
+    )
+    for position in positions:
+        repo.add(position)
+
+    assert repo.status_counts() == {
+        "CANCELLED": 1,
+        "CLOSED": 2,
+        "OPEN": 1,
+    }
+    assert repo.count() == 4
+    assert repo.get("closed-a") is positions[1]
