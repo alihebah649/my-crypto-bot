@@ -447,9 +447,12 @@ class _VenueLab:
             )
         if active_positions and all_position_prices_fresh:
             result = self.runtime.run_exit_watchdog()
-            if int(getattr(result, "closed", 0) or 0) > 0:
-                # Persist closed lifecycle and balance immediately so restart
-                # cannot resurrect a position that the watchdog has closed.
+            if (
+                int(getattr(result, "closed", 0) or 0) > 0
+                or int(getattr(result, "exit_signals", 0) or 0) > 0
+            ):
+                # Persist close, partial-close and hold/review state transitions
+                # immediately; a restart must not restore an older lifecycle.
                 self._save_state(force=True)
         elif active_positions:
             # Never execute an exit decision using a stale mark from a prior
