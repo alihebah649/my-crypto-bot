@@ -664,6 +664,7 @@ class HostedPaperLabRunner:
                 state_connect_factory=connect_factory,
                 outcome_connect_factory=connect_factory,
             )
+            self._sample_startup_memory("BINANCE")
             self.labs["BYBIT"] = _VenueLab(
                 venue="BYBIT",
                 stream=bybit_stream,
@@ -676,6 +677,7 @@ class HostedPaperLabRunner:
                 state_connect_factory=connect_factory,
                 outcome_connect_factory=connect_factory,
             )
+            self._sample_startup_memory("BYBIT")
             self.labs["OKX"] = _VenueLab(
                 venue="OKX",
                 stream=okx_stream,
@@ -688,6 +690,7 @@ class HostedPaperLabRunner:
                 state_connect_factory=connect_factory,
                 outcome_connect_factory=connect_factory,
             )
+            self._sample_startup_memory("OKX")
         except Exception as exc:
             for lab in self.labs.values():
                 try:
@@ -699,11 +702,23 @@ class HostedPaperLabRunner:
             self.start_error = f"{type(exc).__name__}: {exc}"
             logger.error("[HOSTED-PAPER-LABS] disabled during restore: %s", self.start_error)
 
+    def _sample_startup_memory(self, venue: str) -> None:
+        self._max_memory_mb = max(self._max_memory_mb, self._memory_mb())
+        if self._max_memory_mb >= 400.0:
+            raise RuntimeError(
+                f"hosted labs startup memory guard after {venue}: "
+                f"{self._max_memory_mb:.1f} MB"
+            )
+
     def start(self) -> None:
         if not self.enabled:
             return
         for venue in _SUPPORTED_VENUES:
             self.labs[venue].start()
+            self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
+            if self._last_memory_guard():
+                for lab in self.labs.values():
+                    lab.pause_new_entries = True
         logger.warning(
             "[HOSTED-PAPER-LABS] started in MAIN process venues=BINANCE,BYBIT,OKX "
             "mode=PAPER_ONLY batch_per_venue=%d",
