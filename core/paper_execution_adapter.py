@@ -198,19 +198,41 @@ class PaperExecutionAdapter(ExecutionAdapter):
             "market_prices": dict(self.market_prices),
         }
 
+    def export_snapshot(self) -> dict[str, Any]:
+        """Return the durable Paper account state without transient order objects."""
+        return {
+            "version": 1,
+            "cash": float(self.balance.cash),
+            "reserved": float(self.balance.reserved),
+            "assets": {str(k): float(v) for k, v in self.balance.assets.items()},
+            "market_prices": {str(k): float(v) for k, v in self.market_prices.items()},
+            "fee_rate": float(self.fee_rate),
+        }
+
+    def restore_snapshot(self, payload: dict[str, Any]) -> None:
+        """Restore a validated account snapshot from a durable external store."""
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported paper state version")
+        persisted_fee_rate = payload.get("fee_rate")
+        if persisted_fee_rate is not None and abs(float(persisted_fee_rate) - self.fee_rate) > 1e-12:
+            raise ValueError("persisted fee_rate differs from configured fee_rate")
+        cash = float(payload["cash"])
+        reserved = float(payload.get("reserved", 0.0))
+        assets = {str(k).upper(): float(v) for k, v in payload.get("assets", {}).items()}
+        prices = {str(k).upper(): float(v) for k, v in payload.get("market_prices", {}).items()}
+        if cash < -1e-9 or reserved < -1e-9 or any(v < -1e-9 for v in assets.values()):
+            raise ValueError("persisted Paper balances cannot be negative")
+        if any(v <= 0.0 for v in prices.values()):
+            raise ValueError("persisted market prices must be positive")
+        self.balance = PaperBalance(cash=cash, reserved=reserved, assets=assets)
+        self.market_prices = prices
+
     def _persist_state(self) -> None:
         if not self.state_path:
             return
         directory = os.path.dirname(os.path.abspath(self.state_path))
         os.makedirs(directory, exist_ok=True)
-        payload = {
-            "version": 1,
-            "cash": self.balance.cash,
-            "reserved": self.balance.reserved,
-            "assets": self.balance.assets,
-            "market_prices": self.market_prices,
-            "fee_rate": self.fee_rate,
-        }
+        payload = self.export_snapshot()
         fd, temp_path = tempfile.mkstemp(prefix="paper-state-", suffix=".tmp", dir=directory)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -223,20 +245,13 @@ class PaperExecutionAdapter(ExecutionAdapter):
                 os.unlink(temp_path)
 
     def _load_state(self) -> None:
+        if not self.state_path:
+            return
         if not os.path.exists(self.state_path):
             return
         try:
             with open(self.state_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            if payload.get("version") != 1:
-                raise ValueError("unsupported paper state version")
-            if payload.get("fee_rate") is not None and abs(float(payload["fee_rate"]) - self.fee_rate) > 1e-12:
-                raise ValueError("persisted fee_rate differs from configured fee_rate")
-            self.balance = PaperBalance(
-                cash=float(payload["cash"]),
-                reserved=float(payload.get("reserved", 0.0)),
-                assets={str(k): float(v) for k, v in payload.get("assets", {}).items()},
-            )
-            self.market_prices = {str(k): float(v) for k, v in payload.get("market_prices", {}).items()}
+            self.restore_snapshot(payload)
         except Exception as exc:
             raise RuntimeError(f"Unable to restore PaperExecutionAdapter: {exc}") from exc
