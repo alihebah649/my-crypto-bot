@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -325,6 +326,75 @@ def test_startup_memory_guard_disables_labs_before_opening_streams(monkeypatch):
     assert runner.labs == {}
     assert runner.snapshot()["memory_guard"] is True
 
+
+
+def test_startup_memory_abort_cancels_background_cold_warmup(monkeypatch):
+    database = FakeDatabase()
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    okx_stream = FakeStream("OKX", symbols)
+    seed_calls = []
+    bybit_stream.seed_kline_history = (
+        lambda symbol, interval, rows: seed_calls.append((symbol, interval)) or len(list(rows))
+    )
+
+    class SlowWarmupClient(FakeWarmupClient):
+        def __init__(self, supported_symbols):
+            super().__init__(supported_symbols)
+            self.first_candle_fetch_started = threading.Event()
+
+        def fetch_klines(self, symbol, interval, limit):
+            self.first_candle_fetch_started.set()
+            time.sleep(0.1)
+            return super().fetch_klines(symbol, interval, limit)
+
+    warmup_client = SlowWarmupClient(symbols)
+    memory_samples = 0
+
+    def memory_mb():
+        nonlocal memory_samples
+        memory_samples += 1
+        # Three constructor samples and the Binance-start sample stay below
+        # the guard. The Bybit-start sample trips it after its warmup thread
+        # has entered an in-flight REST request.
+        if memory_samples == 5:
+            assert warmup_client.first_candle_fetch_started.wait(timeout=1.0)
+            return 405.0
+        return 300.0
+
+    monkeypatch.setattr(
+        HostedPaperLabRunner,
+        "_memory_mb",
+        staticmethod(memory_mb),
+    )
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        okx_stream=okx_stream,
+        database_url="postgres://test",
+        bybit_client=warmup_client,
+        okx_client=FakeWarmupClient(symbols),
+        initial_cash=1000.0,
+        fee_rate=0.001,
+        scan_batch_size=2,
+        connect_factory=lambda _url: FakeConnection(database),
+    )
+
+    with pytest.raises(RuntimeError, match="startup memory guard"):
+        runner.start()
+
+    warmup_thread = runner.labs["BYBIT"]._warmup_thread
+    assert warmup_thread is not None
+    runner.close()
+
+    assert not warmup_thread.is_alive()
+    assert runner.labs["BYBIT"].snapshot()["warmup_cancelled"] is True
+    assert seed_calls == []
+    assert bybit_stream.started is False
+    assert okx_stream.started is False
 
 
 def test_hosted_lane_context_does_not_reuse_the_other_lanes_score():
