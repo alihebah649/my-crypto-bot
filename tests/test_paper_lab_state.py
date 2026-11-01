@@ -195,9 +195,15 @@ def test_paper_lab_snapshot_keeps_active_and_recent_closed_risk_ledger_positions
     recent_closed.realized_pnl = -0.25
 
     active = _position("active-position", "SOLUSDT", 100.0)
+    failed = _position("failed-position", "XRPUSDT", 0.5)
+    failed.status = PositionStatus.FAILED
+    cancelled = _position("cancelled-position", "ADAUSDT", 0.5)
+    cancelled.status = PositionStatus.CANCELLED
     repository.add(old_closed)
     repository.add(recent_closed)
     repository.add(active)
+    repository.add(failed)
+    repository.add(cancelled)
 
     assert state.save(adapter, repository) is True
     snapshot = next(
