@@ -48,6 +48,7 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
+from core.paper_runtime_memory import build_paper_runtime_memory_snapshot
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -1560,6 +1561,24 @@ def _paper_engine_health():
     payload = _paper_engine_health_payload()
     status_code = 200 if payload["status"] == "ok" else 503
     return jsonify(payload), status_code
+
+
+@app.get("/paper/runtime-memory")
+def _paper_runtime_memory():
+    """Read-only bounded-size runtime counters for diagnosing process memory growth."""
+    try:
+        payload = build_paper_runtime_memory_snapshot(runtime)
+        payload["evidence"] = {
+            "paper_outcome_logged_position_ids": len(_paper_outcome_evidence_logged_ids),
+        }
+        return jsonify(payload), 200
+    except Exception as exc:  # diagnostics must never affect Paper execution
+        _legacy.logger.exception("Paper runtime memory snapshot failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "error": type(exc).__name__,
+        }), 503
 
 
 @app.get("/paper/entry-gate-summary")
