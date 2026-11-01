@@ -288,3 +288,66 @@ def test_startup_memory_guard_disables_labs_before_opening_streams(monkeypatch):
     assert "startup memory guard" in runner.start_error
     assert runner.labs == {}
     assert runner.snapshot()["memory_guard"] is True
+
+
+
+def test_hosted_lane_context_does_not_reuse_the_other_lanes_score():
+    from core.hosted_paper_labs import _lane_context_missing
+
+    swing_only = {
+        "trade_mode": "SWING",
+        "signal": "BUY",
+        "score": 95,
+        "swing_score": 95,
+        "swing_signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_confirmed_reversal": True,
+    }
+    scalp_only = {
+        "trade_mode": "SCALP",
+        "signal": "BUY",
+        "score": 95,
+        "scalp_score": 95,
+        "scalp_signal": "BUY",
+        "swing_signal": "BUY",
+    }
+
+    assert _lane_context_missing(swing_only, "SCALP") == ["scalp_score"]
+    assert _lane_context_missing(scalp_only, "SWING") == ["swing_score"]
+
+
+def test_hosted_scalp_lane_requires_reversal_or_recovery_context_field():
+    from core.hosted_paper_labs import _lane_context_missing
+
+    score = {
+        "trade_mode": "SCALP",
+        "score": 70,
+        "scalp_score": 70,
+        "scalp_signal": "BUY",
+        "swing_score": 35,
+        "swing_signal": "HOLD",
+    }
+    assert _lane_context_missing(score, "SCALP") == [
+        "scalp_reversal_or_recovery_confirmation"
+    ]
+
+
+def test_hosted_lane_context_accepts_complete_independent_lanes():
+    from core.hosted_paper_labs import _lane_context_missing
+
+    scalp = {
+        "trade_mode": "SCALP",
+        "score": 70,
+        "scalp_score": 70,
+        "scalp_signal": "BUY",
+        "scalp_confirmed_reversal": False,
+        "scalp_recovery_confirmation": True,
+    }
+    swing = {
+        "trade_mode": "SWING",
+        "score": 82,
+        "swing_score": 82,
+        "swing_signal": "BUY",
+    }
+    assert _lane_context_missing(scalp, "SCALP") == []
+    assert _lane_context_missing(swing, "SWING") == []
