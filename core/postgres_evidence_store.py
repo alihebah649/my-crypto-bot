@@ -275,12 +275,13 @@ class PostgresEvidenceStore:
         return 0
 
     def summary(self) -> dict[str, Any]:
-        records = self.read_all()
+        # Count in SQL instead of loading every JSONB payload into process memory.
+        record_count = self.count()
         return {
             "backend": "postgres",
             "schema_version": self.SCHEMA_VERSION,
             "evidence_type": self.evidence_type,
-            "record_count": len(records),
+            "record_count": record_count,
             "last_error": self.last_error,
         }
 
