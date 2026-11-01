@@ -1267,11 +1267,15 @@ class _VenueLab:
             "entry_capture_retention_limit": self.entry_captures.max_records,
         }
 
+    def cancel_warmup(self) -> None:
+        """Signal the cold-start REST worker to stop without blocking MAIN."""
+        self._warmup_stop.set()
+
     def close(self) -> None:
         # Startup can be aborted by the Render memory guard while the cold
         # history worker is inside a public REST call. Signal cancellation
         # first, then let it return before closing the stream/state stores.
-        self._warmup_stop.set()
+        self.cancel_warmup()
         thread = self._warmup_thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
@@ -1420,6 +1424,14 @@ class HostedPaperLabRunner:
             if self._last_memory_guard():
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
+                    lab.cancel_warmup()
+                    lab.cancel_warmup()
+                self.start_error = (
+                    f"startup memory guard after {venue}: "
+                    f"{self._max_memory_mb:.1f} MB; later venues were not started"
+                )
+                logger.error("[HOSTED-PAPER-LABS] %s", self.start_error)
+                break
         logger.warning(
             "[HOSTED-PAPER-LABS] started in MAIN process "
             "mode=%s venues=%s batch_per_venue=%d",
@@ -1480,6 +1492,7 @@ class HostedPaperLabRunner:
                 self._cpu_guard_paused = True
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
+                    lab.cancel_warmup()
                 logger.error(
                     "[HOSTED-PAPER-LABS] CPU guard paused new lab entries load=%.1f%%",
                     self._cpu_load_percent,
