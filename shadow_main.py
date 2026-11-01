@@ -1260,6 +1260,10 @@ if os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "y
         _legacy.logger.error(
             "[HOSTED-PAPER-LABS] disabled: MAIN must remain in MIXED mode"
         )
+    elif not _BYBIT_MARKET_DATA_ENABLED or not _OKX_MARKET_DATA_ENABLED:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: Bybit and OKX cold-start REST must both be enabled"
+        )
     else:
         try:
             _hosted_bybit_stream = BybitMarketStream(
