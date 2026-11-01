@@ -450,41 +450,22 @@ def test_startup_memory_guard_disables_labs_before_opening_streams(monkeypatch):
 
 
 
-def test_startup_memory_abort_cancels_background_cold_warmup(monkeypatch):
+def test_startup_memory_abort_prevents_cold_warmup_and_later_venue(monkeypatch):
     database = FakeDatabase()
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
     binance_stream = FakeStream("BINANCE", symbols)
     binance_stream.start()
     bybit_stream = FakeStream("BYBIT", symbols)
     okx_stream = FakeStream("OKX", symbols)
-    seed_calls = []
-    bybit_stream.seed_kline_history = (
-        lambda symbol, interval, rows: seed_calls.append((symbol, interval)) or len(list(rows))
-    )
-
-    class SlowWarmupClient(FakeWarmupClient):
-        def __init__(self, supported_symbols):
-            super().__init__(supported_symbols)
-            self.first_candle_fetch_started = threading.Event()
-
-        def fetch_klines(self, symbol, interval, limit):
-            self.first_candle_fetch_started.set()
-            time.sleep(0.1)
-            return super().fetch_klines(symbol, interval, limit)
-
-    warmup_client = SlowWarmupClient(symbols)
+    warmup_client = FakeWarmupClient(symbols)
     memory_samples = 0
 
     def memory_mb():
         nonlocal memory_samples
         memory_samples += 1
-        # Three constructor samples and the Binance-start sample stay below
-        # the guard. The Bybit-start sample trips it after its warmup thread
-        # has entered an in-flight REST request.
-        if memory_samples == 5:
-            assert warmup_client.first_candle_fetch_started.wait(timeout=1.0)
-            return 405.0
-        return 300.0
+        # Three constructor samples are safe. The Bybit feed-start sample
+        # trips the hard startup guard before any REST warmup is scheduled.
+        return 405.0 if memory_samples == 4 else 300.0
 
     monkeypatch.setattr(
         HostedPaperLabRunner,
@@ -508,21 +489,94 @@ def test_startup_memory_abort_cancels_background_cold_warmup(monkeypatch):
     with pytest.raises(RuntimeError, match="startup memory guard"):
         runner.start()
 
-    warmup_thread = runner.labs["BYBIT"]._warmup_thread
-    assert warmup_thread is not None
     assert runner.started_venues == ["BINANCE", "BYBIT"]
-    # Paper mode may have restored open positions, so keep its own feed alive
-    # for exit management while cancelling the incomplete cold-start REST work.
+    assert runner.labs["BYBIT"]._warmup_thread is None
+    assert warmup_client.fetch_tickers_calls == 0
+    assert warmup_client.fetch_kline_calls == []
+    assert runner.snapshot()["warmup_sequence_status"] == "RESOURCE_GUARD"
+    # Paper mode keeps the started venue feed alive in case positions need
+    # exit management; the next venue is never started.
     assert bybit_stream.started is True
     assert okx_stream.started is False
-    assert runner.snapshot()["monitor_streams_stopped_by_guard"] is False
     runner.close()
 
-    assert not warmup_thread.is_alive()
-    assert runner.labs["BYBIT"].snapshot()["warmup_cancelled"] is True
-    assert seed_calls == []
     assert bybit_stream.started is False
     assert okx_stream.started is False
+
+
+def test_multiple_venue_cold_warmups_are_serialized():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    okx_stream = FakeStream("OKX", symbols)
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        okx_stream=okx_stream,
+        database_url=None,
+        bybit_client=FakeWarmupClient(symbols),
+        okx_client=FakeWarmupClient(symbols),
+        enabled_venues=("BYBIT", "OKX"),
+        monitor_only=True,
+        scan_batch_size=2,
+    )
+
+    bybit_started = threading.Event()
+    bybit_release = threading.Event()
+    okx_started = threading.Event()
+    okx_release = threading.Event()
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0, "order": []}
+
+    def controlled_warmup(venue, started, release):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+            state["order"].append(f"{venue}_START")
+        started.set()
+        release.wait(timeout=2.0)
+        with lock:
+            state["order"].append(f"{venue}_END")
+            state["active"] -= 1
+
+    runner.labs["BYBIT"]._seed_history = (
+        lambda: controlled_warmup("BYBIT", bybit_started, bybit_release)
+    )
+    runner.labs["OKX"]._seed_history = (
+        lambda: controlled_warmup("OKX", okx_started, okx_release)
+    )
+
+    try:
+        runner.start()
+        assert bybit_started.wait(timeout=1.0)
+        assert not okx_started.wait(timeout=0.1)
+
+        bybit_release.set()
+        assert okx_started.wait(timeout=1.0)
+        assert state["max_active"] == 1
+
+        okx_release.set()
+        sequencer = runner._warmup_sequence_thread
+        assert sequencer is not None
+        sequencer.join(timeout=1.0)
+
+        assert not sequencer.is_alive()
+        assert state["max_active"] == 1
+        assert state["order"] == [
+            "BYBIT_START",
+            "BYBIT_END",
+            "OKX_START",
+            "OKX_END",
+        ]
+        snapshot = runner.snapshot()
+        assert snapshot["warmup_sequence_status"] == "COMPLETE"
+        assert snapshot["warmup_sequence_completed"] == ["BYBIT", "OKX"]
+    finally:
+        bybit_release.set()
+        okx_release.set()
+        runner.close()
 
 
 def test_hosted_lane_context_does_not_reuse_the_other_lanes_score():
