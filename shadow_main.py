@@ -1288,10 +1288,10 @@ if os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "y
             )
             try:
                 _hosted_scan_batch_size = max(
-                    1, min(8, int(os.getenv("PAPER_HOSTED_LAB_SCAN_BATCH", "8")))
+                    1, min(8, int(os.getenv("PAPER_HOSTED_LAB_SCAN_BATCH", "4")))
                 )
             except (TypeError, ValueError):
-                _hosted_scan_batch_size = 8
+                _hosted_scan_batch_size = 4
 
             _hosted_paper_lab_runner = create_hosted_paper_lab_runner(
                 symbols=list(TRADING_SYMBOLS),
