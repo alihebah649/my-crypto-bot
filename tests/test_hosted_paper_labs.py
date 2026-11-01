@@ -557,3 +557,34 @@ def test_hosted_lab_preflight_requires_btc_spot_market():
         assert bybit.entry_blocked["VENUE_SPOT_UNIVERSE_NOT_READY"] == 1
     finally:
         runner.close()
+
+
+def test_failed_paper_state_commit_rolls_back_entry_and_pauses_retry(monkeypatch):
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["BYBIT"]
+    try:
+        lab.runtime.update_market(
+            "BTCUSDT", price=100.0, bid=99.99, ask=100.01,
+            spread_percent=0.02, atr=1.0,
+            volume_usdt=1_000_000.0, ema100=90.0,
+        )
+        account = lab.adapter.export_snapshot()
+        positions = lab.repository.export_snapshot()
+        orders = dict(lab.adapter.orders)
+        opened = lab.runtime.open_position(
+            "BTCUSDT", 100.0, 95.0, trade_mode="SCALP"
+        )
+        assert opened is not None
+
+        def fail_save(_adapter, _repository):
+            raise OSError("test state persistence failure")
+
+        monkeypatch.setattr(lab.state, "save", fail_save)
+        assert lab._rollback_unpersisted_entry(account, positions, orders) is False
+        assert lab.adapter.balance.cash == pytest.approx(account["cash"])
+        assert lab.adapter.balance.assets == account["assets"]
+        assert lab.repository.get_open_positions() == []
+        assert lab.adapter.orders == orders
+        assert lab.persistence_error is not None
+    finally:
+        runner.close()
