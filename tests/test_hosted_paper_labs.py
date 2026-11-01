@@ -120,9 +120,12 @@ class FakeStream:
 
 def _runner(database):
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    # MAIN already owns and has started this shared Binance stream.
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
     return HostedPaperLabRunner(
         symbols=symbols,
-        binance_stream=FakeStream("BINANCE", symbols),
+        binance_stream=binance_stream,
         bybit_stream=FakeStream("BYBIT", symbols),
         okx_stream=FakeStream("OKX", symbols),
         database_url="postgres://test",
@@ -435,3 +438,18 @@ def test_hosted_candidate_evidence_failure_never_changes_paper_gate_flow():
         )
     finally:
         runner.close()
+
+
+
+def test_closing_hosted_labs_never_stops_main_owned_binance_stream():
+    runner = _runner(FakeDatabase())
+    binance_stream = runner.labs["BINANCE"].stream
+    bybit_stream = runner.labs["BYBIT"].stream
+    okx_stream = runner.labs["OKX"].stream
+
+    runner.start()
+    runner.close()
+
+    assert binance_stream.started is True
+    assert bybit_stream.started is False
+    assert okx_stream.started is False
