@@ -52,6 +52,20 @@ _REQUIRED_HISTORY = {"5m": 20, "15m": 100, "1h": 30, "4h": 30}
 _SUPPORTED_VENUES = ("BINANCE", "BYBIT", "OKX")
 
 
+class _DisabledEvidenceStore:
+    """No-I/O evidence sink used by monitor-only resource tests."""
+
+    def __init__(self, *, max_records: int) -> None:
+        self.max_records = int(max_records)
+        self.last_error = None
+
+    def append(self, _record: Mapping[str, Any]) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+
 def _bool_env(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -151,10 +165,13 @@ class _VenueLab:
         fee_rate: float,
         warmup_client: Any = None,
         scan_batch_size: int = 8,
+        monitor_only: bool = False,
         state_connect_factory: Any = None,
         outcome_connect_factory: Any = None,
     ) -> None:
         self.venue = venue
+        self.monitor_only = bool(monitor_only)
+        self.monitor_candidates = 0
         self.stream = stream
         self.owns_stream = bool(owns_stream)
         self.requested_symbols = tuple(str(s).upper() for s in symbols)
@@ -192,12 +209,35 @@ class _VenueLab:
 
         self.adapter = PaperExecutionAdapter(initial_cash=initial_cash, fee_rate=fee_rate)
         self.repository = PositionRepository()
-        self.state = PostgresPaperLabState(
-            database_url,
-            venue=venue,
-            connect_factory=state_connect_factory,
-        )
-        restored = self.state.load_into(self.adapter, self.repository)
+        self.state = None
+        if self.monitor_only:
+            # Resource measurement must not create or modify evidence rows.
+            # Start with an empty, transient Paper account and keep all stores
+            # disconnected until a separately approved Paper phase.
+            restored = False
+            self.outcomes = _DisabledEvidenceStore(max_records=10_000)
+            self.entry_captures = _DisabledEvidenceStore(max_records=2_000)
+        else:
+            if not database_url:
+                raise ValueError("database_url is required outside monitor-only mode")
+            self.state = PostgresPaperLabState(
+                database_url,
+                venue=venue,
+                connect_factory=state_connect_factory,
+            )
+            restored = self.state.load_into(self.adapter, self.repository)
+            self.outcomes = PostgresEvidenceStore(
+                database_url,
+                evidence_type=f"PAPER_OUTCOME_{venue}_HOSTED_LAB",
+                max_records=10_000,
+                connect_factory=outcome_connect_factory,
+            )
+            self.entry_captures = PostgresEvidenceStore(
+                database_url,
+                evidence_type=f"ENTRY_V2_CAPTURE_{venue}_HOSTED_LAB",
+                max_records=2_000,
+                connect_factory=outcome_connect_factory,
+            )
         self.runtime = ShadowTradeManagerRuntime(
             initial_cash=initial_cash,
             fee_rate=fee_rate,
@@ -241,18 +281,6 @@ class _VenueLab:
         self.runtime.exit_watchdog.brain_market_regime_provider = (
             lambda _symbol: derive_market_breadth(self.latest_scores).regime
             if self.latest_scores else "TRANSITION"
-        )
-        self.outcomes = PostgresEvidenceStore(
-            database_url,
-            evidence_type=f"PAPER_OUTCOME_{venue}_HOSTED_LAB",
-            max_records=10_000,
-            connect_factory=outcome_connect_factory,
-        )
-        self.entry_captures = PostgresEvidenceStore(
-            database_url,
-            evidence_type=f"ENTRY_V2_CAPTURE_{venue}_HOSTED_LAB",
-            max_records=2_000,
-            connect_factory=outcome_connect_factory,
         )
         # Outcome writes are idempotent by position_id in Postgres. Do not
         # load the full historical outcome table into RAM during startup.
@@ -1162,6 +1190,10 @@ class _VenueLab:
                         if not breadth_ready:
                             self._record_block("VENUE_MARKET_BREADTH_WARMING")
                             continue
+                        if self.monitor_only:
+                            self.monitor_candidates += 1
+                            self._record_block("MONITOR_ONLY_ENTRIES_DISABLED")
+                            continue
                         if self.persistence_error:
                             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
                             continue
@@ -1208,6 +1240,8 @@ class _VenueLab:
             "warmup_expected_series": self.warmup_expected_series,
             "warmup_error": self.warmup_error,
             "warmup_cancelled": self._warmup_cancelled,
+            "monitor_only": self.monitor_only,
+            "monitor_candidates": self.monitor_candidates,
             "cycles": self.cycles,
             "scored_symbols_total": self.scored_symbols,
             "entry_candidates": self.entry_candidates,
@@ -1247,7 +1281,8 @@ class _VenueLab:
                 )
         if self.stream is not None and self.owns_stream:
             self.stream.stop()
-        self.state.close()
+        if self.state is not None:
+            self.state.close()
         self.outcomes.close()
         self.entry_captures.close()
 
@@ -1260,20 +1295,40 @@ class HostedPaperLabRunner:
         *,
         symbols: list[str],
         binance_stream: Any,
-        bybit_stream: Any,
-        okx_stream: Any,
-        database_url: str,
+        bybit_stream: Any = None,
+        okx_stream: Any = None,
+        database_url: str | None = None,
         bybit_client: Any = None,
         okx_client: Any = None,
         initial_cash: float = 1000.0,
         fee_rate: float = 0.001,
         scan_batch_size: int = 4,
+        enabled_venues: list[str] | tuple[str, ...] | None = None,
+        monitor_only: bool = False,
         connect_factory: Any = None,
     ) -> None:
-        if not database_url:
-            raise ValueError("PAPER_EVIDENCE_DATABASE_URL is required for hosted Paper labs")
-        if binance_stream is None or bybit_stream is None or okx_stream is None:
-            raise ValueError("all three venue WebSocket streams are required")
+        requested_venues = _SUPPORTED_VENUES if enabled_venues is None else tuple(
+            str(venue).strip().upper() for venue in enabled_venues
+        )
+        invalid_venues = sorted(set(requested_venues) - set(_SUPPORTED_VENUES))
+        if invalid_venues or not requested_venues:
+            raise ValueError(f"invalid hosted Paper lab venues: {invalid_venues or 'EMPTY'}")
+        self.enabled_venues = tuple(
+            venue for venue in _SUPPORTED_VENUES if venue in set(requested_venues)
+        )
+        self.monitor_only = bool(monitor_only)
+        if not self.monitor_only and not database_url:
+            raise ValueError("PAPER_EVIDENCE_DATABASE_URL is required outside monitor-only mode")
+        required_streams = {
+            "BINANCE": binance_stream,
+            "BYBIT": bybit_stream,
+            "OKX": okx_stream,
+        }
+        missing_streams = [
+            venue for venue in self.enabled_venues if required_streams.get(venue) is None
+        ]
+        if missing_streams:
+            raise ValueError(f"missing hosted Paper lab streams: {','.join(missing_streams)}")
         self.enabled = True
         self.start_error: str | None = None
         self._lock = threading.RLock()
@@ -1290,7 +1345,8 @@ class HostedPaperLabRunner:
         self._cpu_scan_throttled = False
         self.labs: dict[str, _VenueLab] = {}
         try:
-            self.labs["BINANCE"] = _VenueLab(
+            if "BINANCE" in self.enabled_venues:
+                self.labs["BINANCE"] = _VenueLab(
                 venue="BINANCE",
                 stream=binance_stream,
                 symbols=symbols,
@@ -1299,36 +1355,41 @@ class HostedPaperLabRunner:
                 initial_cash=initial_cash,
                 fee_rate=fee_rate,
                 scan_batch_size=scan_batch_size,
-                state_connect_factory=connect_factory,
-                outcome_connect_factory=connect_factory,
-            )
-            self._sample_startup_memory("BINANCE")
-            self.labs["BYBIT"] = _VenueLab(
+                    monitor_only=self.monitor_only,
+                    state_connect_factory=connect_factory,
+                    outcome_connect_factory=connect_factory,
+                )
+                self._sample_startup_memory("BINANCE")
+            if "BYBIT" in self.enabled_venues:
+                self.labs["BYBIT"] = _VenueLab(
                 venue="BYBIT",
                 stream=bybit_stream,
                 symbols=symbols,
                 database_url=database_url,
                 initial_cash=initial_cash,
                 fee_rate=fee_rate,
-                warmup_client=bybit_client,
-                scan_batch_size=scan_batch_size,
-                state_connect_factory=connect_factory,
-                outcome_connect_factory=connect_factory,
-            )
-            self._sample_startup_memory("BYBIT")
-            self.labs["OKX"] = _VenueLab(
+                    warmup_client=bybit_client,
+                    scan_batch_size=scan_batch_size,
+                    monitor_only=self.monitor_only,
+                    state_connect_factory=connect_factory,
+                    outcome_connect_factory=connect_factory,
+                )
+                self._sample_startup_memory("BYBIT")
+            if "OKX" in self.enabled_venues:
+                self.labs["OKX"] = _VenueLab(
                 venue="OKX",
                 stream=okx_stream,
                 symbols=symbols,
                 database_url=database_url,
                 initial_cash=initial_cash,
                 fee_rate=fee_rate,
-                warmup_client=okx_client,
-                scan_batch_size=scan_batch_size,
-                state_connect_factory=connect_factory,
-                outcome_connect_factory=connect_factory,
-            )
-            self._sample_startup_memory("OKX")
+                    warmup_client=okx_client,
+                    scan_batch_size=scan_batch_size,
+                    monitor_only=self.monitor_only,
+                    state_connect_factory=connect_factory,
+                    outcome_connect_factory=connect_factory,
+                )
+                self._sample_startup_memory("OKX")
         except Exception as exc:
             for lab in self.labs.values():
                 try:
@@ -1351,7 +1412,7 @@ class HostedPaperLabRunner:
     def start(self) -> None:
         if not self.enabled:
             return
-        for venue in _SUPPORTED_VENUES:
+        for venue in self.enabled_venues:
             self.labs[venue].start()
             self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
             if self._last_memory_guard():
@@ -1359,7 +1420,9 @@ class HostedPaperLabRunner:
                     lab.pause_new_entries = True
         logger.warning(
             "[HOSTED-PAPER-LABS] started in MAIN process venues=BINANCE,BYBIT,OKX "
-            "mode=PAPER_ONLY batch_per_venue=%d",
+            "mode=%s venues=%s batch_per_venue=%d",
+            "MONITOR_ONLY" if self.monitor_only else "PAPER_ONLY",
+            ",".join(self.enabled_venues),
             next(iter(self.labs.values())).scan_batch_size,
         )
 
@@ -1372,10 +1435,11 @@ class HostedPaperLabRunner:
             # batch on every venue each MAIN cycle. With the normal 30-second
             # MAIN loop and four symbols per venue, the full 22-symbol universe
             # is revisited about every three minutes per venue.
-            for venue in _SUPPORTED_VENUES:
+            scan_enabled = not self._cpu_guard_paused and not self._last_memory_guard()
+            for venue in self.enabled_venues:
                 lab = self.labs[venue]
                 try:
-                    lab.process_cycle(scan_new_entries=True)
+                    lab.process_cycle(scan_new_entries=scan_enabled)
                 except Exception as exc:
                     lab.last_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("[HOSTED-PAPER-LAB] cycle failed venue=%s", venue)
@@ -1465,7 +1529,10 @@ class HostedPaperLabRunner:
             "estimated_free_cpu_load_percent": self._cpu_load_percent,
             "cpu_scan_throttled": self._cpu_scan_throttled,
             "cpu_guard_paused": self._cpu_guard_paused,
-            "entry_scan_venues": list(_SUPPORTED_VENUES) if self._cycles else [],
+            "mode": "MONITOR_ONLY" if self.monitor_only else "PAPER_ONLY",
+            "monitor_only": self.monitor_only,
+            "enabled_venues": list(self.enabled_venues),
+            "entry_scan_venues": list(self.enabled_venues) if self._cycles else [],
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
@@ -1481,6 +1548,12 @@ def create_hosted_paper_lab_runner(**kwargs) -> HostedPaperLabRunner | None:
     """Construct only when explicitly enabled; the default MAIN path is unchanged."""
     if not _bool_env("PAPER_HOSTED_VENUE_LABS", False):
         return None
+    # A newly enabled hosted experiment is monitor-only unless the separate
+    # Paper-entry opt-in is explicitly set after resource capacity is proven.
+    kwargs.setdefault(
+        "monitor_only",
+        not _bool_env("PAPER_HOSTED_LAB_ALLOW_ENTRIES", False),
+    )
     try:
         return HostedPaperLabRunner(**kwargs)
     except Exception as exc:
