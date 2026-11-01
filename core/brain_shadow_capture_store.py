@@ -91,6 +91,31 @@ class BrainShadowCaptureStore:
         except OSError as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
 
+    def get_by_identity(self, identity_key: str) -> dict[str, Any] | None:
+        """Find the latest matching record by streaming the JSONL file one line at a time."""
+        key = str(identity_key or "").strip()
+        if not key or not self.path.exists():
+            return None
+        with self._lock:
+            match: dict[str, Any] | None = None
+            try:
+                with self.path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            value = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(value, dict) and str(value.get("capture_id") or "") == key:
+                            match = value
+                self.last_error = None
+                return dict(match) if match is not None else None
+            except OSError as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                return None
+
     def read_all(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
