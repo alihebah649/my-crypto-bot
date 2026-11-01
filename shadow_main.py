@@ -1387,7 +1387,8 @@ def _hosted_paper_labs_health():
             "reason": "HOSTED_PAPER_LABS_DISABLED_OR_NOT_READY",
         }), 200
     payload = runner.snapshot()
-    payload["mode"] = "PAPER_ONLY"
+    payload["mode"] = "MONITOR_ONLY" if runner.monitor_only else "PAPER_ONLY"
+    payload["entries_enabled"] = not runner.monitor_only
     return jsonify(payload), 200
 
 
