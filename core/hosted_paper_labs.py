@@ -1452,7 +1452,16 @@ class HostedPaperLabRunner:
             # so two venues cannot spike the small Render CPU quota together.
             self.labs[venue].start(start_warmup=False)
             self.started_venues.append(venue)
-            self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
+            try:
+                self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
+            except RuntimeError as exc:
+                self.start_error = str(exc)
+                for lab in self.labs.values():
+                    lab.pause_new_entries = True
+                self._apply_resource_shutdown()
+                self._warmup_sequence_status = "RESOURCE_GUARD"
+                logger.error("[HOSTED-PAPER-LABS] startup aborted: %s", self.start_error)
+                raise
             if self._last_memory_guard():
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
