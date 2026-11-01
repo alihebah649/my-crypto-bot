@@ -144,6 +144,16 @@ class PositionRepository:
             self._positions.clear()
             self._persist_locked()
 
+    def status_counts(self) -> dict[str, int]:
+        """Count positions by lifecycle status without allocating position lists."""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for position in self._positions.values():
+                status = getattr(position.status, "value", str(position.status))
+                key = str(status)
+                counts[key] = counts.get(key, 0) + 1
+            return dict(sorted(counts.items()))
+
     def count(self) -> int:
         with self._lock:
             return len(self._positions)
