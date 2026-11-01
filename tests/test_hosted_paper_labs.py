@@ -118,6 +118,38 @@ class FakeStream:
         return len(list(rows))
 
 
+class FakeWarmupClient:
+    def __init__(self, supported_symbols):
+        self.supported_symbols = set(supported_symbols)
+        self.fetch_tickers_calls = 0
+        self.fetch_kline_calls = []
+
+    def fetch_tickers(self, symbols):
+        self.fetch_tickers_calls += 1
+        return {
+            symbol: {"symbol": symbol, "lastPrice": 100.0}
+            for symbol in symbols
+            if symbol in self.supported_symbols
+        }
+
+    def fetch_klines(self, symbol, interval, limit):
+        self.fetch_kline_calls.append((symbol, interval, limit))
+        now = int(time.time() * 1000)
+        interval_ms = {"5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000}[interval]
+        return [
+            {
+                "open_time": now - (limit - index) * interval_ms,
+                "close_time": now - (limit - index) * interval_ms + interval_ms - 1,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 1000.0,
+            }
+            for index in range(limit)
+        ]
+
+
 def _runner(database):
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
     # MAIN already owns and has started this shared Binance stream.
