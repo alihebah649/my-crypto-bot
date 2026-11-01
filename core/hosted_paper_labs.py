@@ -164,6 +164,7 @@ class _VenueLab:
         self.last_cycle_seconds = 0.0
         self.last_error: str | None = None
         self.persistence_error: str | None = None
+        self.outcome_persistence_error: str | None = None
         self.warmup_client = warmup_client
         self._warmup_started = False
         self._warmup_thread: threading.Thread | None = None
@@ -201,7 +202,7 @@ class _VenueLab:
         self.entry_captures = PostgresEvidenceStore(
             database_url,
             evidence_type=f"ENTRY_V2_CAPTURE_{venue}_HOSTED_LAB",
-            max_records=10_000,
+            max_records=2_000,
             connect_factory=outcome_connect_factory,
         )
         # Outcome writes are idempotent by position_id in Postgres. Do not
@@ -749,6 +750,7 @@ class _VenueLab:
             self._record_block("EXIT_WATCHDOG_VENUE_PRICE_STALE")
 
     def _persist_new_outcomes(self) -> None:
+        unresolved_error: str | None = None
         for position in self.repository.get_closed_positions():
             position_id = str(position.position_id)
             if position_id in self._reported_closed_ids:
@@ -760,15 +762,17 @@ class _VenueLab:
             if self.outcomes.append(evidence):
                 self._reported_closed_ids.add(position_id)
             elif self.outcomes.last_error:
+                unresolved_error = str(self.outcomes.last_error)
                 logger.error(
                     "[HOSTED-PAPER-LAB] outcome persistence failed venue=%s position=%s error=%s",
                     self.venue,
                     position_id,
-                    self.outcomes.last_error,
+                    unresolved_error,
                 )
             else:
                 # A prior append may have committed before a connection reset.
                 self._reported_closed_ids.add(position_id)
+        self.outcome_persistence_error = unresolved_error
 
         cutoff = time.time() - 40.0 * 24.0 * 60.0 * 60.0
         removed = self.repository.prune_terminal_positions(
@@ -918,6 +922,9 @@ class _VenueLab:
                         if self.persistence_error:
                             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
                             continue
+                        if self.outcome_persistence_error:
+                            self._record_block("PAPER_OUTCOME_NOT_DURABLE")
+                            continue
                         if self.pause_new_entries:
                             self._record_block("HOSTED_LAB_RESOURCE_GUARD")
                             continue
@@ -968,6 +975,8 @@ class _VenueLab:
             "last_cycle_seconds": self.last_cycle_seconds,
             "last_error": self.last_error,
             "persistence_error": self.persistence_error,
+            "outcome_persistence_error": self.outcome_persistence_error,
+            "entry_capture_retention_limit": self.entry_captures.max_records,
         }
 
     def close(self) -> None:
