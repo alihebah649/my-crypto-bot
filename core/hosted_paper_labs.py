@@ -644,11 +644,11 @@ class _VenueLab:
             # state cannot be committed. Retry writing the pre-entry snapshot
             # to reconcile an uncertain commit result, and pause future entries
             # if even the rollback snapshot cannot be persisted.
-            self.adapter.restore_snapshot(pre_entry_account)
-            self.adapter.orders = pre_entry_orders
-            self.repository.restore_snapshot(pre_entry_positions)
-            self.runtime.loss_ledger.sync(self.repository.get_closed_positions())
-            rollback_saved = self._save_state(force=True)
+            rollback_saved = self._rollback_unpersisted_entry(
+                pre_entry_account,
+                pre_entry_positions,
+                pre_entry_orders,
+            )
             if not rollback_saved:
                 self.pause_new_entries = True
             self._persist_candidate_capture(
@@ -786,6 +786,19 @@ class _VenueLab:
         orders.clear()
         orders.update(retained)
         return removed
+
+    def _rollback_unpersisted_entry(
+        self,
+        account_snapshot: Mapping[str, Any],
+        position_snapshot: Mapping[str, Any],
+        order_snapshot: Mapping[str, Any],
+    ) -> bool:
+        """Restore the pre-entry Paper state when the entry snapshot cannot commit."""
+        self.adapter.restore_snapshot(dict(account_snapshot))
+        self.adapter.orders = dict(order_snapshot)
+        self.repository.restore_snapshot(dict(position_snapshot))
+        self.runtime.loss_ledger.sync(self.repository.get_closed_positions())
+        return self._save_state(force=True)
 
     def _save_state(self, *, force: bool = False) -> bool:
         self._compact_order_history()
