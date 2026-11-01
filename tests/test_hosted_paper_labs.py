@@ -664,3 +664,122 @@ def test_hosted_lab_entry_capture_retention_is_bounded_per_venue():
         )
     finally:
         runner.close()
+
+
+
+def test_hosted_scalp_freshness_guard_matches_main_five_minute_audit():
+    from core.entry_freshness_audit import (
+        audit_5m_entry_freshness,
+        entry_execution_freshness_allowed,
+    )
+
+    now = 2_000_000.0
+    stale_decision = {
+        "open_time": int((now - 700.0) * 1000),
+        "close_time": int((now - 400.0) * 1000),
+    }
+    current_open = {
+        "open_time": int((now - 100.0) * 1000),
+        "close_time": int((now + 200.0) * 1000),
+    }
+    audit = audit_5m_entry_freshness(
+        candles_5m=[stale_decision, current_open],
+        captured_at=now,
+    )
+
+    assert audit["state"] == "STALE"
+    assert audit["decision_candle_age_seconds"] == pytest.approx(400.0, abs=0.002)
+    assert entry_execution_freshness_allowed(audit, "SCALP") is False
+    assert entry_execution_freshness_allowed(audit, "SWING") is True
+
+
+def test_hosted_swing_candidate_obeys_symbol_loss_cooldown():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["BYBIT"]
+    try:
+        losing = lab.runtime.open_position(
+            "BTCUSDT", 100.0, 95.0, trade_mode="SWING"
+        )
+        assert losing is not None
+        losing.status = __import__(
+            "trade_manager.models", fromlist=["PositionStatus"]
+        ).PositionStatus.CLOSED
+        losing.closed_at = time.time() - 60.0
+        losing.realized_pnl = -1.0
+        lab.repository.update(losing)
+
+        candidate = {
+            "trade_mode": "SWING",
+            "signal": "BUY",
+            "score": 90,
+            "swing_score": 90,
+            "swing_signal": "BUY",
+            "scalp_score": 20,
+            "scalp_signal": "HOLD",
+            "atr": 1.0,
+            "ema100": 90.0,
+        }
+        ticker = {
+            "lastPrice": 100.0,
+            "bidPrice": 99.99,
+            "askPrice": 100.01,
+            "quoteVolume": 1_000_000.0,
+            "received_at": time.time(),
+        }
+        frames = {"5m": [], "15m": [], "1h": [], "4h": []}
+
+        lab._try_entry("ETHUSDT", ticker, frames, candidate, "BULLISH")
+
+        assert lab.entry_blocked["LOSS_COOLDOWN"] == 1
+        assert lab.repository.get_by_symbol("ETHUSDT") == []
+    finally:
+        runner.close()
+
+
+def test_hosted_swing_keeps_main_strong_btc_crash_exception():
+    from core.paper_risk_overlay import strong_bullish_btc_exception
+
+    score = {
+        "trade_mode": "SWING",
+        "signal": "BUY",
+        "score": 92,
+        "swing_score": 92,
+        "swing_signal": "BUY",
+        "swing_reasons": ["EMA100_TREND"],
+        "pattern_confirmed": True,
+        "mtf_aligned_bullish": True,
+    }
+    assert strong_bullish_btc_exception(score) is True
+
+
+def test_hosted_profit_protection_closes_position_before_exit_watchdog():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["OKX"]
+    try:
+        lab.runtime.update_market(
+            "BTCUSDT",
+            price=100.0,
+            bid=99.99,
+            ask=100.01,
+            spread_percent=0.02,
+            atr=1.0,
+            volume_usdt=1_000_000.0,
+            ema100=95.0,
+        )
+        position = lab.runtime.open_position(
+            "BTCUSDT", 100.0, 95.0, trade_mode="SCALP"
+        )
+        assert position is not None
+        position.highest_price = 110.0
+        position.max_profit_percent = 10.0
+        lab.repository.update(position)
+        lab.stream.prices["BTCUSDT"] = 108.0
+
+        lab._update_positions(time.time())
+
+        closed = lab.repository.get(position.position_id)
+        assert closed.status.name == "CLOSED"
+        assert closed.exit_metadata["paper_profit_protection"] is True
+        assert closed.exit_metadata["paper_profit_protection_detail"]["triggered"] is True
+    finally:
+        runner.close()
