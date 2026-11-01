@@ -517,6 +517,12 @@ class _VenueLab:
             self._record_block(failed_gate)
             return
 
+        # Preserve the exact Entry v2 capture through the Trade Manager
+        # lifecycle boundary so the closed Paper outcome can be joined to its
+        # immutable candidate decision without relying on a later lookup.
+        self.runtime.last_entry_diagnostics.setdefault(symbol, {})[
+            "entry_v2_shadow"
+        ] = v2_shadow
         position = self.runtime.open_position(
             symbol,
             price,
@@ -668,7 +674,25 @@ class _VenueLab:
                 len(removed),
             )
 
+    def _compact_order_history(self, *, keep: int = 1000) -> int:
+        """Bound the in-memory synchronous Paper order cache.
+
+        Filled/rejected Paper requests are complete at their execution
+        boundary; active position and outcome records retain their own order
+        identifiers, so old adapter response objects need not accumulate
+        forever in this long-running hosted process.
+        """
+        orders = getattr(self.adapter, "orders", None)
+        if not isinstance(orders, dict) or len(orders) <= keep:
+            return 0
+        retained = dict(list(orders.items())[-max(1, int(keep)):])
+        removed = len(orders) - len(retained)
+        orders.clear()
+        orders.update(retained)
+        return removed
+
     def _save_state(self, *, force: bool = False) -> None:
+        self._compact_order_history()
         now = time.time()
         if not force and now - self._last_state_save_at < 60.0:
             return
