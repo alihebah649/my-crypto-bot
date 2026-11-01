@@ -1426,8 +1426,12 @@ class HostedPaperLabRunner:
                 f"{self._max_memory_mb:.1f} MB"
             )
 
-    def _apply_resource_shutdown(self) -> None:
+    def _apply_resource_shutdown(self, *, status: str = "CANCELLED") -> None:
         """Stop cold-start REST; stop monitor feeds when no positions need management."""
+        if status in {"RESOURCE_GUARD", "CPU_GUARD"}:
+            self._warmup_sequence_status = status
+        elif self._warmup_sequence_status not in {"RESOURCE_GUARD", "CPU_GUARD"}:
+            self._warmup_sequence_status = status
         self._warmup_sequence_stop.set()
         for lab in self.labs.values():
             lab.cancel_warmup()
@@ -1458,8 +1462,7 @@ class HostedPaperLabRunner:
                 self.start_error = str(exc)
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
-                self._apply_resource_shutdown()
-                self._warmup_sequence_status = "RESOURCE_GUARD"
+                self._apply_resource_shutdown(status="RESOURCE_GUARD")
                 logger.error("[HOSTED-PAPER-LABS] startup aborted: %s", self.start_error)
                 raise
             if self._last_memory_guard():
@@ -1499,8 +1502,10 @@ class HostedPaperLabRunner:
                     self._warmup_sequence_status = "CANCELLED"
                     return
                 if self._last_memory_guard() or self._cpu_guard_paused:
-                    self._apply_resource_shutdown()
-                    self._warmup_sequence_status = "RESOURCE_GUARD"
+                    self._apply_resource_shutdown(
+                        status="RESOURCE_GUARD" if self._last_memory_guard() else "CPU_GUARD"
+                    )
+                    self._warmup_sequence_current = None
                     return
 
                 lab = self.labs[venue]
@@ -1518,20 +1523,43 @@ class HostedPaperLabRunner:
                     if self._warmup_sequence_stop.is_set():
                         lab.cancel_warmup()
                         worker.join(timeout=2.0)
-                        self._warmup_sequence_status = "CANCELLED"
+                        if self._warmup_sequence_status not in {"RESOURCE_GUARD", "CPU_GUARD"}:
+                            self._warmup_sequence_status = "CANCELLED"
+                        self._warmup_sequence_current = None
                         return
                     if self._last_memory_guard() or self._cpu_guard_paused:
-                        self._apply_resource_shutdown()
+                        self._apply_resource_shutdown(
+                            status="RESOURCE_GUARD" if self._last_memory_guard() else "CPU_GUARD"
+                        )
                         worker.join(timeout=2.0)
-                        self._warmup_sequence_status = "RESOURCE_GUARD"
+                        self._warmup_sequence_current = None
                         return
-                self._sample_startup_memory(f"{venue}_WARMUP_COMPLETE")
+                try:
+                    self._sample_startup_memory(f"{venue}_WARMUP_COMPLETE")
+                except RuntimeError as exc:
+                    self.start_error = str(exc)
+                    self._apply_resource_shutdown(status="RESOURCE_GUARD")
+                    self._warmup_sequence_current = None
+                    logger.error("[HOSTED-PAPER-LABS] warmup aborted: %s", self.start_error)
+                    return
                 if self._last_memory_guard():
-                    self._apply_resource_shutdown()
-                    self._warmup_sequence_status = "RESOURCE_GUARD"
+                    self._apply_resource_shutdown(status="RESOURCE_GUARD")
+                    self._warmup_sequence_current = None
                     return
                 if lab._warmup_cancelled:
-                    self._warmup_sequence_status = "CANCELLED"
+                    if self._warmup_sequence_status not in {"RESOURCE_GUARD", "CPU_GUARD"}:
+                        self._warmup_sequence_status = "CANCELLED"
+                    self._warmup_sequence_current = None
+                    return
+                if not lab.universe_ready:
+                    self._warmup_sequence_status = "WARMUP_FAILED"
+                    self._warmup_sequence_current = None
+                    logger.error(
+                        "[HOSTED-PAPER-LABS] warmup failed venue=%s error=%s; "
+                        "later venues will not start",
+                        venue,
+                        lab.warmup_error or lab.last_error or "UNIVERSE_NOT_READY",
+                    )
                     return
                 self._warmup_sequence_completed.append(venue)
                 self._warmup_sequence_current = None
@@ -1543,7 +1571,8 @@ class HostedPaperLabRunner:
         except Exception as exc:
             self._warmup_sequence_status = "ERROR"
             self.start_error = f"{type(exc).__name__}: {exc}"
-            self._apply_resource_shutdown()
+            self._apply_resource_shutdown(status="ERROR")
+            self._warmup_sequence_current = None
             logger.exception("[HOSTED-PAPER-LABS] sequential warmup failed")
 
     def process_cycle(self) -> None:
@@ -1603,7 +1632,7 @@ class HostedPaperLabRunner:
                 self._cpu_guard_paused = True
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
-                self._apply_resource_shutdown()
+                self._apply_resource_shutdown(status="CPU_GUARD")
                 logger.error(
                     "[HOSTED-PAPER-LABS] CPU guard paused new lab entries load=%.1f%%",
                     self._cpu_load_percent,
@@ -1630,7 +1659,7 @@ class HostedPaperLabRunner:
             if self._last_memory_guard():
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
-                self._apply_resource_shutdown()
+                self._apply_resource_shutdown(status="RESOURCE_GUARD")
 
     def _last_memory_guard(self) -> bool:
         return self._max_memory_mb >= 400.0
