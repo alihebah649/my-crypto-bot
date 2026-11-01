@@ -300,12 +300,13 @@ class _VenueLab:
             self.repository.count(),
         )
 
-    def start(self) -> None:
+    def start(self, *, start_warmup: bool = True) -> None:
         # The Binance feed is owned by MAIN and is shared read-only with this
         # lab. Bybit and OKX streams are owned by their respective lab objects.
         if self.stream is not None and self.owns_stream:
             self.stream.start()
-        self._start_cold_warmup()
+        if start_warmup:
+            self._start_cold_warmup()
 
     def _start_cold_warmup(self) -> None:
         if self.warmup_client is None or self._warmup_started:
@@ -1354,6 +1355,11 @@ class HostedPaperLabRunner:
         self._cpu_scan_throttled = False
         self.started_venues: list[str] | None = None
         self._monitor_streams_stopped = False
+        self._warmup_sequence_stop = threading.Event()
+        self._warmup_sequence_thread: threading.Thread | None = None
+        self._warmup_sequence_status = "NOT_STARTED"
+        self._warmup_sequence_current: str | None = None
+        self._warmup_sequence_completed: list[str] = []
         self.labs: dict[str, _VenueLab] = {}
         try:
             if "BINANCE" in self.enabled_venues:
@@ -1422,6 +1428,7 @@ class HostedPaperLabRunner:
 
     def _apply_resource_shutdown(self) -> None:
         """Stop cold-start REST; stop monitor feeds when no positions need management."""
+        self._warmup_sequence_stop.set()
         for lab in self.labs.values():
             lab.cancel_warmup()
             if self.monitor_only and lab.stream is not None and lab.owns_stream:
@@ -1436,11 +1443,14 @@ class HostedPaperLabRunner:
             self._monitor_streams_stopped = True
 
     def start(self) -> None:
-        if not self.enabled:
+        if not self.enabled or self.started_venues is not None:
             return
         self.started_venues = []
         for venue in self.enabled_venues:
-            self.labs[venue].start()
+            # Open selected venue feeds first, but do not launch their REST
+            # history requests yet. Cold-start warmups are serialized below
+            # so two venues cannot spike the small Render CPU quota together.
+            self.labs[venue].start(start_warmup=False)
             self.started_venues.append(venue)
             self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
             if self._last_memory_guard():
@@ -1453,6 +1463,17 @@ class HostedPaperLabRunner:
                 )
                 logger.error("[HOSTED-PAPER-LABS] %s", self.start_error)
                 break
+
+        if not self._warmup_sequence_stop.is_set():
+            self._warmup_sequence_status = "RUNNING"
+            self._warmup_sequence_thread = threading.Thread(
+                target=self._run_sequential_warmups,
+                daemon=True,
+                name="hosted-paper-lab-warmup-sequencer",
+            )
+            self._warmup_sequence_thread.start()
+        else:
+            self._warmup_sequence_status = "CANCELLED"
         logger.warning(
             "[HOSTED-PAPER-LABS] started in MAIN process "
             "mode=%s venues=%s batch_per_venue=%d",
@@ -1460,6 +1481,61 @@ class HostedPaperLabRunner:
             ",".join(self.enabled_venues),
             next(iter(self.labs.values())).scan_batch_size,
         )
+
+    def _run_sequential_warmups(self) -> None:
+        """Run public REST cold starts one venue at a time to bound CPU peaks."""
+        try:
+            for venue in self.started_venues or ():
+                if self._warmup_sequence_stop.is_set():
+                    self._warmup_sequence_status = "CANCELLED"
+                    return
+                if self._last_memory_guard() or self._cpu_guard_paused:
+                    self._apply_resource_shutdown()
+                    self._warmup_sequence_status = "RESOURCE_GUARD"
+                    return
+
+                lab = self.labs[venue]
+                self._warmup_sequence_current = venue
+                logger.info(
+                    "[HOSTED-PAPER-LABS] sequential warmup start venue=%s index=%d/%d",
+                    venue,
+                    len(self._warmup_sequence_completed) + 1,
+                    len(self.started_venues or ()),
+                )
+                lab._start_cold_warmup()
+                worker = lab._warmup_thread
+                while worker is not None and worker.is_alive():
+                    worker.join(timeout=0.25)
+                    if self._warmup_sequence_stop.is_set():
+                        lab.cancel_warmup()
+                        worker.join(timeout=2.0)
+                        self._warmup_sequence_status = "CANCELLED"
+                        return
+                    if self._last_memory_guard() or self._cpu_guard_paused:
+                        self._apply_resource_shutdown()
+                        worker.join(timeout=2.0)
+                        self._warmup_sequence_status = "RESOURCE_GUARD"
+                        return
+                self._sample_startup_memory(f"{venue}_WARMUP_COMPLETE")
+                if self._last_memory_guard():
+                    self._apply_resource_shutdown()
+                    self._warmup_sequence_status = "RESOURCE_GUARD"
+                    return
+                if lab._warmup_cancelled:
+                    self._warmup_sequence_status = "CANCELLED"
+                    return
+                self._warmup_sequence_completed.append(venue)
+                self._warmup_sequence_current = None
+            self._warmup_sequence_status = "COMPLETE"
+            logger.info(
+                "[HOSTED-PAPER-LABS] sequential warmups complete venues=%s",
+                ",".join(self._warmup_sequence_completed) or "NONE",
+            )
+        except Exception as exc:
+            self._warmup_sequence_status = "ERROR"
+            self.start_error = f"{type(exc).__name__}: {exc}"
+            self._apply_resource_shutdown()
+            logger.exception("[HOSTED-PAPER-LABS] sequential warmup failed")
 
     def process_cycle(self) -> None:
         if not self.enabled:
@@ -1582,6 +1658,10 @@ class HostedPaperLabRunner:
             "enabled_venues": list(self.enabled_venues),
             "started_venues": list(self.started_venues) if self.started_venues is not None else None,
             "monitor_streams_stopped_by_guard": self._monitor_streams_stopped,
+            "warmup_sequence_status": self._warmup_sequence_status,
+            "warmup_sequence_current": self._warmup_sequence_current,
+            "warmup_sequence_completed": list(self._warmup_sequence_completed),
+            "warmup_sequence_order": list(self.started_venues or ()),
             "entry_scan_venues": (
                 list(self.started_venues if self.started_venues is not None else self.enabled_venues)
                 if self._cycles else []
@@ -1593,6 +1673,16 @@ class HostedPaperLabRunner:
         }
 
     def close(self) -> None:
+        self._warmup_sequence_stop.set()
+        for lab in self.labs.values():
+            lab.cancel_warmup()
+        sequence = self._warmup_sequence_thread
+        if sequence is not None and sequence is not threading.current_thread():
+            sequence.join(timeout=2.0)
+            if sequence.is_alive():
+                logger.warning(
+                    "[HOSTED-PAPER-LABS] warmup sequencer shutdown wait expired"
+                )
         for lab in self.labs.values():
             lab.close()
 
