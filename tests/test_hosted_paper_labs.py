@@ -591,3 +591,35 @@ def test_failed_paper_state_commit_rolls_back_entry_and_pauses_retry(monkeypatch
         assert lab.persistence_error is not None
     finally:
         runner.close()
+
+
+
+def test_hosted_lab_excludes_one_symbol_with_incomplete_cold_history_without_freezing_venue():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    database = FakeDatabase()
+    client = FakeWarmupClient(
+        set(symbols),
+        missing_series={("SOLUSDT", "15m")},
+    )
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=FakeStream("BINANCE", symbols),
+        bybit_stream=FakeStream("BYBIT", symbols),
+        okx_stream=FakeStream("OKX", symbols),
+        database_url="postgres://test",
+        bybit_client=client,
+        okx_client=FakeWarmupClient(set(symbols)),
+        initial_cash=1000.0,
+        fee_rate=0.001,
+        scan_batch_size=2,
+        connect_factory=lambda _url: FakeConnection(database),
+    )
+    try:
+        bybit = runner.labs["BYBIT"]
+        bybit._seed_history()
+        assert bybit.universe_ready is True
+        assert bybit.symbols == ("BTCUSDT", "ETHUSDT", "LINKUSDT")
+        assert bybit.warmup_incomplete_symbols == ("SOLUSDT",)
+        assert bybit.snapshot()["scoring_symbol_count"] == 3
+    finally:
+        runner.close()
