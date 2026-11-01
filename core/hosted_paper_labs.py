@@ -104,7 +104,7 @@ class _VenueLab:
         initial_cash: float,
         fee_rate: float,
         warmup_client: Any = None,
-        scan_batch_size: int = 4,
+        scan_batch_size: int = 8,
         state_connect_factory: Any = None,
         outcome_connect_factory: Any = None,
     ) -> None:
