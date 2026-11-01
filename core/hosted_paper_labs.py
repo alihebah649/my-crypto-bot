@@ -16,16 +16,30 @@ from typing import Any, Mapping
 
 from core.brain_authority import GuardedBrainAuthority
 from core.brain_market_regime import derive_market_breadth
+from core.entry_freshness_audit import (
+    audit_5m_entry_freshness,
+    entry_execution_freshness_allowed,
+)
 from core.paper_execution_adapter import PaperExecutionAdapter
 from core.paper_lab_state import PostgresPaperLabState
 from core.paper_outcome_evidence import build_paper_outcome_evidence
-from core.paper_risk_overlay import paper_entry_economics
+from core.paper_risk_overlay import (
+    BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
+    REENTRY_COOLDOWN_SECONDS,
+    btc_recovery_eligible,
+    btc_recovery_stop,
+    loss_cooldown_remaining,
+    paper_entry_economics,
+    profit_protection_snapshot,
+    strong_bullish_btc_exception,
+)
 from core.postgres_evidence_store import PostgresEvidenceStore
 from dual_mode_strategy import score_symbol
 from engine.entry_v2_adapter import EntryV2MarketFacts
 from engine.entry_v2_capture import capture_entry_v2
 from engine.entry_target_rr import calculate_target_rr
 from trade_manager.repository import PositionRepository
+from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 
 logger = logging.getLogger("ShadowMain.HostedPaperLabs")
@@ -380,6 +394,25 @@ class _VenueLab:
                 return False
         return True
 
+    def _btc_crash_state(self, now: float) -> tuple[bool, bool, float | None]:
+        """Return (context_ready, crashing, drop_percent) from this venue's BTC feed."""
+        rows = self.stream.get_kline_history("BTCUSDT", "1h", 60)
+        closed = rows[:-1] if len(rows) > 1 else rows
+        if len(closed) < 3 or not rows:
+            return False, False, None
+        try:
+            received = float(rows[-1].get("received_at") or 0.0)
+        except (TypeError, ValueError):
+            return False, False, None
+        if received <= 0.0 or max(0.0, float(now) - received) > 180.0:
+            return False, False, None
+        recent_high = max(float(row.get("close") or 0.0) for row in closed[-3:])
+        current = float(closed[-1].get("close") or 0.0)
+        if recent_high <= 0.0 or current <= 0.0:
+            return False, False, None
+        drop_percent = (current - recent_high) / recent_high * 100.0
+        return True, drop_percent <= -3.0, drop_percent
+
     def _record_block(self, reason: str) -> None:
         self.entry_blocked[reason] = int(self.entry_blocked.get(reason, 0)) + 1
 
@@ -466,6 +499,21 @@ class _VenueLab:
         self.entry_candidates += 1
         mode = modes[0]
         missing_context = _lane_context_missing(score, mode)
+        freshness = audit_5m_entry_freshness(
+            candles_5m=list(frames.get("5m") or []),
+            captured_at=time.time(),
+        )
+        if not entry_execution_freshness_allowed(freshness, mode):
+            self._record_block("STALE_ENTRY_DATA")
+            logger.info(
+                "[HOSTED-PAPER-LAB] entry blocked venue=%s symbol=%s mode=%s "
+                "reason=STALE_ENTRY_DATA age_seconds=%s",
+                self.venue,
+                symbol,
+                mode,
+                freshness.get("decision_candle_age_seconds"),
+            )
+            return
         if missing_context:
             self._record_block("BRAIN_CONTEXT_INCOMPLETE")
             logger.warning(
@@ -484,31 +532,28 @@ class _VenueLab:
         if self.runtime.controller.has_position(symbol):
             self._record_block("EXISTING_VENUE_POSITION")
             return
+        cooldown_remaining = loss_cooldown_remaining(
+            self.repository.get_closed_positions(),
+            symbol,
+            now=time.time(),
+            cooldown_seconds=REENTRY_COOLDOWN_SECONDS,
+        )
+        if cooldown_remaining > 0.0:
+            self._record_block("LOSS_COOLDOWN")
+            return
 
         stop_loss = price - 2.0 * atr
         if stop_loss <= 0.0 or stop_loss >= price:
             self._record_block("INVALID_STOP")
             return
 
-        btc_rows = self.stream.get_kline_history("BTCUSDT", "1h", 60)
-        btc_closed = btc_rows[:-1] if len(btc_rows) > 1 else btc_rows
-        if len(btc_closed) < 3:
+        btc_ready, btc_crashing, btc_drop_percent = self._btc_crash_state(time.time())
+        if not btc_ready:
             self._record_block("BTC_GUARD_CONTEXT_UNAVAILABLE")
             return
-        try:
-            btc_received = float(btc_rows[-1].get("received_at") or 0.0)
-        except (TypeError, ValueError, IndexError):
-            btc_received = 0.0
-        if btc_received <= 0.0 or time.time() - btc_received > 180.0:
-            self._record_block("BTC_GUARD_CONTEXT_STALE")
-            return
-        recent_high = max(float(row.get("close") or 0.0) for row in btc_closed[-3:])
-        btc_current = float(btc_closed[-1].get("close") or 0.0)
-        btc_crashing = bool(
-            recent_high > 0.0
-            and (btc_current - recent_high) / recent_high <= -0.03
-        )
-        if btc_crashing:
+        if btc_crashing and not (
+            mode == "SWING" and strong_bullish_btc_exception(score)
+        ):
             self._record_block("BTC_CRASH_GUARD")
             return
 
