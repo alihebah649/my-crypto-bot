@@ -183,6 +183,8 @@ class _VenueLab:
         self.outcome_persistence_error: str | None = None
         self.warmup_client = warmup_client
         self._warmup_started = False
+        self._warmup_stop = threading.Event()
+        self._warmup_cancelled = False
         self._warmup_thread: threading.Thread | None = None
         self._last_state_save_at = 0.0
         self._reported_closed_ids: set[str] = set()
@@ -286,14 +288,30 @@ class _VenueLab:
         )
         self._warmup_thread.start()
 
+    def _mark_warmup_cancelled(self) -> None:
+        self._warmup_cancelled = True
+        self.universe_ready = False
+        self.warmup_error = "WARMUP_CANCELLED"
+        self.last_error = self.warmup_error
+        logger.info(
+            "[HOSTED-PAPER-LAB-WARMUP] cancelled venue=%s; no further REST history is seeded",
+            self.venue,
+        )
+
     def _seed_history(self) -> None:
         seeded = 0
         failed = 0
+        if self._warmup_stop.is_set():
+            self._mark_warmup_cancelled()
+            return
         # Check the exchange's current public Spot ticker universe once. This
         # prevents one unsupported or delisted symbol from blocking breadth
         # readiness for the entire venue. No trading/private API is involved.
         try:
             listing = self.warmup_client.fetch_tickers(self.requested_symbols)
+            if self._warmup_stop.is_set():
+                self._mark_warmup_cancelled()
+                return
             supported = tuple(
                 symbol
                 for symbol in self.requested_symbols
@@ -302,6 +320,9 @@ class _VenueLab:
                 and float(listing[symbol].get("lastPrice") or 0.0) > 0.0
             )
         except Exception as exc:
+            if self._warmup_stop.is_set():
+                self._mark_warmup_cancelled()
+                return
             self.warmup_error = f"SYMBOL_PREFLIGHT_{type(exc).__name__}"
             self.last_error = self.warmup_error
             self.universe_ready = False
@@ -347,12 +368,24 @@ class _VenueLab:
         warm_symbols: list[str] = []
         incomplete_symbols: list[str] = []
         for symbol in self.ticker_supported_symbols:
+            if self._warmup_stop.is_set():
+                self._mark_warmup_cancelled()
+                return
             symbol_ready = True
             for interval in _INTERVALS:
+                if self._warmup_stop.is_set():
+                    self._mark_warmup_cancelled()
+                    return
                 try:
                     rows = self.warmup_client.fetch_klines(
                         symbol, interval, _HISTORY_LIMITS[interval]
                     )
+                    # Shutdown may have been requested while the public REST
+                    # request was in flight. Never seed its response into a
+                    # stream that is being closed.
+                    if self._warmup_stop.is_set():
+                        self._mark_warmup_cancelled()
+                        return
                     count = self.stream.seed_kline_history(symbol, interval, rows or [])
                     if count >= _REQUIRED_HISTORY[interval]:
                         seeded += 1
@@ -360,6 +393,9 @@ class _VenueLab:
                         failed += 1
                         symbol_ready = False
                 except Exception as exc:
+                    if self._warmup_stop.is_set():
+                        self._mark_warmup_cancelled()
+                        return
                     failed += 1
                     symbol_ready = False
                     logger.warning(
@@ -369,7 +405,9 @@ class _VenueLab:
                         interval,
                         type(exc).__name__,
                     )
-                time.sleep(0.15)
+                if self._warmup_stop.wait(0.15):
+                    self._mark_warmup_cancelled()
+                    return
             if symbol_ready:
                 warm_symbols.append(symbol)
             else:
@@ -1169,6 +1207,7 @@ class _VenueLab:
             "warmup_seeded_series": self.warmup_seeded_series,
             "warmup_expected_series": self.warmup_expected_series,
             "warmup_error": self.warmup_error,
+            "warmup_cancelled": self._warmup_cancelled,
             "cycles": self.cycles,
             "scored_symbols_total": self.scored_symbols,
             "entry_candidates": self.entry_candidates,
@@ -1193,6 +1232,19 @@ class _VenueLab:
         }
 
     def close(self) -> None:
+        # Startup can be aborted by the Render memory guard while the cold
+        # history worker is inside a public REST call. Signal cancellation
+        # first, then let it return before closing the stream/state stores.
+        self._warmup_stop.set()
+        thread = self._warmup_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.warning(
+                    "[HOSTED-PAPER-LAB-WARMUP] shutdown wait expired venue=%s; "
+                    "the worker will exit after its in-flight REST call",
+                    self.venue,
+                )
         if self.stream is not None and self.owns_stream:
             self.stream.stop()
         self.state.close()
