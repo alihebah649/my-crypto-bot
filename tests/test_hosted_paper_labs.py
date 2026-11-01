@@ -222,24 +222,19 @@ def test_resource_guard_pauses_new_entries_without_stopping_existing_streams():
 
 
 
-def test_hosted_runner_rotates_scoring_one_venue_per_main_cycle():
+def test_hosted_runner_scans_every_venue_each_main_cycle():
     database = FakeDatabase()
     runner = _runner(database)
     try:
         runner.process_cycle()
-        assert runner.labs["BINANCE"].scan_cursor == 2
-        assert runner.labs["BYBIT"].scan_cursor == 0
-        assert runner.labs["OKX"].scan_cursor == 0
+        assert all(lab.scan_cursor == 2 for lab in runner.labs.values())
 
         runner.process_cycle()
-        assert runner.labs["BINANCE"].scan_cursor == 2
-        assert runner.labs["BYBIT"].scan_cursor == 2
-        assert runner.labs["OKX"].scan_cursor == 0
+        assert all(lab.scan_cursor == 0 for lab in runner.labs.values())
 
         runner.process_cycle()
-        assert runner.labs["BINANCE"].scan_cursor == 2
-        assert runner.labs["BYBIT"].scan_cursor == 2
-        assert runner.labs["OKX"].scan_cursor == 2
+        assert all(lab.scan_cursor == 2 for lab in runner.labs.values())
+        assert runner.snapshot()["entry_scan_venues"] == ["BINANCE", "BYBIT", "OKX"]
     finally:
         runner.close()
 
