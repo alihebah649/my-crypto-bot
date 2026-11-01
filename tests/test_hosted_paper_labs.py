@@ -740,7 +740,11 @@ def test_hosted_swing_candidate_obeys_symbol_loss_cooldown():
         lab._try_entry("ETHUSDT", ticker, frames, candidate, "BULLISH")
 
         assert lab.entry_blocked["LOSS_COOLDOWN"] == 1
-        assert lab.repository.get_by_symbol("ETHUSDT") == []
+        eth_positions = lab.repository.get_by_symbol("ETHUSDT")
+        assert [position.position_id for position in eth_positions] == [
+            "bybit-recent-loss"
+        ]
+        assert all(position.status is PositionStatus.CLOSED for position in eth_positions)
     finally:
         runner.close()
 
