@@ -392,30 +392,32 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     return bool(record.allowed)
 
 
-def _find_brain_authority_record_for_capture(capture_id: str | None) -> dict | None:
+def _find_evidence_record_for_capture(store, capture_id: str | None) -> dict | None:
+    """Resolve one entry-time Brain record without materializing its evidence history."""
     if not capture_id:
         return None
+    lookup = getattr(store, "get_by_identity", None)
+    if not callable(lookup):
+        _legacy.logger.warning(
+            "Paper evidence lookup unavailable: store does not support indexed identity reads"
+        )
+        return None
     try:
-        records = _brain_authority_store.read_all()
+        record = lookup(str(capture_id))
     except Exception:
-        records = []
-    for record in reversed(records):
-        if str(record.get("capture_id") or "") == str(capture_id):
-            return dict(record)
+        _legacy.logger.exception("Paper evidence identity lookup failed capture_id=%s", capture_id)
+        return None
+    if isinstance(record, dict) and str(record.get("capture_id") or "") == str(capture_id):
+        return dict(record)
     return None
+
+
+def _find_brain_authority_record_for_capture(capture_id: str | None) -> dict | None:
+    return _find_evidence_record_for_capture(_brain_authority_store, capture_id)
 
 
 def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
-    if not capture_id:
-        return None
-    try:
-        records = brain_shadow_store.read_all()
-    except Exception:
-        records = []
-    for record in reversed(records):
-        if str(record.get("capture_id") or "") == str(capture_id):
-            return dict(record)
-    return None
+    return _find_evidence_record_for_capture(brain_shadow_store, capture_id)
 
 
 def _emit_paper_outcome_evidence() -> int:
