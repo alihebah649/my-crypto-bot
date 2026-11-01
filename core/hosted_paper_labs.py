@@ -1152,6 +1152,8 @@ class _VenueLab:
 
     def snapshot(self) -> dict[str, Any]:
         stream = self.stream.snapshot() if self.stream else {"available": False}
+        account = self.runtime.portfolio_provider.snapshot()
+        exposure = self.runtime.risk_config.exposure
         return {
             "venue": self.venue,
             "enabled": True,
@@ -1173,8 +1175,15 @@ class _VenueLab:
             "entry_allowed": self.entry_allowed,
             "new_entries_paused": self.pause_new_entries,
             "entry_blocked": dict(self.entry_blocked),
-            "open_positions": len(self.repository.get_open_positions()),
+            "open_positions": int(account.open_positions),
+            "open_scalp_positions": int(account.scalp_open_positions),
+            "open_swing_positions": int(account.swing_open_positions),
             "closed_positions": len(self.repository.get_closed_positions()),
+            "risk_limits": {
+                "max_open_positions": int(exposure.max_open_positions),
+                "max_scalp_positions": int(exposure.max_scalp_positions),
+                "max_swing_positions": int(exposure.max_swing_positions),
+            },
             "paper_cash": round(float(self.adapter.balance.cash), 4),
             "last_cycle_seconds": self.last_cycle_seconds,
             "last_error": self.last_error,
