@@ -39,7 +39,7 @@ class _FakeConnection:
         if normalized.startswith("INSERT INTO PAPER_EVIDENCE"):
             evidence_type, identity_key, payload = params
             key = (evidence_type, identity_key)
-            if key in self.db.rows:
+            if key in self.db.rows and "DO UPDATE" not in normalized:
                 return _FakeResult(rowcount=0)
             self.db.rows[key] = json.loads(payload)
             return _FakeResult(rowcount=1)
@@ -202,4 +202,37 @@ def test_read_time_range_returns_only_records_in_requested_window():
         "closed_at_utc": "2026-09-29T23:30:00+00:00",
         "symbol": "BTCUSDT",
         "realized_pnl": 0.25,
+    }]
+
+
+
+def test_upsert_replaces_mutable_state_without_growing_evidence_rows():
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="PAPER_LAB_ACCOUNT_STATE_BYBIT",
+        max_records=1,
+        connect_factory=connect,
+    )
+
+    assert store.upsert({
+        "record_id": "account_snapshot_v1",
+        "cash": 1000.0,
+        "assets": {},
+    }) is True
+    assert store.upsert({
+        "record_id": "account_snapshot_v1",
+        "cash": 987.5,
+        "assets": {"BTCUSDT": 0.01},
+    }) is True
+
+    assert store.count() == 1
+    assert store.read_all() == [{
+        "record_id": "account_snapshot_v1",
+        "cash": 987.5,
+        "assets": {"BTCUSDT": 0.01},
     }]
