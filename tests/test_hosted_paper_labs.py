@@ -552,7 +552,7 @@ def test_hosted_lab_preflight_requires_btc_spot_market():
         bybit._seed_history()
         assert bybit.universe_ready is False
         assert bybit.warmup_error == "BTCUSDT_OR_SPOT_UNIVERSE_UNAVAILABLE"
-        assert bybit.snapshot()["warmup_expected_series"] == 0
+        assert bybit.snapshot()["warmup_expected_series"] == 2 * 4
         bybit.process_cycle()
         assert bybit.entry_blocked["VENUE_SPOT_UNIVERSE_NOT_READY"] == 1
     finally:
