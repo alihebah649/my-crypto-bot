@@ -114,6 +114,34 @@ class PositionRepository:
         with self._lock:
             self._persist_locked()
 
+    def export_snapshot(self) -> dict[str, Any]:
+        """Return a versioned, JSON-safe snapshot for an external state store."""
+        with self._lock:
+            return {
+                "version": 1,
+                "positions": [
+                    _encode(asdict(position))
+                    for position in self._positions.values()
+                ],
+            }
+
+    def restore_snapshot(self, payload: dict[str, Any]) -> None:
+        """Restore positions from a validated external snapshot."""
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported position state version")
+        restored: Dict[str, Position] = {}
+        for raw in payload.get("positions", []):
+            if not isinstance(raw, dict):
+                raise ValueError("position snapshot entries must be objects")
+            data = _decode(raw)
+            position = Position(**data)
+            if position.position_id in restored:
+                raise ValueError(f"duplicate position id in snapshot: {position.position_id}")
+            restored[position.position_id] = position
+        with self._lock:
+            self._positions = restored
+            self._persist_locked()
+
     def _persist_locked(self) -> None:
         if not self.persistence_path:
             return
