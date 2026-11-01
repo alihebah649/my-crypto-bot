@@ -448,3 +448,22 @@ def test_closing_hosted_labs_never_stops_main_owned_binance_stream():
     assert binance_stream.started is True
     assert bybit_stream.started is False
     assert okx_stream.started is False
+
+
+
+def test_hosted_lab_compacts_old_synchronous_paper_order_responses():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["BINANCE"]
+    try:
+        lab.adapter.orders = {
+            f"PAPER-{index}": {"order": index}
+            for index in range(2005)
+        }
+        removed = lab._compact_order_history(keep=1000)
+
+        assert removed == 1005
+        assert len(lab.adapter.orders) == 1000
+        assert next(iter(lab.adapter.orders)) == "PAPER-1005"
+        assert list(lab.adapter.orders)[-1] == "PAPER-2004"
+    finally:
+        runner.close()
