@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   apply-fix:
-    if: "!startsWith(github.event.head_commit.message, 'Apply Kline limiter lock fix')"
+    # Defense in depth: this automated write-back is permitted only on its
+    # dedicated audit branch, never on Paper feature or pull-request branches.
+    if: "github.ref == 'refs/heads/audit/market-data-centralization' && !startsWith(github.event.head_commit.message, 'Apply Kline limiter lock fix')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
