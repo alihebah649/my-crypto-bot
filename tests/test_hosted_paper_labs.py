@@ -463,9 +463,9 @@ def test_startup_memory_abort_prevents_cold_warmup_and_later_venue(monkeypatch):
     def memory_mb():
         nonlocal memory_samples
         memory_samples += 1
-        # Three constructor samples are safe. The Bybit feed-start sample
-        # trips the hard startup guard before any REST warmup is scheduled.
-        return 405.0 if memory_samples == 4 else 300.0
+        # Three constructor samples and the Binance feed-start sample are
+        # safe. The Bybit feed-start sample trips the guard before REST starts.
+        return 405.0 if memory_samples == 5 else 300.0
 
     monkeypatch.setattr(
         HostedPaperLabRunner,
