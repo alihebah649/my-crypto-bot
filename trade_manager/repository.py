@@ -130,11 +130,20 @@ class PositionRepository:
             positions = list(self._positions.values())
             if closed_since_epoch is not None:
                 cutoff = float(closed_since_epoch)
+                active_statuses = {
+                    PositionStatus.OPEN,
+                    PositionStatus.PARTIALLY_CLOSED,
+                    PositionStatus.HOLD,
+                    PositionStatus.REVIEW_REQUIRED,
+                }
                 positions = [
                     position
                     for position in positions
-                    if position.status is not PositionStatus.CLOSED
-                    or float(position.closed_at or position.opened_at) >= cutoff
+                    if position.status in active_statuses
+                    or (
+                        position.status is PositionStatus.CLOSED
+                        and float(position.closed_at or position.opened_at) >= cutoff
+                    )
                 ]
             return {
                 "version": 1,
