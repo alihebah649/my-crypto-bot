@@ -1285,41 +1285,63 @@ _legacy.process_market_cycle = _process_market_cycle_with_overlays
 runtime.open_position = _open_position_with_selected_mode
 
 
-# Optional: host the three isolated Paper comparison labs in the MAIN process.
-# Disabled by default. MAIN remains the only Render service and keeps its
-# existing Binance Relay feed, strategy, portfolio and execution path.
+# Optional staged Paper comparison labs in the MAIN process.
+# Disabled by default. Monitor-only is the safe first activation stage:
+# public market data and scoring run, while entries and DB writes remain off.
 _hosted_paper_lab_runner = None
-if os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "yes", "on"}:
-    if PAPER_VENUE_MODE != "MIXED":
+_hosted_labs_enabled = os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "yes", "on"}
+_hosted_requested_venues_raw = os.getenv("PAPER_HOSTED_LAB_VENUES", "BINANCE,BYBIT,OKX")
+_hosted_requested_venues = tuple(dict.fromkeys(
+    part.strip().upper()
+    for part in _hosted_requested_venues_raw.split(",")
+    if part.strip()
+))
+_hosted_invalid_venues = sorted(set(_hosted_requested_venues) - {"BINANCE", "BYBIT", "OKX"})
+_hosted_monitor_only = os.getenv("PAPER_HOSTED_LAB_ALLOW_ENTRIES", "0").strip().lower() not in {"1", "true", "yes", "on"}
+if _hosted_labs_enabled:
+    if _hosted_invalid_venues or not _hosted_requested_venues:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: invalid venue selection=%s",
+            _hosted_invalid_venues or "EMPTY",
+        )
+    elif PAPER_VENUE_MODE != "MIXED":
         _legacy.logger.error(
             "[HOSTED-PAPER-LABS] disabled: MAIN must remain in MIXED mode"
         )
-    elif not _PAPER_MAIN_BINANCE_ONLY:
+    elif "BINANCE" in _hosted_requested_venues and not _PAPER_MAIN_BINANCE_ONLY:
         _legacy.logger.error(
-            "[HOSTED-PAPER-LABS] disabled: MAIN must provide all 22 symbols from Binance"
+            "[HOSTED-PAPER-LABS] disabled: Binance lab requires MAIN's complete Binance Relay universe"
         )
-    elif not _BYBIT_MARKET_DATA_ENABLED or not _OKX_MARKET_DATA_ENABLED:
+    elif "BYBIT" in _hosted_requested_venues and not _BYBIT_MARKET_DATA_ENABLED:
         _legacy.logger.error(
-            "[HOSTED-PAPER-LABS] disabled: Bybit and OKX cold-start REST must both be enabled"
+            "[HOSTED-PAPER-LABS] disabled: Bybit public Spot cold-start data is not enabled"
+        )
+    elif "OKX" in _hosted_requested_venues and not _OKX_MARKET_DATA_ENABLED:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: OKX public Spot cold-start data is not enabled"
         )
     else:
         try:
-            _hosted_bybit_stream = BybitMarketStream(
-                TRADING_SYMBOLS,
-                intervals=("5m", "15m", "1h", "4h"),
-            )
-            _hosted_okx_stream = OKXMarketStream(
-                TRADING_SYMBOLS,
-                intervals=("5m", "15m", "1h", "4h"),
-                base_url=os.getenv(
-                    "OKX_MARKET_DATA_WS_PUBLIC_URL",
-                    "wss://ws.okx.com/ws/v5/public",
-                ).strip(),
-                business_base_url=os.getenv(
-                    "OKX_MARKET_DATA_WS_BUSINESS_URL",
-                    "wss://ws.okx.com/ws/v5/business",
-                ).strip(),
-            )
+            _hosted_bybit_stream = None
+            _hosted_okx_stream = None
+            if "BYBIT" in _hosted_requested_venues:
+                _hosted_bybit_stream = BybitMarketStream(
+                    TRADING_SYMBOLS,
+                    intervals=("5m", "15m", "1h", "4h"),
+                )
+            if "OKX" in _hosted_requested_venues:
+                _hosted_okx_stream = OKXMarketStream(
+                    TRADING_SYMBOLS,
+                    intervals=("5m", "15m", "1h", "4h"),
+                    base_url=os.getenv(
+                        "OKX_MARKET_DATA_WS_PUBLIC_URL",
+                        "wss://ws.okx.com/ws/v5/public",
+                    ).strip(),
+                    business_base_url=os.getenv(
+                        "OKX_MARKET_DATA_WS_BUSINESS_URL",
+                        "wss://ws.okx.com/ws/v5/business",
+                    ).strip(),
+                )
             try:
                 _hosted_scan_batch_size = max(
                     1, min(8, int(os.getenv("PAPER_HOSTED_LAB_SCAN_BATCH", "4")))
@@ -1332,12 +1354,14 @@ if os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "y
                 binance_stream=_binance_market_stream,
                 bybit_stream=_hosted_bybit_stream,
                 okx_stream=_hosted_okx_stream,
-                database_url=database_url_from_env(),
-                bybit_client=_bybit_client,
-                okx_client=_okx_client,
+                database_url=database_url_from_env() if not _hosted_monitor_only else None,
+                bybit_client=_bybit_client if "BYBIT" in _hosted_requested_venues else None,
+                okx_client=_okx_client if "OKX" in _hosted_requested_venues else None,
                 initial_cash=INITIAL_CASH,
                 fee_rate=FEE_RATE,
                 scan_batch_size=_hosted_scan_batch_size,
+                enabled_venues=_hosted_requested_venues,
+                monitor_only=_hosted_monitor_only,
             )
             if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
                 _hosted_paper_lab_runner.start()
