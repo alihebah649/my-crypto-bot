@@ -61,6 +61,35 @@ def _entry_modes(score: Mapping[str, Any]) -> list[str]:
     return ["SCALP" if scalp else "SWING"]
 
 
+def _lane_context_missing(score: Mapping[str, Any], mode: str) -> list[str]:
+    """Fail closed when the selected strategy lane has incomplete source context."""
+    lane = str(mode or "").upper()
+    source_mode = str(score.get("trade_mode") or "").upper()
+    missing: list[str] = []
+    if lane == "SCALP":
+        lane_score = score.get("scalp_score")
+        if lane_score is None and not (
+            source_mode == "SCALP" and score.get("score") is not None
+        ):
+            missing.append("scalp_score")
+        if not (
+            "scalp_confirmed_reversal" in score
+            or "scalp_recovery_confirmation" in score
+        ):
+            missing.append("scalp_reversal_or_recovery_confirmation")
+    elif lane == "SWING":
+        lane_score = score.get("swing_score")
+        if lane_score is None and not (
+            source_mode == "SWING" and score.get("score") is not None
+        ):
+            missing.append("swing_score")
+        if "swing_signal" not in score and source_mode != "SWING":
+            missing.append("swing_signal")
+    else:
+        missing.append("supported_trade_mode")
+    return missing
+
+
 def _spread_percent(ticker: Mapping[str, Any]) -> float:
     price = float(ticker.get("lastPrice") or 0.0)
     bid = float(ticker.get("bidPrice") or price)
@@ -270,6 +299,17 @@ class _VenueLab:
             return
         self.entry_candidates += 1
         mode = modes[0]
+        missing_context = _lane_context_missing(score, mode)
+        if missing_context:
+            self._record_block("BRAIN_CONTEXT_INCOMPLETE")
+            logger.warning(
+                "[HOSTED-PAPER-LAB] entry blocked venue=%s symbol=%s mode=%s missing=%s",
+                self.venue,
+                symbol,
+                mode,
+                ",".join(missing_context),
+            )
+            return
         price = float(ticker.get("lastPrice") or score.get("price") or 0.0)
         atr = float(score.get("atr") or 0.0)
         if price <= 0.0 or atr <= 0.0:
