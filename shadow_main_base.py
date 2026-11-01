@@ -1708,6 +1708,15 @@ async def _dual_mode_engine():
             heartbeat["market_cycle_started_at"] = time.time()
             _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=MARKET_CYCLE", cycle_number)
             await asyncio.to_thread(_legacy.process_market_cycle)
+            hosted_labs = globals().get("_hosted_paper_lab_runner")
+            if hosted_labs is not None and bool(getattr(hosted_labs, "enabled", False)):
+                try:
+                    await asyncio.to_thread(hosted_labs.process_cycle)
+                except Exception:
+                    # Hosted comparison labs must never fail or pause MAIN.
+                    _legacy.logger.exception(
+                        "Hosted Paper lab cycle failed; MAIN Paper cycle remains authoritative"
+                    )
             heartbeat["market_cycle_finished_at"] = time.time()
             _legacy.logger.info("PAPER LOOP HEARTBEAT cycle=%d state=MARKET_CYCLE_DONE", cycle_number)
 
