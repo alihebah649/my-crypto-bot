@@ -114,14 +114,33 @@ class PositionRepository:
         with self._lock:
             self._persist_locked()
 
-    def export_snapshot(self) -> dict[str, Any]:
-        """Return a versioned, JSON-safe snapshot for an external state store."""
+    def export_snapshot(
+        self,
+        *,
+        closed_since_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        """Return a versioned, JSON-safe snapshot for an external state store.
+
+        When a cutoff is supplied, preserve all active positions and only the
+        closed positions needed to rebuild current daily/weekly/monthly risk
+        ledgers. Full historical outcomes belong in the append-only evidence
+        store, not in the mutable runtime-state snapshot.
+        """
         with self._lock:
+            positions = list(self._positions.values())
+            if closed_since_epoch is not None:
+                cutoff = float(closed_since_epoch)
+                positions = [
+                    position
+                    for position in positions
+                    if position.status is not PositionStatus.CLOSED
+                    or float(position.closed_at or position.opened_at) >= cutoff
+                ]
             return {
                 "version": 1,
                 "positions": [
                     _encode(asdict(position))
-                    for position in self._positions.values()
+                    for position in positions
                 ],
             }
 
