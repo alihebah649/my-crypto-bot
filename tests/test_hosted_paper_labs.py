@@ -499,3 +499,61 @@ def test_hosted_lab_compacts_old_synchronous_paper_order_responses():
         assert list(lab.adapter.orders)[-1] == "PAPER-2004"
     finally:
         runner.close()
+
+
+
+def test_hosted_lab_preflight_limits_scoring_to_supported_spot_symbols():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    database = FakeDatabase()
+    client = FakeWarmupClient({"BTCUSDT", "ETHUSDT", "LINKUSDT"})
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=FakeStream("BINANCE", symbols),
+        bybit_stream=FakeStream("BYBIT", symbols),
+        okx_stream=FakeStream("OKX", symbols),
+        database_url="postgres://test",
+        bybit_client=client,
+        okx_client=FakeWarmupClient(set(symbols)),
+        initial_cash=1000.0,
+        fee_rate=0.001,
+        scan_batch_size=2,
+        connect_factory=lambda _url: FakeConnection(database),
+    )
+    try:
+        bybit = runner.labs["BYBIT"]
+        bybit._seed_history()
+        assert client.fetch_tickers_calls == 1
+        assert bybit.universe_ready is True
+        assert bybit.symbols == ("BTCUSDT", "ETHUSDT", "LINKUSDT")
+        assert bybit.unsupported_symbols == ("SOLUSDT",)
+        assert len(client.fetch_kline_calls) == 3 * 4
+        assert bybit.snapshot()["supported_symbol_count"] == 3
+        assert bybit.snapshot()["unsupported_symbols"] == ["SOLUSDT"]
+    finally:
+        runner.close()
+
+
+def test_hosted_lab_preflight_requires_btc_spot_market():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    database = FakeDatabase()
+    client = FakeWarmupClient({"ETHUSDT", "SOLUSDT"})
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=FakeStream("BINANCE", symbols),
+        bybit_stream=FakeStream("BYBIT", symbols),
+        okx_stream=FakeStream("OKX", symbols),
+        database_url="postgres://test",
+        bybit_client=client,
+        okx_client=FakeWarmupClient(set(symbols)),
+        connect_factory=lambda _url: FakeConnection(database),
+    )
+    try:
+        bybit = runner.labs["BYBIT"]
+        bybit._seed_history()
+        assert bybit.universe_ready is False
+        assert bybit.warmup_error == "BTCUSDT_OR_SPOT_UNIVERSE_UNAVAILABLE"
+        assert bybit.snapshot()["warmup_expected_series"] == 0
+        bybit.process_cycle()
+        assert bybit.entry_blocked["VENUE_SPOT_UNIVERSE_NOT_READY"] == 1
+    finally:
+        runner.close()
