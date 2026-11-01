@@ -287,7 +287,7 @@ class _VenueLab:
         # A duplicate append returns False without last_error and is treated
         # as already persisted by _persist_new_outcomes().
         self._reported_closed_ids: set[str] = set()
-        # A new empty state is durably initialized before this lab is exposed.
+        # In Paper mode, initialize the durable account state before exposing the lab.
         if not restored:
             self._save_state(force=True)
         logger.info(
@@ -1094,6 +1094,8 @@ class _VenueLab:
         return self._save_state(force=True)
 
     def _save_state(self, *, force: bool = False) -> bool:
+        if self.monitor_only:
+            return True
         self._compact_order_history()
         now = time.time()
         if not force and now - self._last_state_save_at < 60.0:
@@ -1347,14 +1349,14 @@ class HostedPaperLabRunner:
         try:
             if "BINANCE" in self.enabled_venues:
                 self.labs["BINANCE"] = _VenueLab(
-                venue="BINANCE",
-                stream=binance_stream,
-                symbols=symbols,
-                database_url=database_url,
-                owns_stream=False,
-                initial_cash=initial_cash,
-                fee_rate=fee_rate,
-                scan_batch_size=scan_batch_size,
+                    venue="BINANCE",
+                    stream=binance_stream,
+                    symbols=symbols,
+                    database_url=database_url,
+                    owns_stream=False,
+                    initial_cash=initial_cash,
+                    fee_rate=fee_rate,
+                    scan_batch_size=scan_batch_size,
                     monitor_only=self.monitor_only,
                     state_connect_factory=connect_factory,
                     outcome_connect_factory=connect_factory,
@@ -1362,12 +1364,12 @@ class HostedPaperLabRunner:
                 self._sample_startup_memory("BINANCE")
             if "BYBIT" in self.enabled_venues:
                 self.labs["BYBIT"] = _VenueLab(
-                venue="BYBIT",
-                stream=bybit_stream,
-                symbols=symbols,
-                database_url=database_url,
-                initial_cash=initial_cash,
-                fee_rate=fee_rate,
+                    venue="BYBIT",
+                    stream=bybit_stream,
+                    symbols=symbols,
+                    database_url=database_url,
+                    initial_cash=initial_cash,
+                    fee_rate=fee_rate,
                     warmup_client=bybit_client,
                     scan_batch_size=scan_batch_size,
                     monitor_only=self.monitor_only,
@@ -1377,12 +1379,12 @@ class HostedPaperLabRunner:
                 self._sample_startup_memory("BYBIT")
             if "OKX" in self.enabled_venues:
                 self.labs["OKX"] = _VenueLab(
-                venue="OKX",
-                stream=okx_stream,
-                symbols=symbols,
-                database_url=database_url,
-                initial_cash=initial_cash,
-                fee_rate=fee_rate,
+                    venue="OKX",
+                    stream=okx_stream,
+                    symbols=symbols,
+                    database_url=database_url,
+                    initial_cash=initial_cash,
+                    fee_rate=fee_rate,
                     warmup_client=okx_client,
                     scan_batch_size=scan_batch_size,
                     monitor_only=self.monitor_only,
@@ -1419,7 +1421,7 @@ class HostedPaperLabRunner:
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
         logger.warning(
-            "[HOSTED-PAPER-LABS] started in MAIN process venues=BINANCE,BYBIT,OKX "
+            "[HOSTED-PAPER-LABS] started in MAIN process "
             "mode=%s venues=%s batch_per_venue=%d",
             "MONITOR_ONLY" if self.monitor_only else "PAPER_ONLY",
             ",".join(self.enabled_venues),
