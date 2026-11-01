@@ -38,6 +38,7 @@ from dual_mode_strategy import score_symbol
 from engine.entry_v2_adapter import EntryV2MarketFacts
 from engine.entry_v2_capture import capture_entry_v2
 from engine.entry_target_rr import calculate_target_rr
+from trade_manager.models import PositionStatus
 from trade_manager.repository import PositionRepository
 from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 from trade_manager.shadow_integration import ShadowTradeManagerRuntime
@@ -780,12 +781,87 @@ class _VenueLab:
                 ema100=float(score.get("ema100") or 0.0),
             )
         if active_positions and all_position_prices_fresh:
-            result = self.runtime.run_exit_watchdog()
+            changed_by_overlay = False
+            btc_ready, btc_crashing, _btc_drop = self._btc_crash_state(now)
+
+            # Mirror MAIN's profit-protection overlay before the Part-8
+            # watchdog. Each decision uses this lab's own venue mark price.
+            for position in list(self.repository.get_open_positions()):
+                current = float(position.current_price)
+                if current <= 0.0 or position.entry_price <= 0.0:
+                    continue
+                protection = profit_protection_snapshot(
+                    entry_price=position.entry_price,
+                    current_price=current,
+                    highest_price=position.highest_price,
+                    max_profit_percent=position.max_profit_percent,
+                )
+                if protection.get("triggered"):
+                    detail = {
+                        "position_id": str(position.position_id),
+                        "symbol": str(position.symbol).upper(),
+                        "trade_mode": str(
+                            position.entry_metadata.get("trade_mode", "UNKNOWN")
+                        ).upper(),
+                        **protection,
+                    }
+                    position.metadata["paper_profit_protection_detail"] = detail
+                    decision = PositionExitDecision(
+                        True,
+                        PositionExitReason.TRAILING_STOP,
+                        current,
+                        "Paper Protection: calibrated profitable retracement before TP",
+                    )
+                    result = self.runtime.facade.execute_decision(
+                        position.position_id, decision
+                    )
+                    if result is not None and result.status is PositionStatus.CLOSED:
+                        result.exit_metadata["paper_profit_protection"] = True
+                        result.exit_metadata["paper_profit_protection_detail"] = detail
+                        self.repository.update(result)
+                        changed_by_overlay = True
+                    continue
+
+                # MAIN's BTC recovery overlay is restricted to BTCUSDT and is
+                # evaluated only with this venue's own fresh BTC signal/price.
+                if str(position.symbol).upper() != "BTCUSDT" or not btc_ready:
+                    continue
+                score = self.latest_scores.get("BTCUSDT", {})
+                pnl_percent = (
+                    (current - position.entry_price) / position.entry_price * 100.0
+                )
+                eligible = btc_recovery_eligible(
+                    score,
+                    btc_crashing=btc_crashing,
+                    pnl_percent=pnl_percent,
+                    max_drawdown_percent=BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
+                )
+                if not eligible or current > position.stop_loss:
+                    continue
+                emergency_stop = btc_recovery_stop(position.entry_price)
+                position.metadata["initial_stop_loss"] = float(
+                    position.metadata.get("initial_stop_loss", position.stop_loss)
+                )
+                position.stop_loss = emergency_stop
+                position.status = PositionStatus.HOLD
+                position.entered_hold_at = position.entered_hold_at or time.time()
+                position.hold_reason = "BTC_RECOVERY_OVERLAY"
+                position.metadata["paper_risk_overlay"] = "BTC_RECOVERY"
+                position.metadata["btc_recovery_emergency_stop"] = emergency_stop
+                self.repository.update(position)
+                changed_by_overlay = True
+
+            result = (
+                self.runtime.run_exit_watchdog()
+                if self.repository.get_open_positions()
+                else None
+            )
             if (
-                int(getattr(result, "closed", 0) or 0) > 0
+                changed_by_overlay
+                or int(getattr(result, "closed", 0) or 0) > 0
                 or int(getattr(result, "exit_signals", 0) or 0) > 0
             ):
-                # Persist close, partial-close and hold/review state transitions
+                # Persist close, profit protection and recovery transitions
                 # immediately; a restart must not restore an older lifecycle.
                 self._save_state(force=True)
         elif active_positions:
