@@ -8,6 +8,7 @@ It never shares or mutates MAIN's portfolio, strategy runtime or entry function.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import logging
 import os
 import threading
@@ -201,6 +202,31 @@ class _VenueLab:
             execution_adapter=self.adapter,
             position_repository=self.repository,
         )
+        # The MAIN runtime installs this lane-aware account view so Part-6
+        # enforces the separate 15-SCALP / 10-SWING ceilings correctly.
+        # Mirror that composition independently for each venue portfolio.
+        original_portfolio_snapshot = self.runtime.portfolio_provider.snapshot
+
+        def lane_aware_portfolio_snapshot():
+            snapshot = original_portfolio_snapshot()
+            active = self.repository.get_open_positions()
+            scalp_count = sum(
+                1
+                for position in active
+                if str(position.entry_metadata.get("trade_mode", "SWING")).upper() == "SCALP"
+            )
+            swing_count = sum(
+                1
+                for position in active
+                if str(position.entry_metadata.get("trade_mode", "SWING")).upper() == "SWING"
+            )
+            return replace(
+                snapshot,
+                scalp_open_positions=scalp_count,
+                swing_open_positions=swing_count,
+            )
+
+        self.runtime.portfolio_provider.snapshot = lane_aware_portfolio_snapshot
         self.brain = GuardedBrainAuthority()
         original_execute_decision = self.runtime.facade.execute_decision
         self.runtime.facade.execute_decision = (
