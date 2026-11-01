@@ -1349,6 +1349,8 @@ class HostedPaperLabRunner:
         self._cpu_cool_cycles = 0
         self._cpu_guard_paused = False
         self._cpu_scan_throttled = False
+        self.started_venues: list[str] | None = None
+        self._monitor_streams_stopped = False
         self.labs: dict[str, _VenueLab] = {}
         try:
             if "BINANCE" in self.enabled_venues:
@@ -1415,17 +1417,33 @@ class HostedPaperLabRunner:
                 f"{self._max_memory_mb:.1f} MB"
             )
 
+    def _apply_resource_shutdown(self) -> None:
+        """Stop cold-start REST; stop monitor feeds when no positions need management."""
+        for lab in self.labs.values():
+            lab.cancel_warmup()
+            if self.monitor_only and lab.stream is not None and lab.owns_stream:
+                try:
+                    lab.stream.stop()
+                except Exception:
+                    logger.exception(
+                        "[HOSTED-PAPER-LABS] monitor feed shutdown failed venue=%s",
+                        lab.venue,
+                    )
+        if self.monitor_only:
+            self._monitor_streams_stopped = True
+
     def start(self) -> None:
         if not self.enabled:
             return
+        self.started_venues = []
         for venue in self.enabled_venues:
             self.labs[venue].start()
+            self.started_venues.append(venue)
             self._sample_startup_memory(f"{venue}_WEBSOCKET_START")
             if self._last_memory_guard():
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
-                    lab.cancel_warmup()
-                    lab.cancel_warmup()
+                self._apply_resource_shutdown()
                 self.start_error = (
                     f"startup memory guard after {venue}: "
                     f"{self._max_memory_mb:.1f} MB; later venues were not started"
@@ -1450,7 +1468,8 @@ class HostedPaperLabRunner:
             # MAIN loop and four symbols per venue, the full 22-symbol universe
             # is revisited about every three minutes per venue.
             scan_enabled = not self._cpu_guard_paused and not self._last_memory_guard()
-            for venue in self.enabled_venues:
+            cycle_venues = self.started_venues if self.started_venues is not None else list(self.enabled_venues)
+            for venue in cycle_venues:
                 lab = self.labs[venue]
                 try:
                     lab.process_cycle(scan_new_entries=scan_enabled)
@@ -1492,12 +1511,12 @@ class HostedPaperLabRunner:
                 self._cpu_guard_paused = True
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
-                    lab.cancel_warmup()
+                self._apply_resource_shutdown()
                 logger.error(
                     "[HOSTED-PAPER-LABS] CPU guard paused new lab entries load=%.1f%%",
                     self._cpu_load_percent,
                 )
-            if self._cpu_cool_cycles >= 8 and not self._last_memory_guard():
+            if self._cpu_cool_cycles >= 8 and not self._last_memory_guard() and not self._monitor_streams_stopped:
                 if self._cpu_scan_throttled:
                     for lab in self.labs.values():
                         lab.scan_batch_size = lab.configured_scan_batch_size
@@ -1519,6 +1538,7 @@ class HostedPaperLabRunner:
             if self._last_memory_guard():
                 for lab in self.labs.values():
                     lab.pause_new_entries = True
+                self._apply_resource_shutdown()
 
     def _last_memory_guard(self) -> bool:
         return self._max_memory_mb >= 400.0
@@ -1547,7 +1567,9 @@ class HostedPaperLabRunner:
             "mode": "MONITOR_ONLY" if self.monitor_only else "PAPER_ONLY",
             "monitor_only": self.monitor_only,
             "enabled_venues": list(self.enabled_venues),
-            "entry_scan_venues": list(self.enabled_venues) if self._cycles else [],
+            "started_venues": list(self.started_venues) if self.started_venues is not None else None,
+            "monitor_streams_stopped_by_guard": self._monitor_streams_stopped,
+            "entry_scan_venues": list(cycle_venues) if self._cycles else [],
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
