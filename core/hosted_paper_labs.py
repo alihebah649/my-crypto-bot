@@ -428,12 +428,16 @@ class _VenueLab:
     def _update_positions(self, now: float) -> None:
         # Positions are marked only with this venue's own ticker. No Binance
         # price is ever passed into a Bybit/OKX Trade Manager runtime.
-        for position in list(self.repository.get_open_positions()):
+        active_positions = list(self.repository.get_open_positions())
+        all_position_prices_fresh = True
+        for position in active_positions:
             ticker = self.stream.get_latest_ticker(position.symbol)
             if not isinstance(ticker, Mapping) or not self._ticker_is_fresh(ticker, now):
+                all_position_prices_fresh = False
                 continue
             price = float(ticker.get("lastPrice") or 0.0)
             if price <= 0.0:
+                all_position_prices_fresh = False
                 continue
             score = self.latest_scores.get(position.symbol, {})
             self.runtime.update_market(
@@ -446,12 +450,17 @@ class _VenueLab:
                 volume_usdt=float(ticker.get("quoteVolume") or 0.0),
                 ema100=float(score.get("ema100") or 0.0),
             )
-        if self.repository.get_open_positions():
+        if active_positions and all_position_prices_fresh:
             result = self.runtime.run_exit_watchdog()
             if int(getattr(result, "closed", 0) or 0) > 0:
                 # Persist closed lifecycle and balance immediately so restart
                 # cannot resurrect a position that the watchdog has closed.
                 self._save_state(force=True)
+        elif active_positions:
+            # Never execute an exit decision using a stale mark from a prior
+            # venue event. Keep the position open until all of this lab's
+            # active symbols have fresh prices again.
+            self._record_block("EXIT_WATCHDOG_VENUE_PRICE_STALE")
 
     def _persist_new_outcomes(self) -> None:
         for position in self.repository.get_closed_positions():
