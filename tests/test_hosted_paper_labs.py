@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from core.hosted_paper_labs import HostedPaperLabRunner
+from trade_manager.models import Position, PositionSide, PositionStatus
+from trade_manager.risk_manager import PositionExitDecision, PositionExitReason
 
 
 class FakeResult:
@@ -781,5 +783,99 @@ def test_hosted_profit_protection_closes_position_before_exit_watchdog():
         assert closed.status.name == "CLOSED"
         assert closed.exit_metadata["paper_profit_protection"] is True
         assert closed.exit_metadata["paper_profit_protection_detail"]["triggered"] is True
+    finally:
+        runner.close()
+
+
+
+def test_hosted_lab_allows_opposite_lane_but_blocks_same_lane_position():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["BYBIT"]
+    try:
+        swing = Position(
+            position_id="bybit-swing-position",
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            status=PositionStatus.OPEN,
+            quantity=0.1,
+            entry_price=100.0,
+            current_price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_metadata={"trade_mode": "SWING"},
+            metadata={"trade_mode": "SWING"},
+        )
+        lab.repository.add(swing)
+
+        assert lab._active_trade_modes("ETHUSDT") == {"SWING"}
+        assert lab._has_active_lane_position("ETHUSDT", "SWING") is True
+        assert lab._has_active_lane_position("ETHUSDT", "SCALP") is False
+
+        scalp = Position(
+            position_id="bybit-scalp-position",
+            symbol="ETHUSDT",
+            side=PositionSide.LONG,
+            status=PositionStatus.OPEN,
+            quantity=0.1,
+            entry_price=100.0,
+            current_price=100.0,
+            stop_loss=98.0,
+            take_profit=104.0,
+            entry_metadata={"trade_mode": "SCALP"},
+            metadata={"trade_mode": "SCALP"},
+        )
+        lab.repository.add(scalp)
+
+        assert lab._active_trade_modes("ETHUSDT") == {"SWING", "SCALP"}
+        assert lab._has_active_lane_position("ETHUSDT", "SWING") is True
+        assert lab._has_active_lane_position("ETHUSDT", "SCALP") is True
+    finally:
+        runner.close()
+
+
+def test_hosted_lab_stop_fill_wrapper_records_stop_price_and_observed_price():
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["OKX"]
+    try:
+        position = Position(
+            position_id="okx-stop-fill-position",
+            symbol="BTCUSDT",
+            side=PositionSide.LONG,
+            status=PositionStatus.OPEN,
+            quantity=0.1,
+            entry_price=100.0,
+            current_price=94.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_metadata={"trade_mode": "SCALP"},
+            metadata={"trade_mode": "SCALP"},
+        )
+        lab.repository.add(position)
+
+        def fake_execute(position_id, decision):
+            closed = lab.repository.get(position_id)
+            closed.status = PositionStatus.CLOSED
+            closed.closed_at = time.time()
+            closed.exit_metadata["reason"] = decision.reason.name
+            lab.repository.update(closed)
+            return closed
+
+        decision = PositionExitDecision(
+            True,
+            PositionExitReason.STOP_LOSS,
+            94.0,
+            "test stop",
+        )
+        result = lab._execute_decision_with_stop_fill(
+            fake_execute,
+            position.position_id,
+            decision,
+        )
+
+        assert result.status is PositionStatus.CLOSED
+        assert result.exit_metadata["paper_stop_fill"] is True
+        assert result.exit_metadata["paper_stop_price"] == pytest.approx(95.0)
+        assert result.exit_metadata["paper_observed_price_at_trigger"] == pytest.approx(94.0)
+        assert result.exit_metadata["paper_stop_reason"] == "STOP_LOSS"
     finally:
         runner.close()
