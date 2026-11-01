@@ -101,6 +101,44 @@ class PositionRepository:
         with self._lock:
             return list(self._positions.values())
 
+    def prune_terminal_positions(
+        self,
+        *,
+        older_than_epoch: float,
+        persisted_closed_ids: Optional[set[str]] = None,
+    ) -> List[str]:
+        """Remove only old terminal records whose outcomes are safely retained.
+
+        Active positions are never pruned. Old CLOSED positions are removed
+        only after their append-only outcome is known to exist in durable
+        evidence. CANCELLED/FAILED records have no realized trade outcome and
+        can be removed after the retention window.
+        """
+        cutoff = float(older_than_epoch)
+        persisted = {str(value) for value in (persisted_closed_ids or set())}
+        removable_terminal = {PositionStatus.CANCELLED, PositionStatus.FAILED}
+        removed: List[str] = []
+        with self._lock:
+            for position_id, position in list(self._positions.items()):
+                try:
+                    terminal_at = float(position.closed_at or position.opened_at)
+                except (TypeError, ValueError):
+                    continue
+                if terminal_at >= cutoff:
+                    continue
+                if position.status in removable_terminal:
+                    removed.append(position_id)
+                elif (
+                    position.status is PositionStatus.CLOSED
+                    and position_id in persisted
+                ):
+                    removed.append(position_id)
+            for position_id in removed:
+                self._positions.pop(position_id, None)
+            if removed:
+                self._persist_locked()
+        return removed
+
     def clear(self) -> None:
         with self._lock:
             self._positions.clear()
