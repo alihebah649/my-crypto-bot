@@ -119,6 +119,7 @@ class _VenueLab:
         self.entry_candidates = 0
         self.entry_allowed = 0
         self.entry_blocked: dict[str, int] = {}
+        self.pause_new_entries = False
         self.last_cycle_at: float | None = None
         self.last_cycle_seconds = 0.0
         self.last_error: str | None = None
@@ -281,6 +282,38 @@ class _VenueLab:
             self._record_block("INVALID_STOP")
             return
 
+        btc_rows = frames.get("1h") or []
+        btc_closed = btc_rows[:-1] if len(btc_rows) > 1 else btc_rows
+        if str(symbol).upper() != "BTCUSDT" and len(btc_closed) >= 3:
+            recent_high = max(float(row.get("close") or 0.0) for row in btc_closed[-3:])
+            btc_current = float(btc_closed[-1].get("close") or 0.0)
+            btc_crashing = bool(
+                recent_high > 0.0
+                and (btc_current - recent_high) / recent_high <= -0.03
+            )
+            if btc_crashing:
+                self._record_block("BTC_CRASH_GUARD")
+                return
+
+        # Risk sizing consumes this venue's own price/ATR snapshot. The
+        # runtime is never allowed to size an entry from another exchange.
+        self.runtime.update_market(
+            symbol,
+            price=price,
+            bid=float(ticker.get("bidPrice") or price),
+            ask=float(ticker.get("askPrice") or price),
+            spread_percent=_spread_percent(ticker),
+            atr=atr,
+            volume_usdt=float(ticker.get("quoteVolume") or 0.0),
+            ema100=float(score.get("ema100") or 0.0),
+        )
+
+        candidate = dict(score)
+        candidate["trade_mode"] = mode
+        candidate["signal"] = "BUY"
+        candidate["score"] = (
+            score.get("scalp_score") if mode == "SCALP" else score.get("swing_score")
+        )
         target_rr = calculate_target_rr(
             trade_mode=mode,
             entry_price=price,
@@ -290,7 +323,7 @@ class _VenueLab:
         stop_distance = (price - stop_loss) / price * 100.0
         spread = _spread_percent(ticker)
         facts = EntryV2MarketFacts(
-            legacy_result=score,
+            legacy_result=candidate,
             candles_5m=frames["5m"],
             candles_15m=frames["15m"],
             candles_1h=frames["1h"],
@@ -320,7 +353,7 @@ class _VenueLab:
 
         brain_record = self.brain.evaluate_entry(
             symbol,
-            score,
+            candidate,
             trade_mode=mode,
             market_regime=market_regime,
             existing_position=False,
@@ -493,6 +526,9 @@ class _VenueLab:
                         if self.persistence_error:
                             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
                             continue
+                        if self.pause_new_entries:
+                            self._record_block("HOSTED_LAB_RESOURCE_GUARD")
+                            continue
                         if not self._ticker_is_fresh(ticker, current):
                             self._record_block("STALE_OR_MISSING_TICKER")
                             continue
@@ -521,6 +557,7 @@ class _VenueLab:
             "scored_symbols_total": self.scored_symbols,
             "entry_candidates": self.entry_candidates,
             "entry_allowed": self.entry_allowed,
+            "new_entries_paused": self.pause_new_entries,
             "entry_blocked": dict(self.entry_blocked),
             "open_positions": len(self.repository.get_open_positions()),
             "closed_positions": len(self.repository.get_closed_positions()),
@@ -556,6 +593,8 @@ class HostedPaperLabRunner:
     ) -> None:
         if not database_url:
             raise ValueError("PAPER_EVIDENCE_DATABASE_URL is required for hosted Paper labs")
+        if binance_stream is None or bybit_stream is None or okx_stream is None:
+            raise ValueError("all three venue WebSocket streams are required")
         self.enabled = True
         self.start_error: str | None = None
         self._lock = threading.RLock()
@@ -635,7 +674,7 @@ class HostedPaperLabRunner:
             self._max_memory_mb = max(self._max_memory_mb, self._memory_mb())
             # The memory circuit stops new lab entries, but keeps WebSockets
             # alive so existing Paper positions can still be managed safely.
-            if self._max_memory_mb >= 430.0 and self._last_warning is None:
+            if self._max_memory_mb >= 400.0 and self._last_warning is None:
                 self._last_warning = "MEMORY_GUARD_NEW_ENTRIES_PAUSED"
                 logger.error(
                     "[HOSTED-PAPER-LABS] resource guard activated rss_mb=%.1f; "
@@ -644,10 +683,10 @@ class HostedPaperLabRunner:
                 )
             if self._last_memory_guard():
                 for lab in self.labs.values():
-                    lab._record_block("HOSTED_LAB_MEMORY_GUARD")
+                    lab.pause_new_entries = True
 
     def _last_memory_guard(self) -> bool:
-        return self._max_memory_mb >= 430.0
+        return self._max_memory_mb >= 400.0
 
     @staticmethod
     def _memory_mb() -> float:
