@@ -836,8 +836,6 @@ class HostedPaperLabRunner:
         self._cpu_cool_cycles = 0
         self._cpu_guard_paused = False
         self._cpu_scan_throttled = False
-        self._scan_order = list(_SUPPORTED_VENUES)
-        self._scan_cursor = 0
         self.labs: dict[str, _VenueLab] = {}
         try:
             self.labs["BINANCE"] = _VenueLab(
@@ -918,15 +916,14 @@ class HostedPaperLabRunner:
             return
         started = time.monotonic()
         with self._lock:
-            # Manage open positions for every venue every MAIN cycle, but
-            # only rescore a rotating venue each cycle. This cuts repeated
-            # shadow CPU work while preserving timely exit-watchdog coverage.
-            scan_venue = self._scan_order[self._scan_cursor % len(self._scan_order)]
-            self._scan_cursor = (self._scan_cursor + 1) % len(self._scan_order)
+            # Manage open positions and rescore a small rotating symbol
+            # batch on every venue each MAIN cycle. With the normal 30-second
+            # MAIN loop and four symbols per venue, the full 22-symbol universe
+            # is revisited about every three minutes per venue.
             for venue in _SUPPORTED_VENUES:
                 lab = self.labs[venue]
                 try:
-                    lab.process_cycle(scan_new_entries=(venue == scan_venue))
+                    lab.process_cycle(scan_new_entries=True)
                 except Exception as exc:
                     lab.last_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("[HOSTED-PAPER-LAB] cycle failed venue=%s", venue)
@@ -1016,10 +1013,7 @@ class HostedPaperLabRunner:
             "estimated_free_cpu_load_percent": self._cpu_load_percent,
             "cpu_scan_throttled": self._cpu_scan_throttled,
             "cpu_guard_paused": self._cpu_guard_paused,
-            "last_entry_scan_venue": (
-                self._scan_order[(self._scan_cursor - 1) % len(self._scan_order)]
-                if self._cycles else None
-            ),
+            "entry_scan_venues": list(_SUPPORTED_VENUES) if self._cycles else [],
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
