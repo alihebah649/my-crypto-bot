@@ -265,28 +265,37 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     lane = str(mode or "NONE").upper()
     lane_score = dict(score or {})
     lane_score["trade_mode"] = lane
+    source_mode = str(score.get("trade_mode", "")).upper()
     if lane == "SCALP":
         scalp_signal = score.get("scalp_signal")
-        if scalp_signal is None and str(score.get("trade_mode", "")).upper() == "SCALP":
+        if scalp_signal is None and source_mode == "SCALP":
             scalp_signal = score.get("signal")
         lane_score["signal"] = str(scalp_signal or "HOLD").upper()
         scalp_score = score.get("scalp_score")
-        if scalp_score is None and str(score.get("trade_mode", "")).upper() == "SCALP":
+        if scalp_score is None and source_mode == "SCALP":
             scalp_score = score.get("score")
         if scalp_score is not None:
             lane_score["score"] = scalp_score
             lane_score["scalp_score"] = scalp_score
+        elif source_mode != "SCALP":
+            # The top-level score belongs to the strategy-selected lane. Never
+            # reuse it as a missing SCALP score when evaluating the other lane.
+            lane_score.pop("score", None)
     elif lane == "SWING":
         swing_signal = score.get("swing_signal")
-        if swing_signal is None and str(score.get("trade_mode", "")).upper() == "SWING":
+        if swing_signal is None and source_mode == "SWING":
             swing_signal = score.get("signal")
         lane_score["signal"] = str(swing_signal or "HOLD").upper()
         swing_score = score.get("swing_score")
-        if swing_score is None and str(score.get("trade_mode", "")).upper() == "SWING":
+        if swing_score is None and source_mode == "SWING":
             swing_score = score.get("score")
         if swing_score is not None:
             lane_score["score"] = swing_score
             lane_score["swing_score"] = swing_score
+        elif source_mode != "SWING":
+            # The top-level score belongs to the strategy-selected lane. Never
+            # reuse it as a missing SWING score when evaluating the other lane.
+            lane_score.pop("score", None)
 
     # The live dual-lane strategy supplies lane scores and reversal/recovery
     # fields. Older integration tests/callers may only supply a top-level
