@@ -202,6 +202,12 @@ class _VenueLab:
             position_repository=self.repository,
         )
         self.brain = GuardedBrainAuthority()
+        original_execute_decision = self.runtime.facade.execute_decision
+        self.runtime.facade.execute_decision = (
+            lambda position_id, decision: self._execute_decision_with_stop_fill(
+                original_execute_decision, position_id, decision
+            )
+        )
         # Exit-watchdog regime observations must use this venue's own scored
         # breadth; they must never read MAIN's Binance market snapshot.
         self.runtime.exit_watchdog.brain_market_regime_provider = (
@@ -414,6 +420,55 @@ class _VenueLab:
         drop_percent = (current - recent_high) / recent_high * 100.0
         return True, drop_percent <= -3.0, drop_percent
 
+    def _active_trade_modes(self, symbol: str) -> set[str]:
+        active_statuses = {
+            PositionStatus.OPEN,
+            PositionStatus.HOLD,
+            PositionStatus.REVIEW_REQUIRED,
+            PositionStatus.PARTIALLY_CLOSED,
+        }
+        return {
+            str(
+                position.entry_metadata.get(
+                    "trade_mode",
+                    position.metadata.get("trade_mode", "SWING"),
+                )
+            ).upper()
+            for position in self.repository.get_by_symbol(symbol)
+            if position.status in active_statuses
+        }
+
+    def _has_active_lane_position(self, symbol: str, mode: str) -> bool:
+        """Mirror MAIN's one-position-per-lane rule."""
+        return str(mode or "").upper() in self._active_trade_modes(symbol)
+
+    def _execute_decision_with_stop_fill(
+        self,
+        original_execute,
+        position_id: str,
+        decision: PositionExitDecision,
+    ):
+        """Preserve MAIN's stop/break-even Paper fill attribution per venue."""
+        protected_reasons = {
+            PositionExitReason.STOP_LOSS,
+            PositionExitReason.BREAK_EVEN,
+        }
+        if decision.reason not in protected_reasons:
+            return original_execute(position_id, decision)
+        position = self.repository.get(position_id)
+        if position is None:
+            return original_execute(position_id, decision)
+        observed_price = float(position.current_price)
+        protected_price = float(position.stop_loss)
+        result = original_execute(position_id, decision)
+        if result is not None and result.status is PositionStatus.CLOSED:
+            result.exit_metadata["paper_stop_fill"] = True
+            result.exit_metadata["paper_stop_price"] = protected_price
+            result.exit_metadata["paper_observed_price_at_trigger"] = observed_price
+            result.exit_metadata["paper_stop_reason"] = decision.reason.name
+            self.repository.update(result)
+        return result
+
     def _record_block(self, reason: str) -> None:
         self.entry_blocked[reason] = int(self.entry_blocked.get(reason, 0)) + 1
 
@@ -530,8 +585,8 @@ class _VenueLab:
         if price <= 0.0 or atr <= 0.0:
             self._record_block("INVALID_PRICE_OR_ATR")
             return
-        if self.runtime.controller.has_position(symbol):
-            self._record_block("EXISTING_VENUE_POSITION")
+        if self._has_active_lane_position(symbol, mode):
+            self._record_block(f"EXISTING_VENUE_{mode}_POSITION")
             return
         cooldown_remaining = loss_cooldown_remaining(
             self.repository.get_closed_positions(),
