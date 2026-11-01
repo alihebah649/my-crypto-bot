@@ -212,6 +212,34 @@ def test_monitor_only_can_run_one_venue_without_postgres_or_extra_streams():
         runner.close()
 
 
+def test_monitor_only_memory_guard_stops_hosted_feed_but_never_main_binance():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        database_url=None,
+        enabled_venues=("BYBIT",),
+        monitor_only=True,
+        scan_batch_size=2,
+    )
+    try:
+        runner.start()
+        runner._max_memory_mb = 405.0
+        runner.process_cycle()
+
+        assert runner.snapshot()["memory_guard"] is True
+        assert runner.snapshot()["monitor_streams_stopped_by_guard"] is True
+        assert bybit_stream.started is False
+        assert binance_stream.started is True
+        assert runner.labs["BYBIT"].pause_new_entries is True
+    finally:
+        runner.close()
+
+
 def test_monitor_only_scores_candidates_without_opening_positions_or_writing_evidence(monkeypatch):
     import core.hosted_paper_labs as hosted_module
 
@@ -482,6 +510,10 @@ def test_startup_memory_abort_cancels_background_cold_warmup(monkeypatch):
 
     warmup_thread = runner.labs["BYBIT"]._warmup_thread
     assert warmup_thread is not None
+    assert runner.started_venues == ["BINANCE", "BYBIT"]
+    assert bybit_stream.started is False
+    assert okx_stream.started is False
+    assert runner.snapshot()["monitor_streams_stopped_by_guard"] is True
     runner.close()
 
     assert not warmup_thread.is_alive()
