@@ -55,6 +55,7 @@ from core.market_health_summary import (
     market_data_guard_alert_label,
 )
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
+from core.hosted_paper_labs import create_hosted_paper_lab_runner
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -1248,6 +1249,80 @@ def _process_market_cycle_with_overlays():
 
 _legacy.process_market_cycle = _process_market_cycle_with_overlays
 runtime.open_position = _open_position_with_selected_mode
+
+
+# Optional: host the three isolated Paper comparison labs in the MAIN process.
+# Disabled by default. MAIN remains the only Render service and keeps its
+# existing Binance Relay feed, strategy, portfolio and execution path.
+_hosted_paper_lab_runner = None
+if os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+    if PAPER_VENUE_MODE != "MIXED":
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: MAIN must remain in MIXED mode"
+        )
+    else:
+        try:
+            _hosted_bybit_stream = BybitMarketStream(
+                TRADING_SYMBOLS,
+                intervals=("5m", "15m", "1h", "4h"),
+            )
+            _hosted_okx_stream = OKXMarketStream(
+                TRADING_SYMBOLS,
+                intervals=("5m", "15m", "1h", "4h"),
+                base_url=os.getenv(
+                    "OKX_MARKET_DATA_WS_PUBLIC_URL",
+                    "wss://ws.okx.com/ws/v5/public",
+                ).strip(),
+                business_base_url=os.getenv(
+                    "OKX_MARKET_DATA_WS_BUSINESS_URL",
+                    "wss://ws.okx.com/ws/v5/business",
+                ).strip(),
+            )
+            try:
+                _hosted_scan_batch_size = max(
+                    1, min(8, int(os.getenv("PAPER_HOSTED_LAB_SCAN_BATCH", "4")))
+                )
+            except (TypeError, ValueError):
+                _hosted_scan_batch_size = 4
+
+            _hosted_paper_lab_runner = create_hosted_paper_lab_runner(
+                symbols=list(TRADING_SYMBOLS),
+                binance_stream=_binance_market_stream,
+                bybit_stream=_hosted_bybit_stream,
+                okx_stream=_hosted_okx_stream,
+                database_url=database_url_from_env(),
+                bybit_client=_bybit_client,
+                okx_client=_okx_client,
+                initial_cash=INITIAL_CASH,
+                fee_rate=FEE_RATE,
+                scan_batch_size=_hosted_scan_batch_size,
+            )
+            if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
+                _hosted_paper_lab_runner.start()
+        except Exception:
+            _legacy.logger.exception(
+                "[HOSTED-PAPER-LABS] startup failed; MAIN remains unaffected"
+            )
+            try:
+                if _hosted_paper_lab_runner is not None:
+                    _hosted_paper_lab_runner.close()
+            except Exception:
+                pass
+            _hosted_paper_lab_runner = None
+
+
+@app.get("/paper/hosted-labs")
+def _hosted_paper_labs_health():
+    runner = globals().get("_hosted_paper_lab_runner")
+    if runner is None:
+        return jsonify({
+            "enabled": False,
+            "mode": "PAPER_ONLY",
+            "reason": "HOSTED_PAPER_LABS_DISABLED_OR_NOT_READY",
+        }), 200
+    payload = runner.snapshot()
+    payload["mode"] = "PAPER_ONLY"
+    return jsonify(payload), 200
 
 
 _MARKET_HEALTH_STATE = "UNKNOWN"
