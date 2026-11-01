@@ -272,3 +272,19 @@ def test_hosted_lab_does_not_run_exit_watchdog_with_stale_position_prices(monkey
         assert lab.entry_blocked["EXIT_WATCHDOG_VENUE_PRICE_STALE"] == 1
     finally:
         runner.close()
+
+
+
+def test_startup_memory_guard_disables_labs_before_opening_streams(monkeypatch):
+    database = FakeDatabase()
+    monkeypatch.setattr(
+        HostedPaperLabRunner,
+        "_memory_mb",
+        staticmethod(lambda: 405.0),
+    )
+    runner = _runner(database)
+
+    assert runner.enabled is False
+    assert "startup memory guard" in runner.start_error
+    assert runner.labs == {}
+    assert runner.snapshot()["memory_guard"] is True
