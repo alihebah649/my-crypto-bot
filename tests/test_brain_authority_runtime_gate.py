@@ -46,6 +46,7 @@ def test_missing_brain_context_is_rejected_and_persisted(monkeypatch):
     assert persisted["allowed"] is False
     assert persisted["context"]["context_complete"] is False
     assert persisted["context"]["missing_required_context"] == [
-        "scalp_reversal_or_recovery_confirmation"
+        "lane_score",
+        "scalp_reversal_or_recovery_confirmation",
     ]
     assert persisted["observed_at"] > 0
