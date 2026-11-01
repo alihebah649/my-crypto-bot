@@ -130,6 +130,7 @@ class _VenueLab:
         stream: Any,
         symbols: list[str],
         database_url: str,
+        owns_stream: bool = True,
         initial_cash: float,
         fee_rate: float,
         warmup_client: Any = None,
@@ -139,6 +140,7 @@ class _VenueLab:
     ) -> None:
         self.venue = venue
         self.stream = stream
+        self.owns_stream = bool(owns_stream)
         self.symbols = tuple(str(s).upper() for s in symbols)
         self.scan_batch_size = max(1, int(scan_batch_size))
         self.configured_scan_batch_size = self.scan_batch_size
@@ -211,7 +213,9 @@ class _VenueLab:
         )
 
     def start(self) -> None:
-        if self.stream is not None:
+        # The Binance feed is owned by MAIN and is shared read-only with this
+        # lab. Bybit and OKX streams are owned by their respective lab objects.
+        if self.stream is not None and self.owns_stream:
             self.stream.start()
         self._start_cold_warmup()
 
@@ -768,7 +772,7 @@ class _VenueLab:
         }
 
     def close(self) -> None:
-        if self.stream is not None:
+        if self.stream is not None and self.owns_stream:
             self.stream.stop()
         self.state.close()
         self.outcomes.close()
@@ -820,6 +824,7 @@ class HostedPaperLabRunner:
                 stream=binance_stream,
                 symbols=symbols,
                 database_url=database_url,
+                owns_stream=False,
                 initial_cash=initial_cash,
                 fee_rate=fee_rate,
                 scan_batch_size=scan_batch_size,
