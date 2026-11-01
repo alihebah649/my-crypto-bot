@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -351,3 +352,86 @@ def test_hosted_lane_context_accepts_complete_independent_lanes():
     }
     assert _lane_context_missing(scalp, "SCALP") == []
     assert _lane_context_missing(swing, "SWING") == []
+
+
+
+def test_hosted_lab_persists_entry_v2_candidate_with_all_gate_results():
+    database = FakeDatabase()
+    runner = _runner(database)
+    lab = runner.labs["BYBIT"]
+    try:
+        capture = SimpleNamespace(
+            capture_id="bybit-entry-capture-1",
+            symbol="BTCUSDT",
+            to_dict=lambda: {
+                "schema_version": 2,
+                "capture_id": "bybit-entry-capture-1",
+                "symbol": "BTCUSDT",
+                "entry_scenario": {"structure": {"timeframes": ["5m", "15m"]}},
+                "v2_decision": {"approved": False, "failed_gate": "NO_TARGET_MEETS_RR"},
+            },
+        )
+        brain_record = SimpleNamespace(
+            allowed=False,
+            brain_action="HOLD",
+            brain_reason="BEAR_NO_TARGET_TIGHT_STOP",
+            brain_confidence=96.0,
+        )
+        lab._persist_candidate_capture(
+            capture,
+            score={"scalp_score": 72, "swing_score": 48},
+            mode="SCALP",
+            entry_price=100.0,
+            stop_loss=99.0,
+            economics={"approved": True, "reward_risk": 1.3},
+            decision="REJECTED_BRAIN_AUTHORITY",
+            failed_gate="BEAR_NO_TARGET_TIGHT_STOP",
+            brain_record=brain_record,
+        )
+
+        key = ("ENTRY_V2_CAPTURE_BYBIT_HOSTED_LAB", "bybit-entry-capture-1")
+        record = database.rows[key]
+        assert record["venue"] == "BYBIT"
+        assert record["candidate"]["trade_mode"] == "SCALP"
+        assert record["candidate"]["score"] == 72
+        assert record["entry_economics"]["approved"] is True
+        assert record["brain_authority"]["allowed"] is False
+        assert record["brain_authority"]["reason"] == "BEAR_NO_TARGET_TIGHT_STOP"
+        assert record["final_decision"] == "REJECTED_BRAIN_AUTHORITY"
+        assert record["failed_gate"] == "BEAR_NO_TARGET_TIGHT_STOP"
+    finally:
+        runner.close()
+
+
+def test_hosted_candidate_evidence_failure_never_changes_paper_gate_flow():
+    database = FakeDatabase()
+    runner = _runner(database)
+    lab = runner.labs["OKX"]
+    try:
+        capture = SimpleNamespace(
+            capture_id="okx-entry-capture-2",
+            symbol="ETHUSDT",
+            to_dict=lambda: {
+                "capture_id": "okx-entry-capture-2",
+                "symbol": "ETHUSDT",
+            },
+        )
+
+        def broken_append(_record):
+            raise OSError("evidence storage unavailable")
+
+        lab.entry_captures.append = broken_append
+        # The diagnostic writer is best-effort and cannot raise into the
+        # independently controlled Paper entry / Risk / execution path.
+        lab._persist_candidate_capture(
+            capture,
+            score={"swing_score": 83},
+            mode="SWING",
+            entry_price=2500.0,
+            stop_loss=2450.0,
+            economics={"approved": True},
+            decision="PAPER_POSITION_OPENED",
+            position_id="paper-position-okx-1",
+        )
+    finally:
+        runner.close()
