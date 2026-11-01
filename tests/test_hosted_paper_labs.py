@@ -174,6 +174,100 @@ def _runner(database):
     )
 
 
+def test_monitor_only_can_run_one_venue_without_postgres_or_extra_streams():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        okx_stream=None,
+        database_url=None,
+        enabled_venues=("BYBIT",),
+        monitor_only=True,
+        scan_batch_size=2,
+    )
+    try:
+        assert runner.enabled is True
+        assert runner.enabled_venues == ("BYBIT",)
+        assert set(runner.labs) == {"BYBIT"}
+        lab = runner.labs["BYBIT"]
+        assert lab.monitor_only is True
+        assert lab.state is None
+        assert lab.outcomes.max_records == 10_000
+        assert lab.entry_captures.max_records == 2_000
+
+        runner.start()
+        runner.process_cycle()
+
+        assert bybit_stream.started is True
+        assert binance_stream.started is True
+        assert runner.snapshot()["mode"] == "MONITOR_ONLY"
+        assert runner.snapshot()["enabled_venues"] == ["BYBIT"]
+        assert lab.cycles == 1
+    finally:
+        runner.close()
+
+
+def test_monitor_only_scores_candidates_without_opening_positions_or_writing_evidence(monkeypatch):
+    import core.hosted_paper_labs as hosted_module
+
+    symbols = ["BTCUSDT"]
+    binance_stream = FakeStream("BINANCE", symbols)
+    binance_stream.start()
+    bybit_stream = FakeStream("BYBIT", symbols)
+    runner = HostedPaperLabRunner(
+        symbols=symbols,
+        binance_stream=binance_stream,
+        bybit_stream=bybit_stream,
+        database_url=None,
+        enabled_venues=("BYBIT",),
+        monitor_only=True,
+        scan_batch_size=1,
+    )
+    lab = runner.labs["BYBIT"]
+    try:
+        lab.symbols = ("BTCUSDT",)
+        lab.universe_ready = True
+        frames = {"5m": [{}], "15m": [{}], "1h": [{}], "4h": [{}]}
+        monkeypatch.setattr(lab, "_frames", lambda _symbol: frames)
+        monkeypatch.setattr(lab, "_frames_are_ready", lambda _frames, _now: True)
+        monkeypatch.setattr(
+            hosted_module,
+            "score_symbol",
+            lambda *_args: {
+                "trade_mode": "SWING",
+                "signal": "BUY",
+                "score": 91,
+                "swing_score": 91,
+                "swing_signal": "BUY",
+                "scalp_score": 20,
+                "scalp_signal": "HOLD",
+            },
+        )
+
+        def forbidden_entry(*_args, **_kwargs):
+            pytest.fail("monitor-only must never invoke the Paper entry path")
+
+        monkeypatch.setattr(lab, "_try_entry", forbidden_entry)
+        cash_before = lab.adapter.balance.cash
+        lab.process_cycle()
+
+        assert lab.scored_symbols == 1
+        assert lab.monitor_candidates == 1
+        assert lab.entry_blocked["MONITOR_ONLY_ENTRIES_DISABLED"] == 1
+        assert lab.repository.get_all() == []
+        assert lab.adapter.balance.cash == pytest.approx(cash_before)
+        assert lab.state is None
+        assert lab.persistence_error is None
+        assert lab.outcome_persistence_error is None
+    finally:
+        runner.close()
+
+
 def test_hosted_runner_creates_three_isolated_paper_accounts_and_state_namespaces():
     database = FakeDatabase()
     runner = _runner(database)
