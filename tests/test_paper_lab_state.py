@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -168,3 +169,50 @@ def test_lab_state_does_not_silently_reset_on_database_read_failure():
     # clean bankroll when its persisted state cannot be read.
     assert adapter.balance.cash == pytest.approx(1000.0)
     assert repository.get_open_positions() == []
+
+
+
+def test_paper_lab_snapshot_keeps_active_and_recent_closed_risk_ledger_positions():
+    db = FakeDatabase()
+
+    def connect(_url):
+        return FakeConnection(db)
+
+    state = PostgresPaperLabState(
+        "postgres://test", venue="OKX", connect_factory=connect
+    )
+    adapter = PaperExecutionAdapter(initial_cash=1000.0, fee_rate=0.001)
+    repository = PositionRepository()
+
+    old_closed = _position("old-closed", "BTCUSDT", 50_000.0)
+    old_closed.status = PositionStatus.CLOSED
+    old_closed.closed_at = time.time() - 50.0 * 24.0 * 60.0 * 60.0
+    old_closed.realized_pnl = -0.5
+
+    recent_closed = _position("recent-closed", "ETHUSDT", 2_500.0)
+    recent_closed.status = PositionStatus.CLOSED
+    recent_closed.closed_at = time.time() - 3.0 * 24.0 * 60.0 * 60.0
+    recent_closed.realized_pnl = -0.25
+
+    active = _position("active-position", "SOLUSDT", 100.0)
+    repository.add(old_closed)
+    repository.add(recent_closed)
+    repository.add(active)
+
+    assert state.save(adapter, repository) is True
+    snapshot = next(
+        payload
+        for (kind, _identity), payload in db.rows.items()
+        if kind == "PAPER_LAB_STATE_OKX"
+    )
+    saved_ids = {
+        item["position_id"]
+        for item in snapshot["positions"]["positions"]
+    }
+    assert saved_ids == {"recent-closed", "active-position"}
+
+    restored = PositionRepository()
+    restored.restore_snapshot(snapshot["positions"])
+    assert restored.get("old-closed") is None
+    assert restored.get("recent-closed").status is PositionStatus.CLOSED
+    assert restored.get("active-position").status is PositionStatus.OPEN
