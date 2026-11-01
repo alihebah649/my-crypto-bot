@@ -50,6 +50,8 @@ _INTERVALS = ("5m", "15m", "1h", "4h")
 _HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
 _REQUIRED_HISTORY = {"5m": 20, "15m": 100, "1h": 30, "4h": 30}
 _SUPPORTED_VENUES = ("BINANCE", "BYBIT", "OKX")
+_CPU_GUARD_BUDGET_CORES = 0.10
+_RENDER_FREE_CPU_LIMIT_CORES = 0.15
 
 
 class _DisabledEvidenceStore:
@@ -1345,6 +1347,7 @@ class HostedPaperLabRunner:
         self._cpu_time_last = time.process_time()
         self._wall_time_last = time.monotonic()
         self._cpu_load_percent = 0.0
+        self._cpu_usage_cores = 0.0
         self._cpu_hot_cycles = 0
         self._cpu_cool_cycles = 0
         self._cpu_guard_paused = False
@@ -1488,7 +1491,11 @@ class HostedPaperLabRunner:
             cpu_delta = max(0.0, cpu_now - self._cpu_time_last)
             self._cpu_time_last = cpu_now
             self._wall_time_last = wall_now
-            self._cpu_load_percent = round((cpu_delta / wall_delta) / 0.10 * 100.0, 2)
+            self._cpu_usage_cores = cpu_delta / wall_delta
+            self._cpu_load_percent = round(
+                (self._cpu_usage_cores / _CPU_GUARD_BUDGET_CORES) * 100.0,
+                2,
+            )
             if self._cpu_load_percent >= 80.0:
                 self._cpu_hot_cycles += 1
                 self._cpu_cool_cycles = 0
@@ -1561,7 +1568,13 @@ class HostedPaperLabRunner:
             "last_cycle_seconds": self._last_cycle_seconds,
             "process_max_rss_mb": self._max_memory_mb,
             "memory_guard": self._last_memory_guard(),
-            "estimated_free_cpu_load_percent": self._cpu_load_percent,
+            "cpu_usage_cores": round(self._cpu_usage_cores, 4),
+            "cpu_plan_limit_cores": _RENDER_FREE_CPU_LIMIT_CORES,
+            "cpu_usage_percent_of_plan_limit": round(
+                self._cpu_usage_cores / _RENDER_FREE_CPU_LIMIT_CORES * 100.0, 2
+            ),
+            "cpu_guard_budget_cores": _CPU_GUARD_BUDGET_CORES,
+            "cpu_guard_budget_used_percent": self._cpu_load_percent,
             "cpu_scan_throttled": self._cpu_scan_throttled,
             "cpu_guard_paused": self._cpu_guard_paused,
             "mode": "MONITOR_ONLY" if self.monitor_only else "PAPER_ONLY",
@@ -1569,7 +1582,10 @@ class HostedPaperLabRunner:
             "enabled_venues": list(self.enabled_venues),
             "started_venues": list(self.started_venues) if self.started_venues is not None else None,
             "monitor_streams_stopped_by_guard": self._monitor_streams_stopped,
-            "entry_scan_venues": list(cycle_venues) if self._cycles else [],
+            "entry_scan_venues": (
+                list(self.started_venues if self.started_venues is not None else self.enabled_venues)
+                if self._cycles else []
+            ),
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
