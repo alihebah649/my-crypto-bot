@@ -119,8 +119,9 @@ class FakeStream:
 
 
 class FakeWarmupClient:
-    def __init__(self, supported_symbols):
+    def __init__(self, supported_symbols, missing_series=None):
         self.supported_symbols = set(supported_symbols)
+        self.missing_series = set(missing_series or ())
         self.fetch_tickers_calls = 0
         self.fetch_kline_calls = []
 
@@ -134,6 +135,8 @@ class FakeWarmupClient:
 
     def fetch_klines(self, symbol, interval, limit):
         self.fetch_kline_calls.append((symbol, interval, limit))
+        if (symbol, interval) in self.missing_series:
+            return []
         now = int(time.time() * 1000)
         interval_ms = {"5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000}[interval]
         return [
