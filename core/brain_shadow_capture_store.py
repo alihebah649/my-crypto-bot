@@ -141,10 +141,9 @@ class BrainShadowCaptureStore:
             return int(self._record_count)
 
     def summary(self) -> dict[str, Any]:
-        records = self.read_all()
         return {
             "path": str(self.path),
-            "record_count": len(records),
+            "record_count": self.count(),
             "last_error": self.last_error,
         }
 
