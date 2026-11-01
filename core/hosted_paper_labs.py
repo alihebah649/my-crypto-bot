@@ -142,8 +142,10 @@ class _VenueLab:
         self.stream = stream
         self.owns_stream = bool(owns_stream)
         self.requested_symbols = tuple(str(s).upper() for s in symbols)
+        self.ticker_supported_symbols = self.requested_symbols if warmup_client is None else ()
         self.symbols = self.requested_symbols
         self.unsupported_symbols: tuple[str, ...] = ()
+        self.warmup_incomplete_symbols: tuple[str, ...] = ()
         self.universe_ready = warmup_client is None
         self.warmup_error: str | None = None
         self.warmup_seeded_series = 0
@@ -262,12 +264,13 @@ class _VenueLab:
             )
             return
 
-        self.symbols = supported
+        self.ticker_supported_symbols = supported
         self.unsupported_symbols = tuple(
             symbol for symbol in self.requested_symbols if symbol not in set(supported)
         )
-        self.warmup_expected_series = len(self.symbols) * len(_INTERVALS)
+        self.warmup_expected_series = len(supported) * len(_INTERVALS)
         if not supported or "BTCUSDT" not in supported:
+            self.symbols = ()
             self.warmup_error = "BTCUSDT_OR_SPOT_UNIVERSE_UNAVAILABLE"
             self.last_error = self.warmup_error
             self.universe_ready = False
@@ -282,7 +285,7 @@ class _VenueLab:
             )
             return
 
-        self.universe_ready = True
+        self.universe_ready = False
         if self.unsupported_symbols:
             logger.warning(
                 "[HOSTED-PAPER-LAB-PREFLIGHT] venue=%s supported=%d/%d unsupported=%s",
@@ -293,7 +296,10 @@ class _VenueLab:
             )
         # One bounded cold-start seed per venue. After this, WebSocket updates
         # own the data; the runner never performs periodic REST polling.
-        for symbol in self.symbols:
+        warm_symbols: list[str] = []
+        incomplete_symbols: list[str] = []
+        for symbol in self.ticker_supported_symbols:
+            symbol_ready = True
             for interval in _INTERVALS:
                 try:
                     rows = self.warmup_client.fetch_klines(
@@ -304,8 +310,10 @@ class _VenueLab:
                         seeded += 1
                     else:
                         failed += 1
+                        symbol_ready = False
                 except Exception as exc:
                     failed += 1
+                    symbol_ready = False
                     logger.warning(
                         "[HOSTED-PAPER-LAB-WARMUP] venue=%s symbol=%s interval=%s error=%s",
                         self.venue,
@@ -314,19 +322,32 @@ class _VenueLab:
                         type(exc).__name__,
                     )
                 time.sleep(0.15)
+            if symbol_ready:
+                warm_symbols.append(symbol)
+            else:
+                incomplete_symbols.append(symbol)
+
+        self.symbols = tuple(warm_symbols)
+        self.warmup_incomplete_symbols = tuple(incomplete_symbols)
         self.warmup_seeded_series = seeded
-        self.warmup_expected_series = len(self.symbols) * len(_INTERVALS)
+        self.warmup_expected_series = len(self.ticker_supported_symbols) * len(_INTERVALS)
         if failed:
             self.warmup_error = f"INCOMPLETE_COLD_START_HISTORY_{failed}_SERIES"
+        self.universe_ready = bool(self.symbols) and "BTCUSDT" in self.symbols
+        if not self.universe_ready:
+            self.last_error = "BTCUSDT_HISTORY_NOT_READY"
+            self.warmup_error = self.warmup_error or self.last_error
         logger.info(
             "[HOSTED-PAPER-LAB-WARMUP] venue=%s seeded_series=%d/%d incomplete=%d "
-            "supported_symbols=%d/%d",
+            "scoring_symbols=%d/%d unsupported=%s incomplete_symbols=%s",
             self.venue,
             seeded,
             self.warmup_expected_series,
             failed,
             len(self.symbols),
-            len(self.requested_symbols),
+            len(self.ticker_supported_symbols),
+            ",".join(self.unsupported_symbols) or "NONE",
+            ",".join(self.warmup_incomplete_symbols) or "NONE",
         )
 
     def _frames(self, symbol: str) -> dict[str, list[dict[str, Any]]]:
@@ -925,9 +946,12 @@ class _VenueLab:
             "enabled": True,
             "stream": stream,
             "requested_symbols": len(self.requested_symbols),
-            "supported_symbols": list(self.symbols),
-            "supported_symbol_count": len(self.symbols),
+            "ticker_supported_symbols": list(self.ticker_supported_symbols),
+            "supported_symbol_count": len(self.ticker_supported_symbols),
+            "scoring_symbols": list(self.symbols),
+            "scoring_symbol_count": len(self.symbols),
             "unsupported_symbols": list(self.unsupported_symbols),
+            "warmup_incomplete_symbols": list(self.warmup_incomplete_symbols),
             "universe_ready": self.universe_ready,
             "warmup_seeded_series": self.warmup_seeded_series,
             "warmup_expected_series": self.warmup_expected_series,
