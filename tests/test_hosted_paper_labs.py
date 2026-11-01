@@ -933,6 +933,15 @@ def test_hosted_lab_part6_sees_main_lane_caps_per_independent_account():
         assert lab.runtime.risk_config.exposure.max_scalp_positions == 15
         assert lab.runtime.risk_config.exposure.max_swing_positions == 10
         assert lab.runtime.risk_config.exposure.max_open_positions == 25
+        health = lab.snapshot()
+        assert health["open_positions"] == 25
+        assert health["open_scalp_positions"] == 15
+        assert health["open_swing_positions"] == 10
+        assert health["risk_limits"] == {
+            "max_open_positions": 25,
+            "max_scalp_positions": 15,
+            "max_swing_positions": 10,
+        }
 
         lab.runtime.update_market(
             "OVER_CAP_SCALP",
