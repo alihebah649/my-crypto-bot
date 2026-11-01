@@ -9,6 +9,13 @@ permissions:
   contents: write
 
 jobs:
+  skip-non-audit-branch:
+    if: github.ref != 'refs/heads/audit/market-data-centralization'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip automated write-back outside its dedicated audit branch
+        run: echo "Skipped safely; this workflow may write only to audit/market-data-centralization."
+
   apply-fix:
     # Defense in depth: this automated write-back is permitted only on its
     # dedicated audit branch, never on Paper feature or pull-request branches.
