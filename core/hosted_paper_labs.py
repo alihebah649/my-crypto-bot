@@ -112,6 +112,7 @@ class _VenueLab:
         self.stream = stream
         self.symbols = tuple(str(s).upper() for s in symbols)
         self.scan_batch_size = max(1, int(scan_batch_size))
+        self.configured_scan_batch_size = self.scan_batch_size
         self.scan_cursor = 0
         self.latest_scores: dict[str, dict[str, Any]] = {}
         self.cycles = 0
@@ -146,6 +147,12 @@ class _VenueLab:
             position_repository=self.repository,
         )
         self.brain = GuardedBrainAuthority()
+        # Exit-watchdog regime observations must use this venue's own scored
+        # breadth; they must never read MAIN's Binance market snapshot.
+        self.runtime.exit_watchdog.brain_market_regime_provider = (
+            lambda _symbol: derive_market_breadth(self.latest_scores).regime
+            if self.latest_scores else "TRANSITION"
+        )
         self.outcomes = PostgresEvidenceStore(
             database_url,
             evidence_type=f"PAPER_OUTCOME_{venue}_HOSTED_LAB",
@@ -439,7 +446,12 @@ class _VenueLab:
                 volume_usdt=float(ticker.get("quoteVolume") or 0.0),
                 ema100=float(score.get("ema100") or 0.0),
             )
-            self.runtime.evaluate_position(position.symbol)
+        if self.repository.get_open_positions():
+            result = self.runtime.run_exit_watchdog()
+            if int(getattr(result, "closed", 0) or 0) > 0:
+                # Persist closed lifecycle and balance immediately so restart
+                # cannot resurrect a position that the watchdog has closed.
+                self._save_state(force=True)
 
     def _persist_new_outcomes(self) -> None:
         for position in self.repository.get_closed_positions():
@@ -612,6 +624,13 @@ class HostedPaperLabRunner:
         self._cycles = 0
         self._max_memory_mb = 0.0
         self._last_warning = None
+        self._cpu_time_last = time.process_time()
+        self._wall_time_last = time.monotonic()
+        self._cpu_load_percent = 0.0
+        self._cpu_hot_cycles = 0
+        self._cpu_cool_cycles = 0
+        self._cpu_guard_paused = False
+        self._cpu_scan_throttled = False
         self.labs: dict[str, _VenueLab] = {}
         try:
             self.labs["BINANCE"] = _VenueLab(
@@ -688,6 +707,52 @@ class HostedPaperLabRunner:
             self._cycles += 1
             self._last_cycle_seconds = round(time.monotonic() - started, 4)
             self._max_memory_mb = max(self._max_memory_mb, self._memory_mb())
+
+            # Render Free provides a small shared CPU allowance. Throttle
+            # shadow scoring before it can starve the authoritative MAIN loop.
+            cpu_now = time.process_time()
+            wall_now = time.monotonic()
+            wall_delta = max(0.001, wall_now - self._wall_time_last)
+            cpu_delta = max(0.0, cpu_now - self._cpu_time_last)
+            self._cpu_time_last = cpu_now
+            self._wall_time_last = wall_now
+            self._cpu_load_percent = round((cpu_delta / wall_delta) / 0.10 * 100.0, 2)
+            if self._cpu_load_percent >= 80.0:
+                self._cpu_hot_cycles += 1
+                self._cpu_cool_cycles = 0
+            elif self._cpu_load_percent <= 55.0:
+                self._cpu_cool_cycles += 1
+                self._cpu_hot_cycles = 0
+            else:
+                self._cpu_hot_cycles = 0
+                self._cpu_cool_cycles = 0
+
+            if self._cpu_hot_cycles >= 3 and not self._cpu_scan_throttled:
+                self._cpu_scan_throttled = True
+                for lab in self.labs.values():
+                    lab.scan_batch_size = 1
+                logger.error(
+                    "[HOSTED-PAPER-LABS] CPU guard throttled scan batch to 1 load=%.1f%%",
+                    self._cpu_load_percent,
+                )
+            if self._cpu_hot_cycles >= 6 and not self._cpu_guard_paused:
+                self._cpu_guard_paused = True
+                for lab in self.labs.values():
+                    lab.pause_new_entries = True
+                logger.error(
+                    "[HOSTED-PAPER-LABS] CPU guard paused new lab entries load=%.1f%%",
+                    self._cpu_load_percent,
+                )
+            if self._cpu_cool_cycles >= 8 and not self._last_memory_guard():
+                if self._cpu_scan_throttled:
+                    for lab in self.labs.values():
+                        lab.scan_batch_size = lab.configured_scan_batch_size
+                    self._cpu_scan_throttled = False
+                if self._cpu_guard_paused:
+                    for lab in self.labs.values():
+                        lab.pause_new_entries = False
+                    self._cpu_guard_paused = False
+
             # The memory circuit stops new lab entries, but keeps WebSockets
             # alive so existing Paper positions can still be managed safely.
             if self._max_memory_mb >= 400.0 and self._last_warning is None:
@@ -722,6 +787,9 @@ class HostedPaperLabRunner:
             "last_cycle_seconds": self._last_cycle_seconds,
             "process_max_rss_mb": self._max_memory_mb,
             "memory_guard": self._last_memory_guard(),
+            "estimated_free_cpu_load_percent": self._cpu_load_percent,
+            "cpu_scan_throttled": self._cpu_scan_throttled,
+            "cpu_guard_paused": self._cpu_guard_paused,
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
