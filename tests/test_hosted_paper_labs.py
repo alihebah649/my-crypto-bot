@@ -699,16 +699,23 @@ def test_hosted_swing_candidate_obeys_symbol_loss_cooldown():
     runner = _runner(FakeDatabase())
     lab = runner.labs["BYBIT"]
     try:
-        losing = lab.runtime.open_position(
-            "BTCUSDT", 100.0, 95.0, trade_mode="SWING"
+        losing = Position(
+            position_id="bybit-recent-loss",
+            symbol="BTCUSDT",
+            side=PositionSide.LONG,
+            status=PositionStatus.CLOSED,
+            quantity=0.1,
+            entry_price=100.0,
+            current_price=99.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            opened_at=time.time() - 3600.0,
+            closed_at=time.time() - 60.0,
+            realized_pnl=-1.0,
+            entry_metadata={"trade_mode": "SWING"},
+            metadata={"trade_mode": "SWING"},
         )
-        assert losing is not None
-        losing.status = __import__(
-            "trade_manager.models", fromlist=["PositionStatus"]
-        ).PositionStatus.CLOSED
-        losing.closed_at = time.time() - 60.0
-        losing.realized_pnl = -1.0
-        lab.repository.update(losing)
+        lab.repository.add(losing)
 
         candidate = {
             "trade_mode": "SWING",
