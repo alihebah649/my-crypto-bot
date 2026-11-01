@@ -101,10 +101,60 @@ class PositionRepository:
         with self._lock:
             return list(self._positions.values())
 
+    def prune_terminal_positions(
+        self,
+        *,
+        older_than_epoch: float,
+        persisted_closed_ids: Optional[set[str]] = None,
+    ) -> List[str]:
+        """Remove only old terminal records whose outcomes are safely retained.
+
+        Active positions are never pruned. Old CLOSED positions are removed
+        only after their append-only outcome is known to exist in durable
+        evidence. CANCELLED/FAILED records have no realized trade outcome and
+        can be removed after the retention window.
+        """
+        cutoff = float(older_than_epoch)
+        persisted = {str(value) for value in (persisted_closed_ids or set())}
+        removable_terminal = {PositionStatus.CANCELLED, PositionStatus.FAILED}
+        removed: List[str] = []
+        with self._lock:
+            for position_id, position in list(self._positions.items()):
+                try:
+                    terminal_at = float(position.closed_at or position.opened_at)
+                except (TypeError, ValueError):
+                    continue
+                if terminal_at >= cutoff:
+                    continue
+                if position.status in removable_terminal:
+                    removed.append(position_id)
+                elif (
+                    position.status is PositionStatus.CLOSED
+                    and position_id in persisted
+                ):
+                    removed.append(position_id)
+            for position_id in removed:
+                self._positions.pop(position_id, None)
+            if removed:
+                self._persist_locked()
+        return removed
+
     def clear(self) -> None:
         with self._lock:
             self._positions.clear()
             self._persist_locked()
+
+    def status_counts(self) -> dict[str, int]:
+        """Count positions by lifecycle status without allocating position lists."""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for position in self._positions.values():
+                status = getattr(position.status, "name", None)
+                if not status:
+                    status = getattr(position.status, "value", position.status)
+                key = str(status)
+                counts[key] = counts.get(key, 0) + 1
+            return dict(sorted(counts.items()))
 
     def count(self) -> int:
         with self._lock:
@@ -112,6 +162,62 @@ class PositionRepository:
 
     def flush(self) -> None:
         with self._lock:
+            self._persist_locked()
+
+    def export_snapshot(
+        self,
+        *,
+        closed_since_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        """Return a versioned, JSON-safe snapshot for an external state store.
+
+        When a cutoff is supplied, preserve all active positions and only the
+        closed positions needed to rebuild current daily/weekly/monthly risk
+        ledgers. Full historical outcomes belong in the append-only evidence
+        store, not in the mutable runtime-state snapshot.
+        """
+        with self._lock:
+            positions = list(self._positions.values())
+            if closed_since_epoch is not None:
+                cutoff = float(closed_since_epoch)
+                active_statuses = {
+                    PositionStatus.OPEN,
+                    PositionStatus.PARTIALLY_CLOSED,
+                    PositionStatus.HOLD,
+                    PositionStatus.REVIEW_REQUIRED,
+                }
+                positions = [
+                    position
+                    for position in positions
+                    if position.status in active_statuses
+                    or (
+                        position.status is PositionStatus.CLOSED
+                        and float(position.closed_at or position.opened_at) >= cutoff
+                    )
+                ]
+            return {
+                "version": 1,
+                "positions": [
+                    _encode(asdict(position))
+                    for position in positions
+                ],
+            }
+
+    def restore_snapshot(self, payload: dict[str, Any]) -> None:
+        """Restore positions from a validated external snapshot."""
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported position state version")
+        restored: Dict[str, Position] = {}
+        for raw in payload.get("positions", []):
+            if not isinstance(raw, dict):
+                raise ValueError("position snapshot entries must be objects")
+            data = _decode(raw)
+            position = Position(**data)
+            if position.position_id in restored:
+                raise ValueError(f"duplicate position id in snapshot: {position.position_id}")
+            restored[position.position_id] = position
+        with self._lock:
+            self._positions = restored
             self._persist_locked()
 
     def _persist_locked(self) -> None:

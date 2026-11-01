@@ -236,7 +236,8 @@ class ShadowTradeManagerRuntime:
                  persistence_dir: Optional[str] = None,
                  execution_profile: Optional[ExecutionProfile] = None,
                  account_connection: Optional[AccountConnection] = None,
-                 correlation_provider: Any = None) -> None:
+                 correlation_provider: Any = None,
+                 position_repository: Optional[PositionRepository] = None) -> None:
         self.market = ShadowMarketState(); self.persistence_dir = persistence_dir
 
         if account_connection is not None:
@@ -259,7 +260,9 @@ class ShadowTradeManagerRuntime:
         if persistence_dir:
             os.makedirs(persistence_dir, exist_ok=True)
             position_state = os.path.join(persistence_dir, "positions.json"); paper_state = os.path.join(persistence_dir, "paper_account.json")
-        self.repository = PositionRepository(persistence_path=position_state)
+        if position_repository is not None and position_state is not None:
+            raise ValueError("position_repository cannot be combined with persistence_dir")
+        self.repository = position_repository or PositionRepository(persistence_path=position_state)
         self.execution_adapter = execution_adapter or PaperExecutionAdapter(initial_cash=initial_cash, fee_rate=fee_rate, state_path=paper_state)
         self.loss_tracker = LossTracker(); self.loss_ledger = _PaperLossPeriodLedger(self.loss_tracker)
         self.risk_config = risk_config or RiskConfig(); self.risk_controller = RiskController(self.risk_config, self.loss_tracker)

@@ -117,6 +117,46 @@ class PostgresEvidenceStore:
     def append(self, record: Mapping[str, Any]) -> bool:
         return self.append_many((record,)) == 1
 
+    def upsert(self, record: Mapping[str, Any]) -> bool:
+        """Insert or replace one mutable state record by its stable identity.
+
+        Append-only evidence must continue using append(). This method is for
+        compact runtime snapshots (for example, one Paper-lab account or
+        position-repository snapshot) where retaining every intermediate
+        version would waste the free Postgres allowance.
+        """
+        prepared = self._safe(record)
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    conn = self._connect()
+                    self._ensure_schema()
+                    key = self._identity_key(prepared)
+                    result = conn.execute(
+                        """
+                        INSERT INTO paper_evidence
+                            (evidence_type, identity_key, payload)
+                        VALUES (%s, %s, %s::jsonb)
+                        ON CONFLICT (evidence_type, identity_key)
+                        DO UPDATE SET payload = EXCLUDED.payload, recorded_at = NOW()
+                        """,
+                        (
+                            self.evidence_type,
+                            key,
+                            json.dumps(prepared, ensure_ascii=False, separators=(",", ":")),
+                        ),
+                    )
+                    conn.commit()
+                    self.last_error = None
+                    return bool(getattr(result, "rowcount", 0) or 0)
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    if attempt == 1:
+                        return False
+        return False
+
     def append_many(self, records: Iterable[Mapping[str, Any]]) -> int:
         prepared = [self._safe(record) for record in records]
         if not prepared:
@@ -181,6 +221,36 @@ class PostgresEvidenceStore:
             (self.evidence_type, delete_count),
         )
         conn.commit()
+
+    def get_by_identity(self, identity_key: str) -> dict[str, Any] | None:
+        """Fetch one evidence record by its stable identity without loading its history."""
+        key = str(identity_key or "").strip()
+        if not key:
+            return None
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    row = self._connect().execute(
+                        """
+                        SELECT payload
+                        FROM paper_evidence
+                        WHERE evidence_type = %s AND identity_key = %s
+                        LIMIT 1
+                        """,
+                        (self.evidence_type, key),
+                    ).fetchone()
+                    self.last_error = None
+                    if not row or not isinstance(row[0], Mapping):
+                        return None
+                    return dict(row[0])
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    if attempt == 1:
+                        return None
+        return None
 
     def read_all(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -275,12 +345,11 @@ class PostgresEvidenceStore:
         return 0
 
     def summary(self) -> dict[str, Any]:
-        records = self.read_all()
         return {
             "backend": "postgres",
             "schema_version": self.SCHEMA_VERSION,
             "evidence_type": self.evidence_type,
-            "record_count": len(records),
+            "record_count": self.count(),
             "last_error": self.last_error,
         }
 

@@ -48,6 +48,12 @@ from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
+from core.paper_runtime_memory import build_paper_runtime_memory_snapshot
+from core.paper_runtime_retention import (
+    compact_paper_order_history,
+    persist_or_confirm_paper_outcome,
+    prune_main_paper_history,
+)
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -55,6 +61,7 @@ from core.market_health_summary import (
     market_data_guard_alert_label,
 )
 from core.binance_rest_ws_comparison import compare_rest_ws_candle, normalize_rest_candles
+from core.hosted_paper_labs import create_hosted_paper_lab_runner
 from core.paper_risk_overlay import (
     BTC_RECOVERY_MAX_DRAWDOWN_PERCENT,
     REENTRY_COOLDOWN_SECONDS,
@@ -391,30 +398,32 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
     return bool(record.allowed)
 
 
-def _find_brain_authority_record_for_capture(capture_id: str | None) -> dict | None:
+def _find_evidence_record_for_capture(store, capture_id: str | None) -> dict | None:
+    """Resolve one entry-time Brain record without materializing its evidence history."""
     if not capture_id:
         return None
+    lookup = getattr(store, "get_by_identity", None)
+    if not callable(lookup):
+        _legacy.logger.warning(
+            "Paper evidence lookup unavailable: store does not support indexed identity reads"
+        )
+        return None
     try:
-        records = _brain_authority_store.read_all()
+        record = lookup(str(capture_id))
     except Exception:
-        records = []
-    for record in reversed(records):
-        if str(record.get("capture_id") or "") == str(capture_id):
-            return dict(record)
+        _legacy.logger.exception("Paper evidence identity lookup failed capture_id=%s", capture_id)
+        return None
+    if isinstance(record, dict) and str(record.get("capture_id") or "") == str(capture_id):
+        return dict(record)
     return None
+
+
+def _find_brain_authority_record_for_capture(capture_id: str | None) -> dict | None:
+    return _find_evidence_record_for_capture(_brain_authority_store, capture_id)
 
 
 def _find_brain_record_for_capture(capture_id: str | None) -> dict | None:
-    if not capture_id:
-        return None
-    try:
-        records = brain_shadow_store.read_all()
-    except Exception:
-        records = []
-    for record in reversed(records):
-        if str(record.get("capture_id") or "") == str(capture_id):
-            return dict(record)
-    return None
+    return _find_evidence_record_for_capture(brain_shadow_store, capture_id)
 
 
 def _emit_paper_outcome_evidence() -> int:
@@ -453,18 +462,25 @@ def _emit_paper_outcome_evidence() -> int:
 
         if _paper_outcome_store is not None:
             try:
-                if not _paper_outcome_store.append(record):
+                if not persist_or_confirm_paper_outcome(_paper_outcome_store, record):
                     _legacy.logger.error(
-                        "Paper outcome evidence persistence failed position=%s error=%s",
+                        "Paper outcome evidence not confirmed durable position=%s error=%s",
                         position_id,
-                        _paper_outcome_store.last_error,
+                        getattr(_paper_outcome_store, "last_error", None),
                     )
+                    # Keep this position eligible for retry on the next
+                    # notification cycle. Never mark a failed write as logged.
+                    continue
             except Exception:
                 _legacy.logger.exception(
                     "Paper outcome evidence persistence raised position=%s",
                     position_id,
                 )
+                continue
 
+        # Without Postgres this is a local log-only deployment; avoid repeating
+        # the same log line, but do not prune closed positions without durable
+        # outcome evidence.
         _paper_outcome_evidence_logged_ids.add(position_id)
         emitted += 1
     return emitted
@@ -472,7 +488,26 @@ def _emit_paper_outcome_evidence() -> int:
 
 def _notify_closed_positions_with_evidence() -> int:
     _emit_paper_outcome_evidence()
-    return _paper_original_notify_closed_positions()
+    sent = _paper_original_notify_closed_positions()
+    try:
+        removed_positions = prune_main_paper_history(
+            runtime,
+            _paper_outcome_store,
+            _paper_outcome_evidence_logged_ids,
+        )
+        removed_orders = compact_paper_order_history(runtime.execution_adapter)
+        if removed_positions or removed_orders:
+            _legacy.logger.info(
+                "PAPER RUNTIME RETENTION pruned_positions=%s compacted_order_results=%s "
+                "position_window_days=40 order_history_limit=1000",
+                len(removed_positions),
+                removed_orders,
+            )
+    except Exception:
+        # Retention is maintenance only. It must not interrupt the Paper loop
+        # or suppress close notifications if a maintenance operation fails.
+        _legacy.logger.exception("Paper runtime retention maintenance failed")
+    return sent
 
 
 _notify_closed_positions = _notify_closed_positions_with_evidence
@@ -1250,6 +1285,113 @@ _legacy.process_market_cycle = _process_market_cycle_with_overlays
 runtime.open_position = _open_position_with_selected_mode
 
 
+# Optional staged Paper comparison labs in the MAIN process.
+# Disabled by default. Monitor-only is the safe first activation stage:
+# public market data and scoring run, while entries and DB writes remain off.
+_hosted_paper_lab_runner = None
+_hosted_labs_enabled = os.getenv("PAPER_HOSTED_VENUE_LABS", "0").strip().lower() in {"1", "true", "yes", "on"}
+_hosted_requested_venues_raw = os.getenv("PAPER_HOSTED_LAB_VENUES", "BINANCE,BYBIT,OKX")
+_hosted_requested_venues = tuple(dict.fromkeys(
+    part.strip().upper()
+    for part in _hosted_requested_venues_raw.split(",")
+    if part.strip()
+))
+_hosted_invalid_venues = sorted(set(_hosted_requested_venues) - {"BINANCE", "BYBIT", "OKX"})
+_hosted_monitor_only = os.getenv("PAPER_HOSTED_LAB_ALLOW_ENTRIES", "0").strip().lower() not in {"1", "true", "yes", "on"}
+if _hosted_labs_enabled:
+    if _hosted_invalid_venues or not _hosted_requested_venues:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: invalid venue selection=%s",
+            _hosted_invalid_venues or "EMPTY",
+        )
+    elif PAPER_VENUE_MODE != "MIXED":
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: MAIN must remain in MIXED mode"
+        )
+    elif "BINANCE" in _hosted_requested_venues and not _PAPER_MAIN_BINANCE_ONLY:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: Binance lab requires MAIN's complete Binance Relay universe"
+        )
+    elif "BYBIT" in _hosted_requested_venues and not _BYBIT_MARKET_DATA_ENABLED:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: Bybit public Spot cold-start data is not enabled"
+        )
+    elif "OKX" in _hosted_requested_venues and not _OKX_MARKET_DATA_ENABLED:
+        _legacy.logger.error(
+            "[HOSTED-PAPER-LABS] disabled: OKX public Spot cold-start data is not enabled"
+        )
+    else:
+        try:
+            _hosted_bybit_stream = None
+            _hosted_okx_stream = None
+            if "BYBIT" in _hosted_requested_venues:
+                _hosted_bybit_stream = BybitMarketStream(
+                    TRADING_SYMBOLS,
+                    intervals=("5m", "15m", "1h", "4h"),
+                )
+            if "OKX" in _hosted_requested_venues:
+                _hosted_okx_stream = OKXMarketStream(
+                    TRADING_SYMBOLS,
+                    intervals=("5m", "15m", "1h", "4h"),
+                    base_url=os.getenv(
+                        "OKX_MARKET_DATA_WS_PUBLIC_URL",
+                        "wss://ws.okx.com/ws/v5/public",
+                    ).strip(),
+                    business_base_url=os.getenv(
+                        "OKX_MARKET_DATA_WS_BUSINESS_URL",
+                        "wss://ws.okx.com/ws/v5/business",
+                    ).strip(),
+                )
+            try:
+                _hosted_scan_batch_size = max(
+                    1, min(8, int(os.getenv("PAPER_HOSTED_LAB_SCAN_BATCH", "4")))
+                )
+            except (TypeError, ValueError):
+                _hosted_scan_batch_size = 4
+
+            _hosted_paper_lab_runner = create_hosted_paper_lab_runner(
+                symbols=list(TRADING_SYMBOLS),
+                binance_stream=_binance_market_stream,
+                bybit_stream=_hosted_bybit_stream,
+                okx_stream=_hosted_okx_stream,
+                database_url=database_url_from_env() if not _hosted_monitor_only else None,
+                bybit_client=_bybit_client if "BYBIT" in _hosted_requested_venues else None,
+                okx_client=_okx_client if "OKX" in _hosted_requested_venues else None,
+                initial_cash=INITIAL_CASH,
+                fee_rate=FEE_RATE,
+                scan_batch_size=_hosted_scan_batch_size,
+                enabled_venues=_hosted_requested_venues,
+                monitor_only=_hosted_monitor_only,
+            )
+            if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
+                _hosted_paper_lab_runner.start()
+        except Exception:
+            _legacy.logger.exception(
+                "[HOSTED-PAPER-LABS] startup failed; MAIN remains unaffected"
+            )
+            try:
+                if _hosted_paper_lab_runner is not None:
+                    _hosted_paper_lab_runner.close()
+            except Exception:
+                pass
+            _hosted_paper_lab_runner = None
+
+
+@app.get("/paper/hosted-labs")
+def _hosted_paper_labs_health():
+    runner = globals().get("_hosted_paper_lab_runner")
+    if runner is None:
+        return jsonify({
+            "enabled": False,
+            "mode": "PAPER_ONLY",
+            "reason": "HOSTED_PAPER_LABS_DISABLED_OR_NOT_READY",
+        }), 200
+    payload = runner.snapshot()
+    payload["mode"] = "MONITOR_ONLY" if runner.monitor_only else "PAPER_ONLY"
+    payload["entries_enabled"] = not runner.monitor_only
+    return jsonify(payload), 200
+
+
 _MARKET_HEALTH_STATE = "UNKNOWN"
 _MARKET_HEALTH_LAST_ALERT_AT = 0.0
 _MARKET_HEALTH_HEARTBEAT_SECONDS = 3600.0
@@ -1475,6 +1617,24 @@ def _paper_engine_health():
     payload = _paper_engine_health_payload()
     status_code = 200 if payload["status"] == "ok" else 503
     return jsonify(payload), status_code
+
+
+@app.get("/paper/runtime-memory")
+def _paper_runtime_memory():
+    """Read-only bounded-size runtime counters for diagnosing process memory growth."""
+    try:
+        payload = build_paper_runtime_memory_snapshot(runtime)
+        payload["evidence"] = {
+            "paper_outcome_logged_position_ids": len(_paper_outcome_evidence_logged_ids),
+        }
+        return jsonify(payload), 200
+    except Exception as exc:  # diagnostics must never affect Paper execution
+        _legacy.logger.exception("Paper runtime memory snapshot failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "error": type(exc).__name__,
+        }), 503
 
 
 @app.get("/paper/entry-gate-summary")
