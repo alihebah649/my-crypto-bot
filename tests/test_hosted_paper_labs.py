@@ -623,3 +623,44 @@ def test_hosted_lab_excludes_one_symbol_with_incomplete_cold_history_without_fre
         assert bybit.snapshot()["scoring_symbol_count"] == 3
     finally:
         runner.close()
+
+
+
+def test_hosted_lab_outcome_write_failure_is_visible_and_blocks_future_entries(monkeypatch):
+    import core.hosted_paper_labs as hosted_module
+
+    runner = _runner(FakeDatabase())
+    lab = runner.labs["OKX"]
+    try:
+        lab.repository.get_closed_positions = lambda: [
+            SimpleNamespace(position_id="okx-closed-pending-outcome")
+        ]
+        monkeypatch.setattr(
+            hosted_module,
+            "build_paper_outcome_evidence",
+            lambda position: {"position_id": position.position_id},
+        )
+
+        def fail_append(_record):
+            lab.outcomes.last_error = "database write unavailable"
+            return False
+
+        lab.outcomes.append = fail_append
+        lab._persist_new_outcomes()
+
+        assert lab.outcome_persistence_error == "database write unavailable"
+        assert lab.snapshot()["outcome_persistence_error"] == "database write unavailable"
+        assert "okx-closed-pending-outcome" not in lab._reported_closed_ids
+    finally:
+        runner.close()
+
+
+def test_hosted_lab_entry_capture_retention_is_bounded_per_venue():
+    runner = _runner(FakeDatabase())
+    try:
+        assert all(
+            lab.entry_captures.max_records == 2_000
+            for lab in runner.labs.values()
+        )
+    finally:
+        runner.close()
