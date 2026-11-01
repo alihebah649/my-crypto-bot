@@ -159,16 +159,11 @@ class _VenueLab:
             max_records=10_000,
             connect_factory=outcome_connect_factory,
         )
-        previous_outcomes = self.outcomes.read_all()
-        if self.outcomes.last_error:
-            raise RuntimeError(
-                f"{venue} outcome evidence read failed: {self.outcomes.last_error}"
-            )
-        self._reported_closed_ids = {
-            str(row.get("position_id"))
-            for row in previous_outcomes
-            if row.get("position_id")
-        }
+        # Outcome writes are idempotent by position_id in Postgres. Do not
+        # load the full historical outcome table into RAM during startup.
+        # A duplicate append returns False without last_error and is treated
+        # as already persisted by _persist_new_outcomes().
+        self._reported_closed_ids: set[str] = set()
         # A new empty state is durably initialized before this lab is exposed.
         if not restored:
             self._save_state(force=True)
