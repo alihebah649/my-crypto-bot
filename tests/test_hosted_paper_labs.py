@@ -511,9 +511,11 @@ def test_startup_memory_abort_cancels_background_cold_warmup(monkeypatch):
     warmup_thread = runner.labs["BYBIT"]._warmup_thread
     assert warmup_thread is not None
     assert runner.started_venues == ["BINANCE", "BYBIT"]
-    assert bybit_stream.started is False
+    # Paper mode may have restored open positions, so keep its own feed alive
+    # for exit management while cancelling the incomplete cold-start REST work.
+    assert bybit_stream.started is True
     assert okx_stream.started is False
-    assert runner.snapshot()["monitor_streams_stopped_by_guard"] is True
+    assert runner.snapshot()["monitor_streams_stopped_by_guard"] is False
     runner.close()
 
     assert not warmup_thread.is_alive()
