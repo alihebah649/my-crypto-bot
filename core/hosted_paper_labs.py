@@ -491,7 +491,12 @@ class _VenueLab:
                 self.persistence_error,
             )
 
-    def process_cycle(self, now: float | None = None) -> None:
+    def process_cycle(
+        self,
+        now: float | None = None,
+        *,
+        scan_new_entries: bool = True,
+    ) -> None:
         started = time.monotonic()
         current = time.time() if now is None else float(now)
         with self._lock:
@@ -506,6 +511,12 @@ class _VenueLab:
             # Refresh all already-open positions every cycle; only a small
             # rotating slice of the universe is rescored for new entries.
             self._update_positions(current)
+            if not scan_new_entries:
+                self._persist_new_outcomes()
+                self._save_state()
+                self.last_cycle_seconds = round(time.monotonic() - started, 4)
+                return
+
             start = self.scan_cursor
             batch = [
                 self.symbols[(start + offset) % len(self.symbols)]
@@ -631,6 +642,8 @@ class HostedPaperLabRunner:
         self._cpu_cool_cycles = 0
         self._cpu_guard_paused = False
         self._cpu_scan_throttled = False
+        self._scan_order = list(_SUPPORTED_VENUES)
+        self._scan_cursor = 0
         self.labs: dict[str, _VenueLab] = {}
         try:
             self.labs["BINANCE"] = _VenueLab(
@@ -695,12 +708,15 @@ class HostedPaperLabRunner:
             return
         started = time.monotonic()
         with self._lock:
-            # Binance reuses MAIN's existing relay stream. The remaining two
-            # feeds are venue-isolated public WebSockets hosted in this process.
+            # Manage open positions for every venue every MAIN cycle, but
+            # only rescore a rotating venue each cycle. This cuts repeated
+            # shadow CPU work while preserving timely exit-watchdog coverage.
+            scan_venue = self._scan_order[self._scan_cursor % len(self._scan_order)]
+            self._scan_cursor = (self._scan_cursor + 1) % len(self._scan_order)
             for venue in _SUPPORTED_VENUES:
                 lab = self.labs[venue]
                 try:
-                    lab.process_cycle()
+                    lab.process_cycle(scan_new_entries=(venue == scan_venue))
                 except Exception as exc:
                     lab.last_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("[HOSTED-PAPER-LAB] cycle failed venue=%s", venue)
@@ -790,6 +806,10 @@ class HostedPaperLabRunner:
             "estimated_free_cpu_load_percent": self._cpu_load_percent,
             "cpu_scan_throttled": self._cpu_scan_throttled,
             "cpu_guard_paused": self._cpu_guard_paused,
+            "last_entry_scan_venue": (
+                self._scan_order[(self._scan_cursor - 1) % len(self._scan_order)]
+                if self._cycles else None
+            ),
             "venues": {
                 venue: lab.snapshot()
                 for venue, lab in self.labs.items()
