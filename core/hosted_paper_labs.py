@@ -588,6 +588,12 @@ class _VenueLab:
         self.runtime.last_entry_diagnostics.setdefault(symbol, {})[
             "entry_v2_shadow"
         ] = v2_shadow
+        # Keep a pre-entry rollback point. Paper Execution is synchronous;
+        # a position is only counted as opened after the account and repository
+        # snapshot is durably committed for this venue.
+        pre_entry_account = self.adapter.export_snapshot()
+        pre_entry_positions = self.repository.export_snapshot()
+        pre_entry_orders = dict(getattr(self.adapter, "orders", {}) or {})
         position = self.runtime.open_position(
             symbol,
             price,
@@ -633,6 +639,32 @@ class _VenueLab:
             "confidence": brain_record.brain_confidence,
         }
         self.repository.update(position)
+        if not self._save_state(force=True):
+            # Roll back the synchronous Paper fill if the account/position
+            # state cannot be committed. Retry writing the pre-entry snapshot
+            # to reconcile an uncertain commit result, and pause future entries
+            # if even the rollback snapshot cannot be persisted.
+            self.adapter.restore_snapshot(pre_entry_account)
+            self.adapter.orders = pre_entry_orders
+            self.repository.restore_snapshot(pre_entry_positions)
+            self.runtime.loss_ledger.sync(self.repository.get_closed_positions())
+            rollback_saved = self._save_state(force=True)
+            if not rollback_saved:
+                self.pause_new_entries = True
+            self._persist_candidate_capture(
+                capture,
+                score=score,
+                mode=mode,
+                entry_price=price,
+                stop_loss=stop_loss,
+                economics=economics,
+                decision="REJECTED_STATE_PERSISTENCE",
+                failed_gate="PAPER_LAB_STATE_NOT_DURABLE",
+                brain_record=brain_record,
+            )
+            self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
+            return
+
         self._persist_candidate_capture(
             capture,
             score=score,
@@ -645,7 +677,6 @@ class _VenueLab:
             position_id=str(position.position_id),
         )
         self.entry_allowed += 1
-        self._save_state(force=True)
         logger.info(
             "[HOSTED-PAPER-LAB] OPEN venue=%s symbol=%s mode=%s score=%s price=%.8f stop=%.8f",
             self.venue,
@@ -756,15 +787,18 @@ class _VenueLab:
         orders.update(retained)
         return removed
 
-    def _save_state(self, *, force: bool = False) -> None:
+    def _save_state(self, *, force: bool = False) -> bool:
         self._compact_order_history()
         now = time.time()
         if not force and now - self._last_state_save_at < 60.0:
-            return
+            return self.persistence_error is None
         try:
+            # A False return means the content hash was unchanged, not a
+            # persistence error. A successful no-op is still durable.
             self.state.save(self.adapter, self.repository)
             self._last_state_save_at = now
             self.persistence_error = None
+            return True
         except Exception as exc:
             self.persistence_error = f"{type(exc).__name__}: {exc}"
             logger.error(
@@ -772,6 +806,7 @@ class _VenueLab:
                 self.venue,
                 self.persistence_error,
             )
+            return False
 
     def process_cycle(
         self,
