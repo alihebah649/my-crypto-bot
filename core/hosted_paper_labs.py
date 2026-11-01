@@ -647,6 +647,27 @@ class _VenueLab:
                 # A prior append may have committed before a connection reset.
                 self._reported_closed_ids.add(position_id)
 
+        cutoff = time.time() - 40.0 * 24.0 * 60.0 * 60.0
+        removed = self.repository.prune_terminal_positions(
+            older_than_epoch=cutoff,
+            persisted_closed_ids=self._reported_closed_ids,
+        )
+        if removed:
+            # Keep the Part-6 daily/weekly/monthly counters aligned with the
+            # retained 40-day closed-position window, and bound the id set.
+            recent_closed_ids = {
+                str(position.position_id)
+                for position in self.repository.get_closed_positions()
+            }
+            self._reported_closed_ids.intersection_update(recent_closed_ids)
+            self.runtime.loss_ledger.sync(self.repository.get_closed_positions())
+            self._save_state(force=True)
+            logger.info(
+                "[HOSTED-PAPER-LAB] pruned old terminal positions venue=%s count=%d",
+                self.venue,
+                len(removed),
+            )
+
     def _save_state(self, *, force: bool = False) -> None:
         now = time.time()
         if not force and now - self._last_state_save_at < 60.0:
