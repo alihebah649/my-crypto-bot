@@ -215,3 +215,60 @@ def test_resource_guard_pauses_new_entries_without_stopping_existing_streams():
         assert all(lab.stream.started is True for lab in runner.labs.values())
     finally:
         runner.close()
+
+
+
+def test_hosted_runner_rotates_scoring_one_venue_per_main_cycle():
+    database = FakeDatabase()
+    runner = _runner(database)
+    try:
+        runner.process_cycle()
+        assert runner.labs["BINANCE"].scan_cursor == 2
+        assert runner.labs["BYBIT"].scan_cursor == 0
+        assert runner.labs["OKX"].scan_cursor == 0
+
+        runner.process_cycle()
+        assert runner.labs["BINANCE"].scan_cursor == 2
+        assert runner.labs["BYBIT"].scan_cursor == 2
+        assert runner.labs["OKX"].scan_cursor == 0
+
+        runner.process_cycle()
+        assert runner.labs["BINANCE"].scan_cursor == 2
+        assert runner.labs["BYBIT"].scan_cursor == 2
+        assert runner.labs["OKX"].scan_cursor == 2
+    finally:
+        runner.close()
+
+
+def test_hosted_lab_does_not_run_exit_watchdog_with_stale_position_prices(monkeypatch):
+    database = FakeDatabase()
+    runner = _runner(database)
+    lab = runner.labs["BYBIT"]
+    try:
+        lab.runtime.update_market(
+            "BTCUSDT",
+            price=100.0,
+            bid=99.99,
+            ask=100.01,
+            spread_percent=0.02,
+            atr=1.0,
+            volume_usdt=1_000_000.0,
+            ema100=90.0,
+        )
+        position = lab.runtime.open_position(
+            "BTCUSDT", 100.0, 95.0, trade_mode="SCALP"
+        )
+        assert position is not None
+
+        lab.stream.prices.pop("BTCUSDT", None)
+
+        def forbidden_watchdog():
+            pytest.fail("Exit watchdog must not act on a stale venue mark price")
+
+        monkeypatch.setattr(lab.runtime, "run_exit_watchdog", forbidden_watchdog)
+        lab._update_positions(time.time())
+
+        assert lab.repository.get(position.position_id).status.name == "OPEN"
+        assert lab.entry_blocked["EXIT_WATCHDOG_VENUE_PRICE_STALE"] == 1
+    finally:
+        runner.close()
