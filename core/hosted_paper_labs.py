@@ -188,6 +188,12 @@ class _VenueLab:
             max_records=10_000,
             connect_factory=outcome_connect_factory,
         )
+        self.entry_captures = PostgresEvidenceStore(
+            database_url,
+            evidence_type=f"ENTRY_V2_CAPTURE_{venue}_HOSTED_LAB",
+            max_records=10_000,
+            connect_factory=outcome_connect_factory,
+        )
         # Outcome writes are idempotent by position_id in Postgres. Do not
         # load the full historical outcome table into RAM during startup.
         # A duplicate append returns False without last_error and is treated
@@ -285,6 +291,75 @@ class _VenueLab:
 
     def _record_block(self, reason: str) -> None:
         self.entry_blocked[reason] = int(self.entry_blocked.get(reason, 0)) + 1
+
+    def _persist_candidate_capture(
+        self,
+        capture: Any,
+        *,
+        score: Mapping[str, Any],
+        mode: str,
+        entry_price: float,
+        stop_loss: float,
+        economics: Mapping[str, Any],
+        decision: str,
+        failed_gate: str | None = None,
+        brain_record: Any = None,
+        position_id: str | None = None,
+    ) -> None:
+        """Persist the candidate's exact Entry v2 and final Paper gate evidence."""
+        brain = None
+        if brain_record is not None:
+            brain = {
+                "allowed": bool(getattr(brain_record, "allowed", False)),
+                "action": str(getattr(brain_record, "brain_action", "") or ""),
+                "reason": str(getattr(brain_record, "brain_reason", "") or ""),
+                "confidence": float(getattr(brain_record, "brain_confidence", 0.0) or 0.0),
+            }
+        record = capture.to_dict()
+        record.update({
+            "venue": self.venue,
+            "venue_mode": f"{self.venue}_HOSTED_PAPER_LAB",
+            "market_data_policy": f"ISOLATED_{self.venue}_WEBSOCKET",
+            "observed_at": time.time(),
+            "candidate": {
+                "symbol": str(capture.symbol).upper(),
+                "trade_mode": str(mode).upper(),
+                "signal": "BUY",
+                "score": (
+                    score.get("scalp_score")
+                    if str(mode).upper() == "SCALP"
+                    else score.get("swing_score")
+                ),
+                "entry_price": float(entry_price),
+                "stop_loss": float(stop_loss),
+                "market_data_source": self.venue,
+                "market_data_transport": "WEBSOCKET",
+            },
+            "entry_economics": dict(economics),
+            "brain_authority": brain,
+            "final_decision": str(decision),
+            "failed_gate": failed_gate,
+            "position_id": position_id,
+        })
+        try:
+            inserted = self.entry_captures.append(record)
+            if not inserted and self.entry_captures.last_error:
+                logger.warning(
+                    "[HOSTED-PAPER-LAB] entry evidence persistence failed venue=%s "
+                    "symbol=%s error=%s",
+                    self.venue,
+                    capture.symbol,
+                    self.entry_captures.last_error,
+                )
+        except Exception as exc:
+            # Candidate evidence is diagnostic-only. It must never bypass or
+            # change the Paper entry decision, Risk or execution outcome.
+            logger.exception(
+                "[HOSTED-PAPER-LAB] entry evidence writer raised venue=%s symbol=%s error=%s",
+                self.venue,
+                capture.symbol,
+                type(exc).__name__,
+            )
 
     def _try_entry(
         self,
@@ -399,7 +474,18 @@ class _VenueLab:
             fee_rate=self.adapter.fee_rate,
         )
         if not economics.get("approved", False):
-            self._record_block(str(economics.get("reason") or "ENTRY_ECONOMICS_REJECTED"))
+            failed_gate = str(economics.get("reason") or "ENTRY_ECONOMICS_REJECTED")
+            self._persist_candidate_capture(
+                capture,
+                score=score,
+                mode=mode,
+                entry_price=price,
+                stop_loss=stop_loss,
+                economics=economics,
+                decision="REJECTED_ENTRY_ECONOMICS",
+                failed_gate=failed_gate,
+            )
+            self._record_block(failed_gate)
             return
 
         brain_record = self.brain.evaluate_entry(
@@ -412,7 +498,19 @@ class _VenueLab:
             entry_v2_shadow=v2_shadow,
         )
         if not brain_record.allowed:
-            self._record_block(str(brain_record.brain_reason or "BRAIN_REJECTED"))
+            failed_gate = str(brain_record.brain_reason or "BRAIN_REJECTED")
+            self._persist_candidate_capture(
+                capture,
+                score=score,
+                mode=mode,
+                entry_price=price,
+                stop_loss=stop_loss,
+                economics=economics,
+                decision="REJECTED_BRAIN_AUTHORITY",
+                failed_gate=failed_gate,
+                brain_record=brain_record,
+            )
+            self._record_block(failed_gate)
             return
 
         position = self.runtime.open_position(
@@ -425,7 +523,19 @@ class _VenueLab:
         )
         if position is None:
             trace = self.runtime.last_entry_diagnostics.get(symbol, {}) or {}
-            self._record_block(str(trace.get("result") or "TRADE_MANAGER_REJECTED"))
+            failed_gate = str(trace.get("result") or "TRADE_MANAGER_REJECTED")
+            self._persist_candidate_capture(
+                capture,
+                score=score,
+                mode=mode,
+                entry_price=price,
+                stop_loss=stop_loss,
+                economics=economics,
+                decision="REJECTED_TRADE_MANAGER",
+                failed_gate=failed_gate,
+                brain_record=brain_record,
+            )
+            self._record_block(failed_gate)
             return
 
         metadata = {
@@ -448,6 +558,17 @@ class _VenueLab:
             "confidence": brain_record.brain_confidence,
         }
         self.repository.update(position)
+        self._persist_candidate_capture(
+            capture,
+            score=score,
+            mode=mode,
+            entry_price=price,
+            stop_loss=stop_loss,
+            economics=economics,
+            decision="PAPER_POSITION_OPENED",
+            brain_record=brain_record,
+            position_id=str(position.position_id),
+        )
         self.entry_allowed += 1
         self._save_state(force=True)
         logger.info(
@@ -651,6 +772,7 @@ class _VenueLab:
             self.stream.stop()
         self.state.close()
         self.outcomes.close()
+        self.entry_captures.close()
 
 
 class HostedPaperLabRunner:
