@@ -222,6 +222,36 @@ class PostgresEvidenceStore:
         )
         conn.commit()
 
+    def get_by_identity(self, identity_key: str) -> dict[str, Any] | None:
+        """Fetch one evidence record by its stable identity without loading its history."""
+        key = str(identity_key or "").strip()
+        if not key:
+            return None
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    row = self._connect().execute(
+                        """
+                        SELECT payload
+                        FROM paper_evidence
+                        WHERE evidence_type = %s AND identity_key = %s
+                        LIMIT 1
+                        """,
+                        (self.evidence_type, key),
+                    ).fetchone()
+                    self.last_error = None
+                    if not row or not isinstance(row[0], Mapping):
+                        return None
+                    return dict(row[0])
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    if attempt == 1:
+                        return None
+        return None
+
     def read_all(self) -> list[dict[str, Any]]:
         with self._lock:
             for attempt in range(2):
