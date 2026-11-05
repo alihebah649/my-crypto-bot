@@ -156,7 +156,7 @@ class FakeWarmupClient:
         ]
 
 
-def _runner(database):
+def _runner(database, telegram_notifier=None):
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT"]
     # MAIN already owns and has started this shared Binance stream.
     binance_stream = FakeStream("BINANCE", symbols)
@@ -171,7 +171,87 @@ def _runner(database):
         fee_rate=0.001,
         scan_batch_size=2,
         connect_factory=lambda _url: FakeConnection(database),
+        telegram_notifier=telegram_notifier,
     )
+
+
+
+
+def test_hosted_lab_open_and_close_alerts_are_venue_specific_and_paper_only():
+    database = FakeDatabase()
+    sent_messages = []
+    sent_event = threading.Event()
+
+    def notify(message):
+        sent_messages.append(message)
+        sent_event.set()
+        return True
+
+    runner = _runner(database, telegram_notifier=notify)
+    try:
+        lab = runner.labs["BYBIT"]
+        position = SimpleNamespace(
+            symbol="BTCUSDT",
+            quantity=0.025,
+            entry_price=60000.0,
+            stop_loss=59400.0,
+        )
+        lab._notify_paper_open(
+            position,
+            mode="SWING",
+            score={"swing_score": 81},
+        )
+        assert sent_event.wait(timeout=1.0)
+        open_message = sent_messages.pop(0)
+        assert "BOT: BYBIT PAPER LAB" in open_message
+        assert "VENUE: BYBIT SPOT ONLY" in open_message
+        assert "=== PAPER BUY ===" in open_message
+        assert "Score: 81/100" in open_message
+        assert open_message.endswith("PAPER ONLY")
+
+        sent_event.clear()
+        lab._notify_paper_close({
+            "venue": "BYBIT",
+            "symbol": "BTCUSDT",
+            "position_id": "POS-BYBIT-1",
+            "trade_mode": "SWING",
+            "close_reason": "TRAILING_STOP",
+            "quantity": 0.025,
+            "entry_price": 60000.0,
+            "exit_price": 60600.0,
+            "gross_pnl": 15.0,
+            "fees": 1.5,
+            "realized_pnl": 13.5,
+        })
+        assert sent_event.wait(timeout=1.0)
+        close_message = sent_messages.pop(0)
+        assert "BOT: BYBIT PAPER LAB" in close_message
+        assert "=== PAPER SELL ===" in close_message
+        assert "Reason: TRAILING_STOP" in close_message
+        assert "Net P&L: +13.5000$" in close_message
+        assert close_message.endswith("PAPER ONLY")
+    finally:
+        runner.close()
+
+
+def test_hosted_lab_telegram_failure_is_non_fatal():
+    database = FakeDatabase()
+    failed_event = threading.Event()
+
+    def broken_notifier(_message):
+        failed_event.set()
+        raise RuntimeError("telegram unavailable")
+
+    runner = _runner(database, telegram_notifier=broken_notifier)
+    try:
+        lab = runner.labs["OKX"]
+        lab._notify_telegram("PAPER ONLY")
+        # Wait for the worker to exercise the failing notifier. Dispatch must
+        # remain non-blocking and the Paper lab state must remain unchanged.
+        assert failed_event.wait(timeout=1.0)
+        assert lab.entry_blocked == {}
+    finally:
+        runner.close()
 
 
 def test_monitor_only_can_run_one_venue_without_postgres_or_extra_streams():

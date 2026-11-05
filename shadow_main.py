@@ -1362,6 +1362,7 @@ if _hosted_labs_enabled:
                 scan_batch_size=_hosted_scan_batch_size,
                 enabled_venues=_hosted_requested_venues,
                 monitor_only=_hosted_monitor_only,
+                telegram_notifier=_legacy.send_telegram_message,
             )
             if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
                 _hosted_paper_lab_runner.start()
