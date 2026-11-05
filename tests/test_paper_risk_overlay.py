@@ -140,3 +140,4 @@ def test_paper_entry_economics_rejects_fee_thin_target():
     )
     assert result["approved"] is False
     assert result["reason"] == "NET_REWARD_AFTER_FEES_TOO_LOW"
+
