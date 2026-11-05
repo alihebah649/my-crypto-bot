@@ -236,16 +236,19 @@ def test_hosted_lab_open_and_close_alerts_are_venue_specific_and_paper_only():
 
 def test_hosted_lab_telegram_failure_is_non_fatal():
     database = FakeDatabase()
+    failed_event = threading.Event()
 
     def broken_notifier(_message):
+        failed_event.set()
         raise RuntimeError("telegram unavailable")
 
     runner = _runner(database, telegram_notifier=broken_notifier)
     try:
         lab = runner.labs["OKX"]
         lab._notify_telegram("PAPER ONLY")
-        # Delivery runs in a daemon thread; dispatch must not raise in the
-        # Paper cycle even when the external Telegram request fails.
+        # Wait for the worker to exercise the failing notifier. Dispatch must
+        # remain non-blocking and the Paper lab state must remain unchanged.
+        assert failed_event.wait(timeout=1.0)
         assert lab.entry_blocked == {}
     finally:
         runner.close()
