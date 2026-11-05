@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from core.brain_authority import GuardedBrainAuthority
 from core.brain_market_regime import derive_market_breadth
@@ -170,8 +170,10 @@ class _VenueLab:
         monitor_only: bool = False,
         state_connect_factory: Any = None,
         outcome_connect_factory: Any = None,
+        telegram_notifier: Callable[[str], Any] | None = None,
     ) -> None:
         self.venue = venue
+        self.telegram_notifier = telegram_notifier
         self.monitor_only = bool(monitor_only)
         self.monitor_candidates = 0
         self.stream = stream
@@ -567,6 +569,83 @@ class _VenueLab:
     def _record_block(self, reason: str) -> None:
         self.entry_blocked[reason] = int(self.entry_blocked.get(reason, 0)) + 1
 
+    def _notify_telegram(self, message: str) -> None:
+        """Deliver Paper-lab alerts off the trading cycle; notification failures are non-fatal."""
+        notifier = self.telegram_notifier
+        if not callable(notifier):
+            return
+
+        def deliver() -> None:
+            try:
+                delivered = notifier(message)
+                if delivered is False:
+                    logger.warning(
+                        "[HOSTED-PAPER-LAB] Telegram notification not delivered venue=%s",
+                        self.venue,
+                    )
+            except Exception:
+                logger.exception(
+                    "[HOSTED-PAPER-LAB] Telegram notification failed venue=%s",
+                    self.venue,
+                )
+
+        try:
+            threading.Thread(
+                target=deliver,
+                daemon=True,
+                name=f"hosted-paper-lab-telegram-{self.venue.lower()}",
+            ).start()
+        except Exception:
+            logger.exception(
+                "[HOSTED-PAPER-LAB] Telegram notification dispatch failed venue=%s",
+                self.venue,
+            )
+
+    def _notify_paper_open(
+        self,
+        position: Any,
+        *,
+        mode: str,
+        score: Mapping[str, Any],
+    ) -> None:
+        score_value = (
+            score.get("scalp_score") if mode == "SCALP" else score.get("swing_score")
+        )
+        message = (
+            f"🤖 BOT: {self.venue} PAPER LAB\n"
+            f"🏷️ VENUE: {self.venue} SPOT ONLY\n"
+            "=== PAPER BUY ===\n"
+            f"Symbol: {position.symbol}\n"
+            f"Trade Type: {mode}\n"
+            f"Score: {float(score_value or 0.0):.0f}/100\n"
+            f"Quantity: {float(position.quantity):.12g}\n"
+            f"Entry: {float(position.entry_price):.8f}\n"
+            f"Stop: {float(position.stop_loss):.8f}\n"
+            f"Paper cash: ${float(self.adapter.balance.cash):.2f}\n"
+            "PAPER ONLY"
+        )
+        self._notify_telegram(message)
+
+    def _notify_paper_close(self, evidence: Mapping[str, Any]) -> None:
+        message = (
+            f"🤖 BOT: {self.venue} PAPER LAB\n"
+            f"🏷️ VENUE: {self.venue} SPOT ONLY\n"
+            "=== PAPER SELL ===\n"
+            f"Symbol: {str(evidence.get('symbol') or 'UNKNOWN')}\n"
+            f"Position ID: {str(evidence.get('position_id') or 'UNKNOWN')}\n"
+            f"Trade Type: {str(evidence.get('trade_mode') or 'UNKNOWN')}\n"
+            f"Reason: {str(evidence.get('close_reason') or 'UNKNOWN')}\n"
+            f"Quantity: {float(evidence.get('quantity') or 0.0):.12g}\n"
+            f"Entry: {float(evidence.get('entry_price') or 0.0):.8f}\n"
+            f"Exit: {float(evidence.get('exit_price') or 0.0):.8f}\n"
+            f"Gross P&L: {float(evidence.get('gross_pnl') or 0.0):+.4f}$\n"
+            f"Fees: {float(evidence.get('fees') or 0.0):.4f}$\n"
+            f"Net P&L: {float(evidence.get('realized_pnl') or 0.0):+.4f}$\n"
+            f"Paper cash: ${float(self.adapter.balance.cash):.2f}\n"
+            "PAPER ONLY"
+        )
+        self._notify_telegram(message)
+
     def _persist_candidate_capture(
         self,
         capture: Any,
@@ -904,6 +983,7 @@ class _VenueLab:
             price,
             stop_loss,
         )
+        self._notify_paper_open(position, mode=mode, score=score)
 
     def _update_positions(self, now: float) -> None:
         # Positions are marked only with this venue's own ticker. No Binance
@@ -1032,6 +1112,7 @@ class _VenueLab:
             evidence["market_data_policy"] = f"ISOLATED_{self.venue}_WEBSOCKET"
             if self.outcomes.append(evidence):
                 self._reported_closed_ids.add(position_id)
+                self._notify_paper_close(evidence)
             elif self.outcomes.last_error:
                 unresolved_error = str(self.outcomes.last_error)
                 logger.error(
@@ -1315,6 +1396,7 @@ class HostedPaperLabRunner:
         enabled_venues: list[str] | tuple[str, ...] | None = None,
         monitor_only: bool = False,
         connect_factory: Any = None,
+        telegram_notifier: Callable[[str], Any] | None = None,
     ) -> None:
         requested_venues = _SUPPORTED_VENUES if enabled_venues is None else tuple(
             str(venue).strip().upper() for venue in enabled_venues
@@ -1326,6 +1408,7 @@ class HostedPaperLabRunner:
             venue for venue in _SUPPORTED_VENUES if venue in set(requested_venues)
         )
         self.monitor_only = bool(monitor_only)
+        self.telegram_notifier = telegram_notifier
         if not self.monitor_only and not database_url:
             raise ValueError("PAPER_EVIDENCE_DATABASE_URL is required outside monitor-only mode")
         required_streams = {
@@ -1375,6 +1458,7 @@ class HostedPaperLabRunner:
                     monitor_only=self.monitor_only,
                     state_connect_factory=connect_factory,
                     outcome_connect_factory=connect_factory,
+                    telegram_notifier=self.telegram_notifier,
                 )
                 self._sample_startup_memory("BINANCE")
             if "BYBIT" in self.enabled_venues:
@@ -1390,6 +1474,7 @@ class HostedPaperLabRunner:
                     monitor_only=self.monitor_only,
                     state_connect_factory=connect_factory,
                     outcome_connect_factory=connect_factory,
+                    telegram_notifier=self.telegram_notifier,
                 )
                 self._sample_startup_memory("BYBIT")
             if "OKX" in self.enabled_venues:
@@ -1405,6 +1490,7 @@ class HostedPaperLabRunner:
                     monitor_only=self.monitor_only,
                     state_connect_factory=connect_factory,
                     outcome_connect_factory=connect_factory,
+                    telegram_notifier=self.telegram_notifier,
                 )
                 self._sample_startup_memory("OKX")
         except Exception as exc:
