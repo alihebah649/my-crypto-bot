@@ -1936,7 +1936,7 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
             position_ids = {
                 str(outcome.get("position_id") or "").strip()
                 for outcome in outcomes
-                if isinstance(outcome, Mapping)
+                if isinstance(outcome, dict)
                 and str(outcome.get("position_id") or "").strip()
             }
             capture_store = getattr(lab, "entry_captures", None)
