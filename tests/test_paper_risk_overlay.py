@@ -200,6 +200,20 @@ def test_net_floor_shadow_recorder_persists_once_and_skips_partial_exit():
         position, calculator, observed_at="2026-11-06T14:01:00+00:00"
     ) is False
 
+    observing = SimpleNamespace(
+        entry_price=100.0, current_price=100.70, highest_price=101.0,
+        max_profit_percent=1.0, quantity=1.0, entry_fee=0.10, exit_fee=0.0,
+        metadata={},
+    )
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:00:00+00:00"
+    ) is True
+    assert observing.metadata["paper_profit_protection_shadow"]["status"] == "OBSERVING"
+    # No duplicate repository writes while the position remains under observation.
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:01:00+00:00"
+    ) is False
+
     partial = SimpleNamespace(
         entry_price=100.0, current_price=100.38, highest_price=100.74,
         max_profit_percent=0.74, quantity=0.7, entry_fee=0.10, exit_fee=0.03,
