@@ -1368,7 +1368,6 @@ if _hosted_labs_enabled:
             )
             if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
                 _hosted_paper_lab_runner.start()
-                _start_linked_entry_outcome_forensics()
         except Exception:
             _legacy.logger.exception(
                 "[HOSTED-PAPER-LABS] startup failed; MAIN remains unaffected"
@@ -2223,6 +2222,7 @@ def _paper_engine_thread_watchdog() -> None:
 
 
 if __name__ == "__main__":
+    _start_linked_entry_outcome_forensics()
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
     threading.Thread(target=_hosted_lab_daily_report_loop, daemon=True, name="hosted-lab-daily-reports").start()
     threading.Thread(target=_market_health_loop, daemon=True, name="paper-market-health").start()
