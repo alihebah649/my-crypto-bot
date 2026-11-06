@@ -1889,7 +1889,7 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
         main_capture_ids = {
             capture_id
             for outcome in main_outcomes
-            if isinstance(outcome, Mapping)
+            if isinstance(outcome, dict)
             for capture_id in (_forensic_capture_id(outcome),)
             if capture_id
         }
