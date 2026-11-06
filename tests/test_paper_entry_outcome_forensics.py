@@ -65,7 +65,7 @@ def test_main_outcome_joins_to_entry_capture_by_capture_id_and_calculates_mfe():
     assert result["by_trade_mode_and_failed_gate"]["SCALP"]["NO_RECLAIM"]["closed_trades"] == 1
     assert result["by_trade_mode_and_score_band"]["SCALP"]["65_69"]["closed_trades"] == 1
     assert result["by_market_regime"]["BULLISH"]["closed_trades"] == 1
-    assert result["joined_rows"][0]["market_regime_source"] == "OUTCOME_REGIME"
+    assert result["by_market_regime_source"]["OUTCOME_REGIME"]["closed_trades"] == 1
 
 
 def test_hosted_lab_outcome_joins_to_capture_by_position_id():
