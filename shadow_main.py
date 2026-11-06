@@ -1990,13 +1990,127 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
     }
 
 
+def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> None:
+    """Emit bounded, independently readable log records instead of one huge JSON line."""
+    headline = {
+        key: payload.get(key)
+        for key in (
+            "available",
+            "mode",
+            "window_days",
+            "window_start_utc",
+            "window_end_utc",
+            "generated_at_utc",
+            "join_keys",
+            "capture_read_policy",
+            "safety",
+        )
+    }
+    _legacy.logger.warning(
+        "[PAPER-FORENSICS-HEADLINE] %s",
+        json.dumps(headline, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    for venue in ("MAIN", "BYBIT", "OKX"):
+        report = payload.get("venues", {}).get(venue)
+        if not isinstance(report, dict):
+            continue
+        coverage = report.get("coverage")
+        overall = report.get("overall")
+        if coverage is None:
+            _legacy.logger.warning(
+                "[PAPER-FORENSICS-UNAVAILABLE] %s %s",
+                venue,
+                json.dumps(report, ensure_ascii=False, separators=(",", ":")),
+            )
+            continue
+
+        _legacy.logger.warning(
+            "[PAPER-FORENSICS-VENUE] %s %s",
+            venue,
+            json.dumps(
+                {"venue": venue, "coverage": coverage, "overall": overall},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+
+        for mode, stats in sorted((report.get("by_trade_mode") or {}).items()):
+            _legacy.logger.warning(
+                "[PAPER-FORENSICS-MODE] %s %s",
+                venue,
+                json.dumps(
+                    {"venue": venue, "trade_mode": mode, "stats": stats},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+
+        for dimension in (
+            "by_trade_mode_and_failed_gate",
+            "by_trade_mode_and_score_band",
+            "by_trade_mode_and_market_regime",
+        ):
+            groups = report.get(dimension) or {}
+            for mode, members in sorted(groups.items()):
+                for label, stats in sorted(members.items()):
+                    _legacy.logger.warning(
+                        "[PAPER-FORENSICS-SEGMENT] %s %s",
+                        venue,
+                        json.dumps(
+                            {
+                                "venue": venue,
+                                "dimension": dimension,
+                                "trade_mode": mode,
+                                "segment": label,
+                                "stats": stats,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
+
+        for dimension in ("by_close_reason", "by_entry_v2_shadow_approval", "by_market_regime_source"):
+            groups = report.get(dimension) or {}
+            for label, stats in sorted(groups.items()):
+                _legacy.logger.warning(
+                    "[PAPER-FORENSICS-CROSSCHECK] %s %s",
+                    venue,
+                    json.dumps(
+                        {
+                            "venue": venue,
+                            "dimension": dimension,
+                            "segment": label,
+                            "stats": stats,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+
+        for sample_name in ("worst_trades", "best_trades", "losers_with_positive_net_favorable_excursion"):
+            samples = report.get(sample_name) or []
+            for index, sample in enumerate(samples, start=1):
+                _legacy.logger.info(
+                    "[PAPER-FORENSICS-SAMPLE] %s %s",
+                    venue,
+                    json.dumps(
+                        {
+                            "venue": venue,
+                            "sample_type": sample_name,
+                            "rank": index,
+                            "trade": sample,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+
+
 def _emit_linked_entry_outcome_forensics() -> None:
     try:
         payload = _build_linked_entry_outcome_forensics()
-        _legacy.logger.warning(
-            "PAPER LINKED ENTRY OUTCOME FORENSICS %s",
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        )
+        _emit_linked_entry_outcome_forensics_logs(payload)
     except Exception:
         _legacy.logger.exception("Paper linked entry/outcome forensics emission failed")
 
@@ -2020,10 +2134,7 @@ def _paper_forensic_entry_outcomes():
     """Read-only joined evidence for MAIN, Bybit and OKX closed Paper trades."""
     payload = _build_linked_entry_outcome_forensics()
     status_code = 200 if payload.get("available") else 503
-    _legacy.logger.warning(
-        "PAPER LINKED ENTRY OUTCOME FORENSICS %s",
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-    )
+    _emit_linked_entry_outcome_forensics_logs(payload)
     return jsonify(payload), status_code
 
 
