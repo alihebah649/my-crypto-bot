@@ -306,3 +306,80 @@ def test_shadow_main_forensics_reads_only_captures_referenced_by_closed_outcomes
     assert report["venues"]["MAIN"]["coverage"]["matched_closed_trades"] == 1
     assert report["venues"]["BYBIT"]["coverage"]["matched_closed_trades"] == 1
     assert report["venues"]["OKX"]["coverage"]["matched_closed_trades"] == 1
+
+
+
+def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
+    outcomes = [
+        {
+            "position_id": "POS-PROTECTED",
+            "symbol": "ETHUSDT",
+            "trade_mode": "SWING",
+            "entry_price": 100.0,
+            "entry_stop_loss": 98.0,
+            "quantity": 1.0,
+            "gross_pnl": 0.8,
+            "realized_pnl": 0.6,
+            "fees": 0.2,
+            "highest_price": 101.0,
+            "max_profit_percent": 1.0,
+            "close_reason": "TRAILING_STOP",
+            "exit_protection": {
+                "paper_profit_protection": True,
+                "paper_profit_protection_detail": {
+                    "current_gain_percent": 0.65,
+                    "peak_gain_percent": 1.0,
+                    "retrace_percent": 0.35,
+                    "min_gain_percent": 0.6,
+                    "min_retrace_percent": 0.35,
+                },
+            },
+        },
+        {
+            "position_id": "POS-UNPROTECTED",
+            "symbol": "BTCUSDT",
+            "trade_mode": "SWING",
+            "entry_price": 100.0,
+            "entry_stop_loss": 98.0,
+            "quantity": 1.0,
+            "gross_pnl": -0.4,
+            "realized_pnl": -0.6,
+            "fees": 0.2,
+            "highest_price": 100.35,
+            "max_profit_percent": 0.35,
+            "close_reason": "STOP_LOSS",
+            "exit_protection": {
+                "paper_profit_protection": False,
+                "paper_profit_protection_detail": None,
+            },
+        },
+    ]
+    captures = [
+        {
+            "capture_id": "CAP-PROTECTED",
+            "position_id": "POS-PROTECTED",
+            "candidate": {"symbol": "ETHUSDT", "trade_mode": "SWING", "score": 82},
+            "entry_economics": {"reward_risk": 1.5, "net_reward_percent": 1.2},
+            "legacy_result": {"atr": 1.0},
+        },
+        {
+            "capture_id": "CAP-UNPROTECTED",
+            "position_id": "POS-UNPROTECTED",
+            "candidate": {"symbol": "BTCUSDT", "trade_mode": "SWING", "score": 83},
+            "entry_economics": {"reward_risk": 1.5, "net_reward_percent": 1.2},
+            "legacy_result": {"atr": 1.0},
+        },
+    ]
+
+    report = build_linked_entry_outcome_analysis("BYBIT", outcomes, captures)
+
+    assert report["coverage"]["matched_closed_trades"] == 2
+    assert report["overall"]["paper_profit_protection_observed_trades"] == 2
+    assert report["overall"]["paper_profit_protection_triggered_trades"] == 1
+    assert report["overall"]["paper_profit_protection_trigger_rate_percent"] == 50.0
+    assert report["by_trade_mode_and_peak_gain_band"]["SWING"]["1_00_TO_2_00"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_peak_gain_band"]["SWING"]["0_20_TO_0_40"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_paper_profit_protection"]["SWING"]["TRUE"]["closed_trades"] == 1
+    assert report["by_paper_profit_protection_triggered"]["FALSE"]["closed_trades"] == 1
+    assert report["worst_trades"][0]["paper_profit_protection_triggered"] is False
+    assert report["best_trades"][0]["paper_profit_protection_detail"]["min_gain_percent"] == 0.6

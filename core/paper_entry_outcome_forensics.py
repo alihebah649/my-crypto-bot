@@ -78,6 +78,26 @@ def _capture_parts(capture: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
     return candidate, legacy, scenario, scenario_risk
 
 
+def _peak_gain_band(value: Any) -> str:
+    """Bucket recorded peak gain in percentage points for exit-protection analysis."""
+    peak = _number(value)
+    if peak is None:
+        return "UNKNOWN"
+    if peak <= 0.0:
+        return "NON_POSITIVE"
+    if peak < 0.20:
+        return "POSITIVE_UNDER_0_20"
+    if peak < 0.40:
+        return "0_20_TO_0_40"
+    if peak < 0.60:
+        return "0_40_TO_0_60"
+    if peak < 1.00:
+        return "0_60_TO_1_00"
+    if peak < 2.00:
+        return "1_00_TO_2_00"
+    return "2_PLUS"
+
+
 def _joined_row(
     venue: str,
     outcome: Mapping[str, Any],
@@ -134,6 +154,14 @@ def _joined_row(
     gross_pnl = _first_number(outcome.get("gross_pnl"))
     net_pnl = _first_number(outcome.get("realized_pnl"))
     fees = _first_number(outcome.get("fees"))
+    exit_protection = _mapping(outcome.get("exit_protection"))
+    protection_flag = exit_protection.get("paper_profit_protection")
+    protection_triggered = (
+        protection_flag if isinstance(protection_flag, bool) else None
+    )
+    protection_detail = _mapping(
+        exit_protection.get("paper_profit_protection_detail")
+    )
     entry_v2_approved = capture_v2.get(
         "approved",
         outcome_v2.get("approved", chain_v2.get("approved")),
@@ -251,6 +279,7 @@ def _joined_row(
         "85_89" if score < 90 else
         "90_PLUS"
     )
+    peak_gain_band = _peak_gain_band(max_profit_percent)
 
     return {
         "venue": str(venue).upper(),
@@ -278,6 +307,19 @@ def _joined_row(
         "max_profit_percent": max_profit_percent,
         "net_mfe": net_mfe,
         "mfe_source": mfe_source,
+        "peak_gain_percent": max_profit_percent,
+        "peak_gain_band": peak_gain_band,
+        "paper_profit_protection_triggered": protection_triggered,
+        "paper_profit_protection_detail": (
+            {
+                "current_gain_percent": _number(protection_detail.get("current_gain_percent")),
+                "peak_gain_percent": _number(protection_detail.get("peak_gain_percent")),
+                "retrace_percent": _number(protection_detail.get("retrace_percent")),
+                "min_gain_percent": _number(protection_detail.get("min_gain_percent")),
+                "min_retrace_percent": _number(protection_detail.get("min_retrace_percent")),
+            }
+            if protection_detail else None
+        ),
         "target_reached": target_reached,
         "entry_v2_approved_shadow": entry_v2_approved,
         "entry_v2_decision_shadow": str(
@@ -341,6 +383,15 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     ]
     target_rows = [row for row in rows if row.get("target_reached") is not None]
     target_hits = [row for row in target_rows if row.get("target_reached") is True]
+    protection_rows = [
+        row for row in rows
+        if isinstance(row.get("paper_profit_protection_triggered"), bool)
+    ]
+    protection_triggered_rows = [
+        row for row in protection_rows
+        if row.get("paper_profit_protection_triggered") is True
+    ]
+    peak_gain_values = [_number(row.get("peak_gain_percent")) for row in rows]
 
     def mean(values: list[float | None]) -> float | None:
         clean = [value for value in values if value is not None and isfinite(value)]
@@ -386,6 +437,14 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             len(losing_rows) - len(losing_with_positive_mfe)
         ),
         "average_net_favorable_excursion_usd": mean(valid_mfe),
+        "peak_gain_percent_observed_trades": sum(value is not None for value in peak_gain_values),
+        "average_peak_gain_percent": mean(peak_gain_values),
+        "paper_profit_protection_observed_trades": len(protection_rows),
+        "paper_profit_protection_triggered_trades": len(protection_triggered_rows),
+        "paper_profit_protection_trigger_rate_percent": (
+            round(len(protection_triggered_rows) / len(protection_rows) * 100.0, 2)
+            if protection_rows else None
+        ),
     }
 
 
@@ -488,7 +547,9 @@ def build_linked_entry_outcome_analysis(
             "symbol", "trade_mode", "score", "net_pnl", "fees",
             "expected_rr", "expected_net_rr_after_fees",
             "realized_r_multiple_net", "stop_atr_multiple",
-            "net_mfe", "target_reached", "close_reason",
+            "net_mfe", "peak_gain_percent", "peak_gain_band",
+            "paper_profit_protection_triggered", "paper_profit_protection_detail",
+            "target_reached", "close_reason",
             "entry_v2_approved_shadow", "entry_v2_failed_gate_shadow",
             "market_regime",
         )
@@ -519,7 +580,16 @@ def build_linked_entry_outcome_analysis(
         "by_trade_mode_and_market_regime": _group_by_two_keys(
             joined, "trade_mode", "market_regime"
         ),
+        "by_trade_mode_and_peak_gain_band": _group_by_two_keys(
+            joined, "trade_mode", "peak_gain_band"
+        ),
+        "by_trade_mode_and_paper_profit_protection": _group_by_two_keys(
+            joined, "trade_mode", "paper_profit_protection_triggered"
+        ),
         "by_close_reason": _group(joined, "close_reason"),
+        "by_paper_profit_protection_triggered": _group(
+            joined, "paper_profit_protection_triggered"
+        ),
         "by_entry_v2_shadow_approval": _group(joined, "entry_v2_approved_shadow"),
         "by_entry_v2_shadow_failed_gate": _group(joined, "entry_v2_failed_gate_shadow"),
         "by_market_regime": _group(joined, "market_regime"),
@@ -533,6 +603,8 @@ def build_linked_entry_outcome_analysis(
             "Only closed outcomes in the requested time window are analyzed.",
             "A target hit is inferred from the recorded highest price; it is unavailable when that price was not persisted.",
             "Net favorable excursion subtracts the trade's recorded total fees from the peak-price gross gain; it is a counterfactual estimate, not an executed exit.",
+            "Peak-gain bands use the captured maximum favorable percentage; they do not reconstruct the order of intratrade price ticks.",
+            "Profit-protection activation is read from the persisted exit_protection flag; historical rows without that flag remain unknown.",
             "A missing capture is reported as unmatched and is never silently filled with current strategy settings.",
         ],
     }
