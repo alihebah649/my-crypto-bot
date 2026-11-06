@@ -858,11 +858,14 @@ def test_hosted_lab_persists_entry_v2_candidate_with_all_gate_results():
             decision="REJECTED_BRAIN_AUTHORITY",
             failed_gate="BEAR_NO_TARGET_TIGHT_STOP",
             brain_record=brain_record,
+            market_regime="BEARISH",
         )
 
         key = ("ENTRY_V2_CAPTURE_BYBIT_HOSTED_LAB", "bybit-entry-capture-1")
         record = database.rows[key]
         assert record["venue"] == "BYBIT"
+        assert record["market_regime"] == "BEARISH"
+        assert record["candidate"]["market_regime"] == "BEARISH"
         assert record["candidate"]["trade_mode"] == "SCALP"
         assert record["candidate"]["score"] == 72
         assert record["entry_economics"]["approved"] is True
