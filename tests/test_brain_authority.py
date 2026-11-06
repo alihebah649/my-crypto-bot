@@ -453,3 +453,79 @@ def test_brain_promotes_low_rsi_swing_higher_timeframe_bearish_veto():
     assert record.brain_action == "HOLD"
     assert record.brain_reason == "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
     assert record.context["selective_v2_veto"] == "V2_SWING_HIGHER_TIMEFRAMES_BEARISH"
+
+
+
+def test_main_paper_trial_seller_pressure_veto_is_opt_in_in_brain_authority():
+    strategy = {
+        "signal": "BUY",
+        "scalp_signal": "BUY",
+        "scalp_score": 70,
+        "swing_score": 50,
+        "trade_mode": "SCALP",
+        "scalp_confirmed_reversal": True,
+        "scalp_recovery_confirmation": False,
+        "scalp_structural_confirmation": True,
+        "volume_ratio_5m": 1.40,
+        "seller_failure_confirmed": True,
+        "mtf_net": 8,
+        "mtf_weighted_bull": 20,
+        "mtf_weighted_bear": 12,
+        "rsi5m": 39.0,
+    }
+    shadow = {
+        "failed_gate": "SELLER_PRESSURE_NOT_INVALIDATED",
+        "adaptive_scalp_shadow": {
+            "regime": "BULL",
+            "five_m_bias": "NEUTRAL",
+            "volume_ratio_5m": 1.40,
+            "classification": "NO_RECOVERY",
+        },
+    }
+
+    baseline = GuardedBrainAuthority().evaluate_entry(
+        "TESTUSDT",
+        strategy,
+        trade_mode="SCALP",
+        market_regime="BULL",
+        entry_v2_shadow=shadow,
+    )
+    trial = GuardedBrainAuthority().evaluate_entry(
+        "TESTUSDT",
+        strategy,
+        trade_mode="SCALP",
+        market_regime="BULL",
+        entry_v2_shadow=shadow,
+        paper_trial_seller_pressure_veto=True,
+    )
+
+    assert baseline.allowed is True
+    assert trial.allowed is False
+    assert trial.brain_reason == "PAPER_TRIAL_MAIN_SCALP_SELLER_PRESSURE"
+    assert trial.context["paper_trial_seller_pressure_veto_enabled"] is True
+    assert trial.context["paper_trial_seller_pressure_veto_applied"] is True
+
+
+def test_main_paper_trial_flag_does_not_change_swing_brain_authority():
+    strategy = {
+        "signal": "BUY",
+        "swing_signal": "BUY",
+        "scalp_signal": "HOLD",
+        "swing_score": 82,
+        "scalp_score": 40,
+        "trade_mode": "SWING",
+        "seller_failure_confirmed": True,
+        "volume_ratio_5m": 1.4,
+        "mtf_net": 12,
+    }
+    record = GuardedBrainAuthority().evaluate_entry(
+        "TESTUSDT",
+        strategy,
+        trade_mode="SWING",
+        market_regime="BULL",
+        entry_v2_shadow={"failed_gate": "SELLER_PRESSURE_NOT_INVALIDATED"},
+        paper_trial_seller_pressure_veto=True,
+    )
+    assert record.allowed is True
+    assert record.context["paper_trial_seller_pressure_veto_enabled"] is True
+    assert record.context["paper_trial_seller_pressure_veto_applied"] is False
