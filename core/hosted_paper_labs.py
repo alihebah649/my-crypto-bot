@@ -659,6 +659,7 @@ class _VenueLab:
         failed_gate: str | None = None,
         brain_record: Any = None,
         position_id: str | None = None,
+        market_regime: str | None = None,
     ) -> None:
         """Persist the candidate's exact Entry v2 and final Paper gate evidence."""
         brain = None
@@ -675,6 +676,7 @@ class _VenueLab:
             "venue_mode": f"{self.venue}_HOSTED_PAPER_LAB",
             "market_data_policy": f"ISOLATED_{self.venue}_WEBSOCKET",
             "observed_at": time.time(),
+            "market_regime": str(market_regime or "UNKNOWN").upper(),
             "candidate": {
                 "symbol": str(capture.symbol).upper(),
                 "trade_mode": str(mode).upper(),
@@ -688,6 +690,7 @@ class _VenueLab:
                 "stop_loss": float(stop_loss),
                 "market_data_source": self.venue,
                 "market_data_transport": "WEBSOCKET",
+                "market_regime": str(market_regime or "UNKNOWN").upper(),
             },
             "entry_economics": dict(economics),
             "brain_authority": brain,
@@ -850,6 +853,7 @@ class _VenueLab:
                 economics=economics,
                 decision="REJECTED_ENTRY_ECONOMICS",
                 failed_gate=failed_gate,
+                market_regime=market_regime,
             )
             self._record_block(failed_gate)
             return
@@ -875,6 +879,7 @@ class _VenueLab:
                 decision="REJECTED_BRAIN_AUTHORITY",
                 failed_gate=failed_gate,
                 brain_record=brain_record,
+                market_regime=market_regime,
             )
             self._record_block(failed_gate)
             return
@@ -912,6 +917,7 @@ class _VenueLab:
                 decision="REJECTED_TRADE_MANAGER",
                 failed_gate=failed_gate,
                 brain_record=brain_record,
+                market_regime=market_regime,
             )
             self._record_block(failed_gate)
             return
@@ -958,6 +964,7 @@ class _VenueLab:
                 decision="REJECTED_STATE_PERSISTENCE",
                 failed_gate="PAPER_LAB_STATE_NOT_DURABLE",
                 brain_record=brain_record,
+                market_regime=market_regime,
             )
             self._record_block("PAPER_LAB_STATE_NOT_DURABLE")
             return
@@ -972,6 +979,7 @@ class _VenueLab:
             decision="PAPER_POSITION_OPENED",
             brain_record=brain_record,
             position_id=str(position.position_id),
+            market_regime=market_regime,
         )
         self.entry_allowed += 1
         logger.info(

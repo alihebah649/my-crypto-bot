@@ -183,13 +183,20 @@ def _joined_row(
         if fees is not None and quote_notional is not None and quote_notional > 0
         else None
     )
+    risk_notional = (
+        stop_distance * quantity
+        if stop_distance is not None and quantity is not None
+        and stop_distance > 0 and quantity > 0
+        else None
+    )
     realized_r = (
-        net_pnl / (stop_distance * quantity)
-        if net_pnl is not None
-        and stop_distance is not None
-        and quantity is not None
-        and stop_distance > 0
-        and quantity > 0
+        net_pnl / risk_notional
+        if net_pnl is not None and risk_notional is not None
+        else None
+    )
+    fee_r_multiple = (
+        fees / risk_notional
+        if fees is not None and risk_notional is not None
         else None
     )
 
@@ -215,11 +222,43 @@ def _joined_row(
     )
     close_reason = str(outcome.get("close_reason") or "UNKNOWN").upper()
     symbol = str(outcome.get("symbol") or candidate.get("symbol") or capture.get("symbol") or "UNKNOWN").upper()
+    raw_regime = (
+        capture.get("market_regime")
+        or candidate.get("market_regime")
+        or _mapping(outcome.get("regime")).get("market")
+        or _mapping(scenario.get("market")).get("regime")
+        or strategy.get("market_regime")
+    )
+    regime_source = (
+        "ENTRY_CAPTURE"
+        if capture.get("market_regime") or candidate.get("market_regime")
+        else "OUTCOME_REGIME"
+        if _mapping(outcome.get("regime")).get("market")
+        else "ENTRY_SCENARIO"
+        if _mapping(scenario.get("market")).get("regime")
+        else "STRATEGY_SNAPSHOT"
+        if strategy.get("market_regime")
+        else "UNKNOWN"
+    )
+    market_regime = str(raw_regime or "UNKNOWN").upper()
+    score_band = (
+        "UNKNOWN" if score is None else
+        "BELOW_65" if score < 65 else
+        "65_69" if score < 70 else
+        "70_74" if score < 75 else
+        "75_79" if score < 80 else
+        "80_84" if score < 85 else
+        "85_89" if score < 90 else
+        "90_PLUS"
+    )
+
     return {
         "venue": str(venue).upper(),
         "symbol": symbol,
         "trade_mode": mode,
         "score": score,
+        "score_band": score_band,
+        "market_regime_source": regime_source,
         "entry_price": entry,
         "entry_stop_loss": stop,
         "target_price": target,
@@ -234,6 +273,7 @@ def _joined_row(
         "planned_net_reward_percent": planned_net_reward_percent,
         "stop_atr_multiple": stop_atr_multiple,
         "realized_r_multiple_net": realized_r,
+        "fees_as_r_multiple": fee_r_multiple,
         "highest_price": highest,
         "max_profit_percent": max_profit_percent,
         "net_mfe": net_mfe,
@@ -257,11 +297,7 @@ def _joined_row(
             or scenario.get("setup_type")
             or "UNKNOWN"
         ).upper(),
-        "market_regime": str(
-            _mapping(outcome.get("regime")).get("market")
-            or _mapping(scenario.get("market")).get("regime")
-            or "UNKNOWN"
-        ).upper(),
+        "market_regime": market_regime,
         "rsi5m": _first_number(legacy.get("rsi5m"), strategy.get("rsi5m")),
         "volume_ratio_5m": _first_number(
             legacy.get("volume_ratio_5m"),
@@ -285,7 +321,17 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     negative_sum = abs(sum(value or 0.0 for value in net_values if value is not None and value < 0))
     valid_rr = [_number(row.get("expected_rr")) for row in rows]
     valid_net_rr = [_number(row.get("expected_net_rr_after_fees")) for row in rows]
+    paired_rr_rows = [
+        row for row in rows
+        if _number(row.get("expected_rr")) is not None
+        and _number(row.get("expected_net_rr_after_fees")) is not None
+    ]
+    paired_gross_rr = [_number(row.get("expected_rr")) for row in paired_rr_rows]
+    paired_net_rr = [
+        _number(row.get("expected_net_rr_after_fees")) for row in paired_rr_rows
+    ]
     valid_realized_r = [_number(row.get("realized_r_multiple_net")) for row in rows]
+    valid_fee_r = [_number(row.get("fees_as_r_multiple")) for row in rows]
     valid_stop_atr = [_number(row.get("stop_atr_multiple")) for row in rows]
     valid_mfe = [_number(row.get("net_mfe")) for row in rows]
     losing_rows = [row for row in rows if (_number(row.get("net_pnl")) or 0.0) < 0]
@@ -313,8 +359,15 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "average_win_net": mean([_number(row.get("net_pnl")) for row in wins]),
         "average_loss_net": mean([_number(row.get("net_pnl")) for row in losses]),
         "average_expected_rr": mean(valid_rr),
+        "expected_rr_sample_count": sum(value is not None for value in valid_rr),
         "average_expected_net_rr_after_fees": mean(valid_net_rr),
+        "expected_net_rr_sample_count": sum(value is not None for value in valid_net_rr),
+        "paired_expected_rr_sample_count": len(paired_rr_rows),
+        "paired_average_expected_rr": mean(paired_gross_rr),
+        "paired_average_expected_net_rr_after_fees": mean(paired_net_rr),
         "average_realized_r_multiple_net": mean(valid_realized_r),
+        "average_fees_as_r_multiple": mean(valid_fee_r),
+        "fees_as_r_sample_count": sum(value is not None for value in valid_fee_r),
         "average_stop_atr_multiple": mean(valid_stop_atr),
         "average_fee_percent_of_entry_notional": mean([
             _number(row.get("fee_percent_of_entry_notional")) for row in rows
@@ -345,6 +398,28 @@ def _group(rows: list[Mapping[str, Any]], key: str) -> dict[str, Any]:
     return {
         label: _aggregate(buckets[label])
         for label in sorted(buckets)
+    }
+
+
+def _group_by_two_keys(
+    rows: list[Mapping[str, Any]],
+    first_key: str,
+    second_key: str,
+) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for row in rows:
+        first = str(row.get(first_key) or "UNKNOWN").upper()
+        second_value = row.get(second_key)
+        second = "UNKNOWN" if second_value is None or second_value == "" else str(second_value).upper()
+        buckets[first][second].append(row)
+    return {
+        first: {
+            second: _aggregate(buckets[first][second])
+            for second in sorted(buckets[first])
+        }
+        for first in sorted(buckets)
     }
 
 
@@ -435,10 +510,20 @@ def build_linked_entry_outcome_analysis(
         },
         "overall": _aggregate(joined),
         "by_trade_mode": _group(joined, "trade_mode"),
+        "by_trade_mode_and_failed_gate": _group_by_two_keys(
+            joined, "trade_mode", "entry_v2_failed_gate_shadow"
+        ),
+        "by_trade_mode_and_score_band": _group_by_two_keys(
+            joined, "trade_mode", "score_band"
+        ),
+        "by_trade_mode_and_market_regime": _group_by_two_keys(
+            joined, "trade_mode", "market_regime"
+        ),
         "by_close_reason": _group(joined, "close_reason"),
         "by_entry_v2_shadow_approval": _group(joined, "entry_v2_approved_shadow"),
         "by_entry_v2_shadow_failed_gate": _group(joined, "entry_v2_failed_gate_shadow"),
         "by_market_regime": _group(joined, "market_regime"),
+        "by_market_regime_source": _group(joined, "market_regime_source"),
         "losers_with_positive_net_favorable_excursion": [
             public_sample(row) for row in losing_positive_mfe[:10]
         ],
