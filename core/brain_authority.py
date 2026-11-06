@@ -109,7 +109,7 @@ class GuardedBrainAuthority:
 
         paper_trial_veto_applied = bool(
             paper_trial_seller_pressure_veto
-            and lane == "SCALP"
+            and str(trade_mode).upper() == "SCALP"
             and str(
                 (entry_v2_shadow or {}).get("failed_gate")
                 or (entry_v2_shadow or {}).get("v2_failed_gate")
