@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import json
 import logging
 import os
 import threading
@@ -1033,6 +1034,28 @@ class _VenueLab:
                     position, self.runtime.facade.calculator
                 ):
                     self.repository.update(position)
+                    shadow_trial = position.metadata.get("paper_profit_protection_shadow", {})
+                    logger.info(
+                        "[PAPER-PROFIT-PROTECTION-SHADOW] %s",
+                        json.dumps(
+                            {
+                                "venue": self.venue,
+                                "position_id": str(position.position_id),
+                                "symbol": str(position.symbol).upper(),
+                                "trade_mode": str(position.entry_metadata.get("trade_mode", "UNKNOWN")).upper(),
+                                "status": shadow_trial.get("status"),
+                                "triggered": shadow_trial.get("triggered"),
+                                "current_gain_percent": shadow_trial.get("current_gain_percent"),
+                                "peak_gain_percent": shadow_trial.get("peak_gain_percent"),
+                                "retrace_percent": shadow_trial.get("retrace_percent"),
+                                "net_pnl_estimate_after_fees": shadow_trial.get("net_pnl_estimate_after_fees"),
+                                "exit_price": shadow_trial.get("exit_price"),
+                                "reason": shadow_trial.get("reason"),
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
                     changed_by_overlay = True
                 protection = profit_protection_snapshot(
                     entry_price=position.entry_price,
