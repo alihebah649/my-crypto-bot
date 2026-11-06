@@ -107,6 +107,15 @@ class GuardedBrainAuthority:
             symbol_regime=symbol_view.regime,
         )
 
+        paper_trial_veto_applied = bool(
+            paper_trial_seller_pressure_veto
+            and lane == "SCALP"
+            and str(
+                (entry_v2_shadow or {}).get("failed_gate")
+                or (entry_v2_shadow or {}).get("v2_failed_gate")
+                or ""
+            ).upper() == "SELLER_PRESSURE_NOT_INVALIDATED"
+        )
         selective_veto_reason = selective_entry_veto(
             lane,
             entry_v2_shadow,
@@ -127,15 +136,7 @@ class GuardedBrainAuthority:
                         or (entry_v2_shadow or {}).get("v2_failed_gate")
                         or ""
                     ),
-                    "paper_trial_seller_pressure_veto": bool(
-                        paper_trial_seller_pressure_veto
-                        and str(trade_mode).upper() == "SCALP"
-                        and str(
-                            (entry_v2_shadow or {}).get("failed_gate")
-                            or (entry_v2_shadow or {}).get("v2_failed_gate")
-                            or ""
-                        ).upper() == "SELLER_PRESSURE_NOT_INVALIDATED"
-                    ),
+                    "paper_trial_seller_pressure_veto": paper_trial_veto_applied,
                 },
             )
 
@@ -174,7 +175,7 @@ class GuardedBrainAuthority:
                     paper_trial_seller_pressure_veto
                 ),
                 "paper_trial_seller_pressure_veto_applied": bool(
-                    decision.metadata.get("paper_trial_seller_pressure_veto", False)
+                    paper_trial_veto_applied
                 ),
                 "brain_metadata": dict(decision.metadata),
             },
