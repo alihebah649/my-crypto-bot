@@ -257,6 +257,7 @@ def record_profit_protection_net_floor_shadow(
             return False
     else:
         status = ""
+    created = not isinstance(existing, dict)
     stamp = observed_at or datetime.now(timezone.utc).isoformat()
     if float(getattr(position, "exit_fee", 0.0) or 0.0) > 0.0:
         metadata["paper_profit_protection_shadow"] = {
@@ -309,7 +310,10 @@ def record_profit_protection_net_floor_shadow(
             "exit_price": current,
             "entry_fee_rate": entry_fee_rate,
         })
-    return True
+        return True
+    # Existing OBSERVING records are intentionally not rewritten each market
+    # cycle. Persist only the first observation and the eventual first trigger.
+    return created
 
 
 def profit_protection_trigger(
