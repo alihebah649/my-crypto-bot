@@ -251,23 +251,31 @@ def record_profit_protection_net_floor_shadow(
         metadata = {}
         position.metadata = metadata
     existing = metadata.get("paper_profit_protection_shadow")
-    if isinstance(existing, dict):
-        status = str(existing.get("status") or "").upper()
-        if status in {"TRIGGERED", "SKIPPED_PARTIAL_EXIT"}:
-            return False
-    else:
-        status = ""
     created = not isinstance(existing, dict)
     stamp = observed_at or datetime.now(timezone.utc).isoformat()
     if float(getattr(position, "exit_fee", 0.0) or 0.0) > 0.0:
+        previous_first_seen = (
+            existing.get("first_observed_at")
+            if isinstance(existing, dict) else stamp
+        )
+        if (
+            isinstance(existing, dict)
+            and str(existing.get("status") or "").upper() == "SKIPPED_PARTIAL_EXIT"
+        ):
+            return False
         metadata["paper_profit_protection_shadow"] = {
             "version": "PAPER_PROFIT_PROTECTION_NET_FLOOR_V1",
             "status": "SKIPPED_PARTIAL_EXIT",
             "triggered": False,
-            "first_observed_at": stamp,
+            "first_observed_at": previous_first_seen,
+            "skipped_at": stamp,
             "reason": "PARTIAL_EXIT_ALREADY_EXECUTED",
         }
         return True
+    if isinstance(existing, dict):
+        status = str(existing.get("status") or "").upper()
+        if status in {"TRIGGERED", "SKIPPED_PARTIAL_EXIT"}:
+            return False
 
     entry = float(getattr(position, "entry_price", 0.0) or 0.0)
     current = float(getattr(position, "current_price", 0.0) or 0.0)
