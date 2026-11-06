@@ -223,3 +223,60 @@ def test_unrelated_swing_structure_failure_keeps_existing_rsi_calibration():
         {"failed_gate": "SWING_STRUCTURE_OR_HTF_ALIGNMENT_MISSING"},
         trade_mode="SWING",
     ) is None
+
+
+
+def test_main_paper_trial_veto_is_opt_in_and_only_matches_scalp_seller_pressure():
+    strategy = {"rsi5m": 39.0}
+    shadow = _shadow(
+        regime="BULL",
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=1.40,
+        classification="NO_RECOVERY",
+    )
+
+    # Baseline remains advisory when the experiment flag is absent or false.
+    assert selective_entry_veto(strategy, shadow, trade_mode="SCALP") is None
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+        paper_trial_seller_pressure_veto=False,
+    ) is None
+
+    assert selective_entry_veto(
+        strategy,
+        shadow,
+        trade_mode="SCALP",
+        paper_trial_seller_pressure_veto=True,
+    ) == "PAPER_TRIAL_MAIN_SCALP_SELLER_PRESSURE"
+
+
+def test_main_paper_trial_veto_never_applies_to_swing_or_other_failed_gates():
+    strategy = {"rsi5m": 39.0}
+    seller_reject = _shadow(
+        regime="BULL",
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=1.40,
+        classification="NO_RECOVERY",
+    )
+    structural_reject = _shadow(
+        failed_gate="STRUCTURAL_RECLAIM_NOT_CONFIRMED",
+        regime="BULL",
+        five_m_bias="NEUTRAL",
+        volume_ratio_5m=1.40,
+        classification="NO_RECOVERY",
+    )
+
+    assert selective_entry_veto(
+        strategy,
+        seller_reject,
+        trade_mode="SWING",
+        paper_trial_seller_pressure_veto=True,
+    ) is None
+    assert selective_entry_veto(
+        strategy,
+        structural_reject,
+        trade_mode="SCALP",
+        paper_trial_seller_pressure_veto=True,
+    ) is None
