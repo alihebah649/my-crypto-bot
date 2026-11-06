@@ -40,6 +40,7 @@ from core.entry_freshness_audit import entry_execution_freshness_allowed
 from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.paper_outcome_analysis import build_paper_outcome_analysis
+from core.paper_entry_outcome_forensics import build_linked_entry_outcome_analysis
 from core.paper_outcome_report import format_paper_outcome_report
 from core.hosted_paper_lab_report import format_hosted_lab_daily_report
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
@@ -1367,6 +1368,7 @@ if _hosted_labs_enabled:
             )
             if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
                 _hosted_paper_lab_runner.start()
+                _start_linked_entry_outcome_forensics()
         except Exception:
             _legacy.logger.exception(
                 "[HOSTED-PAPER-LABS] startup failed; MAIN remains unaffected"
@@ -1821,6 +1823,158 @@ def _paper_outcome_analysis():
             "reason": "PAPER_OUTCOME_ANALYSIS_FAILED",
             "error": type(exc).__name__,
         }), 503
+
+
+
+
+_PAPER_FORENSICS_WINDOW_DAYS = 90
+_PAPER_FORENSICS_START_LOCK = threading.Lock()
+_PAPER_FORENSICS_STARTED = False
+
+
+def _paper_forensics_time_range() -> tuple[str, str]:
+    end = datetime.now(timezone.utc)
+    start = datetime.fromtimestamp(
+        end.timestamp() - _PAPER_FORENSICS_WINDOW_DAYS * 24.0 * 60.0 * 60.0,
+        tz=timezone.utc,
+    )
+    return start.isoformat(), end.isoformat()
+
+
+def _read_forensic_evidence(store: Any, timestamp_field: str, start: str, end: str):
+    if store is None or not callable(getattr(store, "read_time_range", None)):
+        raise RuntimeError("EVIDENCE_STORE_UNAVAILABLE")
+    rows = store.read_time_range(timestamp_field, start, end)
+    if getattr(store, "last_error", None):
+        raise RuntimeError("EVIDENCE_STORE_READ_FAILED")
+    return rows
+
+
+def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
+    """Read and join durable MAIN/BYBIT/OKX captures and closed outcomes."""
+    start, end = _paper_forensics_time_range()
+    venues: dict[str, Any] = {}
+
+    main_capture_store = getattr(
+        globals().get("_entry_v2_runtime_capture"),
+        "capture_store",
+        None,
+    )
+    try:
+        main_outcomes = _read_forensic_evidence(
+            globals().get("_paper_outcome_store"),
+            "closed_at_utc",
+            start,
+            end,
+        )
+        main_captures = _read_forensic_evidence(
+            main_capture_store,
+            "captured_at",
+            start,
+            end,
+        )
+        venues["MAIN"] = build_linked_entry_outcome_analysis(
+            "MAIN",
+            main_outcomes,
+            main_captures,
+        )
+    except Exception as exc:
+        _legacy.logger.exception("MAIN linked entry/outcome forensics failed")
+        venues["MAIN"] = {
+            "available": False,
+            "reason": str(exc).split(":", 1)[0],
+        }
+
+    runner = globals().get("_hosted_paper_lab_runner")
+    for venue in ("BYBIT", "OKX"):
+        lab = runner.labs.get(venue) if runner is not None else None
+        if lab is None:
+            venues[venue] = {"available": False, "reason": "HOSTED_LAB_UNAVAILABLE"}
+            continue
+        try:
+            outcomes = _read_forensic_evidence(
+                getattr(lab, "outcomes", None),
+                "closed_at_utc",
+                start,
+                end,
+            )
+            captures = _read_forensic_evidence(
+                getattr(lab, "entry_captures", None),
+                "captured_at",
+                start,
+                end,
+            )
+            venues[venue] = build_linked_entry_outcome_analysis(
+                venue,
+                outcomes,
+                captures,
+            )
+            del outcomes
+            del captures
+        except Exception as exc:
+            _legacy.logger.exception("%s linked entry/outcome forensics failed", venue)
+            venues[venue] = {
+                "available": False,
+                "reason": str(exc).split(":", 1)[0],
+            }
+
+    return {
+        "available": all(
+            isinstance(venues.get(venue), dict)
+            and venues[venue].get("coverage") is not None
+            for venue in ("MAIN", "BYBIT", "OKX")
+        ),
+        "mode": "PAPER_ONLY",
+        "window_days": _PAPER_FORENSICS_WINDOW_DAYS,
+        "window_start_utc": start,
+        "window_end_utc": end,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "join_keys": {
+            "MAIN": "entry_v2.capture_id -> ENTRY_V2_CAPTURE.capture_id",
+            "BYBIT": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id",
+            "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id",
+        },
+        "venues": venues,
+        "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
+    }
+
+
+def _emit_linked_entry_outcome_forensics() -> None:
+    try:
+        payload = _build_linked_entry_outcome_forensics()
+        _legacy.logger.warning(
+            "PAPER LINKED ENTRY OUTCOME FORENSICS %s",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        _legacy.logger.exception("Paper linked entry/outcome forensics emission failed")
+
+
+def _start_linked_entry_outcome_forensics() -> None:
+    """Run one bounded, read-only forensic snapshot after hosted labs start."""
+    global _PAPER_FORENSICS_STARTED
+    with _PAPER_FORENSICS_START_LOCK:
+        if _PAPER_FORENSICS_STARTED:
+            return
+        _PAPER_FORENSICS_STARTED = True
+    threading.Thread(
+        target=_emit_linked_entry_outcome_forensics,
+        daemon=True,
+        name="paper-linked-entry-outcome-forensics",
+    ).start()
+
+
+@app.get("/paper/forensic-entry-outcomes")
+def _paper_forensic_entry_outcomes():
+    """Read-only joined evidence for MAIN, Bybit and OKX closed Paper trades."""
+    payload = _build_linked_entry_outcome_forensics()
+    status_code = 200 if payload.get("available") else 503
+    _legacy.logger.warning(
+        "PAPER LINKED ENTRY OUTCOME FORENSICS %s",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+    return jsonify(payload), status_code
+
 
 
 
