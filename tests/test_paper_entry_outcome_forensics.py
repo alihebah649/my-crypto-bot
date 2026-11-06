@@ -377,7 +377,7 @@ def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
     assert report["overall"]["paper_profit_protection_observed_trades"] == 2
     assert report["overall"]["paper_profit_protection_triggered_trades"] == 1
     assert report["overall"]["paper_profit_protection_trigger_rate_percent"] == 50.0
-    assert report["by_trade_mode_and_peak_gain_band"]["SWING"]["0_60_TO_1_00"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_peak_gain_band"]["SWING"]["1_00_TO_2_00"]["closed_trades"] == 1
     assert report["by_trade_mode_and_peak_gain_band"]["SWING"]["0_20_TO_0_40"]["closed_trades"] == 1
     assert report["by_trade_mode_and_paper_profit_protection"]["SWING"]["TRUE"]["closed_trades"] == 1
     assert report["by_paper_profit_protection_triggered"]["FALSE"]["closed_trades"] == 1
