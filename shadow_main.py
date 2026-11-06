@@ -1851,13 +1851,13 @@ def _read_forensic_evidence(store: Any, timestamp_field: str, start: str, end: s
 
 def _forensic_capture_id(outcome: Mapping[str, Any]) -> str:
     entry_v2 = outcome.get("entry_v2", {})
-    entry_v2 = entry_v2 if isinstance(entry_v2, Mapping) else {}
+    entry_v2 = entry_v2 if isinstance(entry_v2, dict) else {}
     chain = outcome.get("entry_decision_chain", {})
-    chain = chain if isinstance(chain, Mapping) else {}
+    chain = chain if isinstance(chain, dict) else {}
     chain_v2 = chain.get("entry_v2", {})
-    chain_v2 = chain_v2 if isinstance(chain_v2, Mapping) else {}
+    chain_v2 = chain_v2 if isinstance(chain_v2, dict) else {}
     brain = outcome.get("brain", {})
-    brain = brain if isinstance(brain, Mapping) else {}
+    brain = brain if isinstance(brain, dict) else {}
     return str(
         entry_v2.get("capture_id")
         or chain_v2.get("capture_id")
