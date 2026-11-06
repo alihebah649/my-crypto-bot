@@ -29,6 +29,7 @@ def selective_entry_veto(
     entry_v2_shadow: Mapping[str, Any] | None,
     *,
     trade_mode: str,
+    paper_trial_seller_pressure_veto: bool = False,
 ) -> str | None:
     """Return a Brain veto reason for the highest-risk V2 combinations.
 
@@ -73,6 +74,17 @@ def selective_entry_veto(
         or entry_v2_shadow.get("v2_failed_gate")
         or ""
     ).upper()
+
+    # Controlled MAIN-only Paper experiment. The caller must explicitly enable
+    # this flag; hosted Bybit/OKX labs and every SWING entry keep the baseline
+    # behavior. The historical MAIN/SCALP cohort had 38 trades, 12 wins,
+    # 26 losses, and -$8.39 net after fees for this exact Entry-v2 failed gate.
+    if (
+        paper_trial_seller_pressure_veto
+        and lane == "SCALP"
+        and failed_gate == "SELLER_PRESSURE_NOT_INVALIDATED"
+    ):
+        return "PAPER_TRIAL_MAIN_SCALP_SELLER_PRESSURE"
 
     # A SWING entry is not authorized when Entry v2 identifies both 1h and 4h
     # as bearish. This failure reason is stronger than RSI oversold: the
