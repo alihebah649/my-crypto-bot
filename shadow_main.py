@@ -2050,6 +2050,8 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
             "by_trade_mode_and_failed_gate",
             "by_trade_mode_and_score_band",
             "by_trade_mode_and_market_regime",
+            "by_trade_mode_and_peak_gain_band",
+            "by_trade_mode_and_paper_profit_protection",
         ):
             groups = report.get(dimension) or {}
             for mode, members in sorted(groups.items()):
@@ -2070,7 +2072,12 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                         ),
                     )
 
-        for dimension in ("by_close_reason", "by_entry_v2_shadow_approval", "by_market_regime_source"):
+        for dimension in (
+            "by_close_reason",
+            "by_paper_profit_protection_triggered",
+            "by_entry_v2_shadow_approval",
+            "by_market_regime_source",
+        ):
             groups = report.get(dimension) or {}
             for label, stats in sorted(groups.items()):
                 _legacy.logger.warning(
