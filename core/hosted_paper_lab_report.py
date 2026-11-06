@@ -27,6 +27,9 @@ def format_hosted_lab_daily_report(
     venue: str,
     date_key: str,
     records: Iterable[Mapping[str, Any]],
+    *,
+    paper_cash: float | None = None,
+    open_positions: int | None = None,
 ) -> str:
     """Format a single venue's closed outcomes; records must already be date-scoped."""
     venue_name = str(venue or "").strip().upper()
@@ -81,6 +84,8 @@ def format_hosted_lab_daily_report(
         if rows_with_pnl else f"{'TOTAL':<8} | {'0':<3} | {'0':<4} | {'—':<10}",
         "```",
         f"📚 مصدر النتائج: Postgres PAPER_OUTCOME_{venue_name}_HOSTED_LAB",
+        f"💵 رصيد Paper الحالي: ${float(paper_cash):.2f}" if paper_cash is not None else "💵 رصيد Paper الحالي: —",
+        f"📦 المراكز المفتوحة الآن: {int(open_positions)}" if open_positions is not None else "📦 المراكز المفتوحة الآن: —",
         "",
         format_paper_outcome_report(build_paper_outcome_analysis(rows)),
         "PAPER ONLY",
