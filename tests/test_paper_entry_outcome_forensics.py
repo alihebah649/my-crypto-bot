@@ -62,6 +62,10 @@ def test_main_outcome_joins_to_entry_capture_by_capture_id_and_calculates_mfe():
     assert result["losers_with_positive_net_favorable_excursion"][0]["net_mfe"] == 3.2
     assert result["by_entry_v2_shadow_approval"]["FALSE"]["closed_trades"] == 1
     assert result["worst_trades"][0]["entry_v2_failed_gate_shadow"] == "NO_RECLAIM"
+    assert result["by_trade_mode_and_failed_gate"]["SCALP"]["NO_RECLAIM"]["closed_trades"] == 1
+    assert result["by_trade_mode_and_score_band"]["SCALP"]["65_69"]["closed_trades"] == 1
+    assert result["by_market_regime"]["BULLISH"]["closed_trades"] == 1
+    assert result["joined_rows"][0]["market_regime_source"] == "OUTCOME_REGIME"
 
 
 def test_hosted_lab_outcome_joins_to_capture_by_position_id():
@@ -106,6 +110,10 @@ def test_hosted_lab_outcome_joins_to_capture_by_position_id():
     assert result["by_trade_mode"]["SWING"]["closed_trades"] == 1
     assert result["overall"]["average_stop_atr_multiple"] == 2.0
     assert result["overall"]["average_expected_net_rr_after_fees"] == 1.3
+    assert result["overall"]["paired_expected_rr_sample_count"] == 1
+    assert result["overall"]["paired_average_expected_rr"] == 1.5
+    assert result["overall"]["paired_average_expected_net_rr_after_fees"] == 1.3
+    assert result["by_trade_mode_and_score_band"]["SWING"]["80_84"]["closed_trades"] == 1
     assert result["overall"]["losers_with_positive_net_favorable_excursion"] == 1
 
 
