@@ -213,6 +213,15 @@ def test_net_floor_shadow_recorder_persists_once_and_skips_partial_exit():
     assert record_profit_protection_net_floor_shadow(
         observing, calculator, observed_at="2026-11-06T14:01:00+00:00"
     ) is False
+    observing.current_price = 100.38
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:02:00+00:00"
+    ) is True
+    assert observing.metadata["paper_profit_protection_shadow"]["status"] == "TRIGGERED"
+    assert observing.metadata["paper_profit_protection_shadow"]["net_pnl_estimate_after_fees"] > 0.0
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:03:00+00:00"
+    ) is False
 
     partial = SimpleNamespace(
         entry_price=100.0, current_price=100.38, highest_price=100.74,
