@@ -75,9 +75,17 @@ def test_shadow_main_queries_each_lab_store_using_aden_local_day(monkeypatch):
 
     bybit_store = FakeStore([_outcome("XRPUSDT", "SWING", 0.42, "TRAILING_STOP")])
     okx_store = FakeStore([_outcome("LTCUSDT", "SWING", -0.44, "STOP_LOSS")])
+
+    def fake_lab(store, cash):
+        return SimpleNamespace(
+            outcomes=store,
+            adapter=SimpleNamespace(balance=SimpleNamespace(cash=cash)),
+            repository=SimpleNamespace(get_open_positions=lambda: []),
+        )
+
     runner = SimpleNamespace(labs={
-        "BYBIT": SimpleNamespace(outcomes=bybit_store),
-        "OKX": SimpleNamespace(outcomes=okx_store),
+        "BYBIT": fake_lab(bybit_store, 748.0),
+        "OKX": fake_lab(okx_store, 900.0),
     })
     monkeypatch.setattr(shadow_main, "_hosted_paper_lab_runner", runner, raising=False)
     monkeypatch.setattr(shadow_main._legacy, "REPORT_TIMEZONE", ZoneInfo("Asia/Aden"))
