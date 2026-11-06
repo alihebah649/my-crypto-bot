@@ -326,6 +326,11 @@ def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
             "close_reason": "TRAILING_STOP",
             "exit_protection": {
                 "paper_profit_protection": True,
+                "net_floor_shadow_trial": {
+                    "version": "PAPER_PROFIT_PROTECTION_NET_FLOOR_V1",
+                    "status": "OBSERVING",
+                    "triggered": False,
+                },
                 "paper_profit_protection_detail": {
                     "current_gain_percent": 0.65,
                     "peak_gain_percent": 1.0,
@@ -351,6 +356,19 @@ def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
             "exit_protection": {
                 "paper_profit_protection": False,
                 "paper_profit_protection_detail": None,
+                "net_floor_shadow_trial": {
+                    "version": "PAPER_PROFIT_PROTECTION_NET_FLOOR_V1",
+                    "status": "TRIGGERED",
+                    "triggered": True,
+                    "exit_price": 100.40,
+                    "current_gain_percent": 0.40,
+                    "peak_gain_percent": 0.80,
+                    "retrace_percent": 0.397,
+                    "gross_pnl_estimate": 0.40,
+                    "entry_fee_paid": 0.10,
+                    "estimated_exit_fee": 0.1004,
+                    "net_pnl_estimate_after_fees": 0.1996,
+                },
             },
         },
     ]
@@ -383,3 +401,11 @@ def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
     assert report["by_paper_profit_protection_triggered"]["FALSE"]["closed_trades"] == 1
     assert report["worst_trades"][0]["paper_profit_protection_triggered"] is False
     assert report["best_trades"][0]["paper_profit_protection_detail"]["min_gain_percent"] == 0.6
+    assert report["overall"]["net_floor_shadow_observed_trades"] == 2
+    assert report["overall"]["net_floor_shadow_triggered_trades"] == 1
+    assert report["overall"]["net_floor_shadow_trigger_rate_percent"] == 50.0
+    assert report["overall"]["net_floor_shadow_estimated_net_pnl_on_triggered_trades"] == 0.1996
+    assert report["overall"]["actual_net_pnl_on_shadow_triggered_trades"] == -0.6
+    assert round(report["overall"]["net_floor_shadow_delta_vs_actual_on_triggered_trades"], 4) == 0.7996
+    assert report["by_trade_mode_and_profit_protection_shadow_status"]["SWING"]["TRIGGERED"]["closed_trades"] == 1
+    assert report["worst_trades"][0]["profit_protection_shadow_triggered"] is True

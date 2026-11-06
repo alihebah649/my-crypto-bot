@@ -70,6 +70,7 @@ from core.paper_risk_overlay import (
     loss_cooldown_remaining,
     profit_protection_trigger,
     profit_protection_snapshot,
+    record_profit_protection_net_floor_shadow,
     strong_bullish_btc_exception,
     btc_recovery_eligible,
     btc_recovery_stop,
@@ -1203,6 +1204,10 @@ def _apply_paper_exit_protection() -> None:
         current = float(position.current_price)
         if current <= 0 or position.entry_price <= 0:
             continue
+        if record_profit_protection_net_floor_shadow(
+            position, runtime.facade.calculator
+        ):
+            runtime.repository.update(position)
         protection_snapshot = profit_protection_snapshot(
             entry_price=position.entry_price,
             current_price=current,
@@ -2073,6 +2078,7 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
             "by_trade_mode_and_market_regime",
             "by_trade_mode_and_peak_gain_band",
             "by_trade_mode_and_paper_profit_protection",
+            "by_trade_mode_and_profit_protection_shadow_status",
         ):
             groups = report.get(dimension) or {}
             for mode, members in sorted(groups.items()):

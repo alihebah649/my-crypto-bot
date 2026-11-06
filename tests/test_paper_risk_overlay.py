@@ -140,3 +140,84 @@ def test_paper_entry_economics_rejects_fee_thin_target():
     )
     assert result["approved"] is False
     assert result["reason"] == "NET_REWARD_AFTER_FEES_TOO_LOW"
+
+
+
+def test_net_floor_shadow_triggers_on_profitable_retrace_below_old_current_gain_floor():
+    from core.paper_risk_overlay import profit_protection_net_floor_shadow_snapshot
+
+    result = profit_protection_net_floor_shadow_snapshot(
+        entry_price=100.0,
+        current_price=100.38,
+        highest_price=100.74,
+        max_profit_percent=0.74,
+        quantity=1.0,
+        entry_fee_paid=0.10,
+        exit_fee_rate=0.001,
+    )
+    assert result["triggered"] is True
+    assert result["current_gain_percent"] == 0.38
+    assert result["net_pnl_estimate_after_fees"] > 0.0
+
+
+def test_net_floor_shadow_does_not_trigger_when_fees_consume_the_retrace_gain():
+    from core.paper_risk_overlay import profit_protection_net_floor_shadow_snapshot
+
+    result = profit_protection_net_floor_shadow_snapshot(
+        entry_price=100.0,
+        current_price=100.15,
+        highest_price=100.60,
+        max_profit_percent=0.60,
+        quantity=1.0,
+        entry_fee_paid=0.10,
+        exit_fee_rate=0.001,
+    )
+    assert result["triggered"] is False
+    assert result["net_pnl_estimate_after_fees"] < 0.0
+
+
+def test_net_floor_shadow_recorder_persists_once_and_skips_partial_exit():
+    from types import SimpleNamespace
+    from core.paper_risk_overlay import record_profit_protection_net_floor_shadow
+
+    calculator = SimpleNamespace(entry_fee_rate=0.001, exit_fee_rate=0.001)
+    position = SimpleNamespace(
+        entry_price=100.0,
+        current_price=100.38,
+        highest_price=100.74,
+        max_profit_percent=0.74,
+        quantity=1.0,
+        entry_fee=0.10,
+        exit_fee=0.0,
+        metadata={},
+    )
+    assert record_profit_protection_net_floor_shadow(
+        position, calculator, observed_at="2026-11-06T14:00:00+00:00"
+    ) is True
+    assert position.metadata["paper_profit_protection_shadow"]["status"] == "TRIGGERED"
+    assert position.metadata["paper_profit_protection_shadow"]["net_pnl_estimate_after_fees"] > 0.0
+    assert record_profit_protection_net_floor_shadow(
+        position, calculator, observed_at="2026-11-06T14:01:00+00:00"
+    ) is False
+
+    observing = SimpleNamespace(
+        entry_price=100.0, current_price=100.70, highest_price=101.0,
+        max_profit_percent=1.0, quantity=1.0, entry_fee=0.10, exit_fee=0.0,
+        metadata={},
+    )
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:00:00+00:00"
+    ) is True
+    assert observing.metadata["paper_profit_protection_shadow"]["status"] == "OBSERVING"
+    # No duplicate repository writes while the position remains under observation.
+    assert record_profit_protection_net_floor_shadow(
+        observing, calculator, observed_at="2026-11-06T14:01:00+00:00"
+    ) is False
+
+    partial = SimpleNamespace(
+        entry_price=100.0, current_price=100.38, highest_price=100.74,
+        max_profit_percent=0.74, quantity=0.7, entry_fee=0.10, exit_fee=0.03,
+        metadata={},
+    )
+    assert record_profit_protection_net_floor_shadow(partial, calculator) is True
+    assert partial.metadata["paper_profit_protection_shadow"]["status"] == "SKIPPED_PARTIAL_EXIT"

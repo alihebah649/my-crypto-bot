@@ -32,6 +32,7 @@ from core.paper_risk_overlay import (
     loss_cooldown_remaining,
     paper_entry_economics,
     profit_protection_snapshot,
+    record_profit_protection_net_floor_shadow,
     strong_bullish_btc_exception,
 )
 from core.postgres_evidence_store import PostgresEvidenceStore
@@ -1028,6 +1029,11 @@ class _VenueLab:
                 current = float(position.current_price)
                 if current <= 0.0 or position.entry_price <= 0.0:
                     continue
+                if record_profit_protection_net_floor_shadow(
+                    position, self.runtime.facade.calculator
+                ):
+                    self.repository.update(position)
+                    changed_by_overlay = True
                 protection = profit_protection_snapshot(
                     entry_price=position.entry_price,
                     current_price=current,
