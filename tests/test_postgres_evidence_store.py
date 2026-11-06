@@ -53,6 +53,21 @@ class _FakeConnection:
                 identity_key = params[1]
                 payload = self.db.rows.get((evidence_type, identity_key))
                 return _FakeResult(rows=[(payload,)] if payload is not None else [])
+            if "IDENTITY_KEY = ANY(%S::TEXT[])" in normalized:
+                identities = set(params[1])
+                rows = [
+                    (payload,) for (kind, identity), payload in self.db.rows.items()
+                    if kind == evidence_type and identity in identities
+                ]
+                return _FakeResult(rows=rows)
+            if "PAYLOAD ->> %S = ANY(%S::TEXT[])" in normalized:
+                field = params[1]
+                values = set(params[2])
+                rows = [
+                    (payload,) for (kind, _), payload in self.db.rows.items()
+                    if kind == evidence_type and str(payload.get(field, "")) in values
+                ]
+                return _FakeResult(rows=rows)
             if "PAYLOAD ?" in normalized:
                 field = params[1]
                 start = str(params[3])
@@ -300,3 +315,60 @@ def test_upsert_replaces_mutable_state_without_growing_evidence_rows():
         "cash": 987.5,
         "assets": {"BTCUSDT": 0.01},
     }]
+
+
+
+def test_read_by_identity_keys_loads_only_matching_capture_payloads(monkeypatch):
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="ENTRY_V2_CAPTURE",
+        connect_factory=connect,
+    )
+    for index in range(200):
+        assert store.append({
+            "capture_id": f"CAP-{index}",
+            "symbol": "BTCUSDT",
+            "closed_candle_windows": {"5m": [{"close": index}] * 8},
+        }) is True
+
+    def fail_read_all():
+        raise AssertionError("selective identity lookup must not call read_all()")
+
+    monkeypatch.setattr(store, "read_all", fail_read_all)
+    selected = store.read_by_identity_keys(["CAP-3", "CAP-150", "CAP-3", "MISSING"])
+
+    assert {row["capture_id"] for row in selected} == {"CAP-3", "CAP-150"}
+    assert store.last_error is None
+
+
+def test_read_by_payload_values_loads_only_matching_position_captures(monkeypatch):
+    db = _FakeDatabase()
+
+    def connect(_url):
+        return _FakeConnection(db)
+
+    store = PostgresEvidenceStore(
+        "postgres://secret@example.invalid/db",
+        evidence_type="ENTRY_V2_CAPTURE_BYBIT_HOSTED_LAB",
+        connect_factory=connect,
+    )
+    for index in range(200):
+        assert store.append({
+            "capture_id": f"CAP-{index}",
+            "position_id": f"POS-{index}" if index % 2 == 0 else None,
+            "candidate": {"symbol": "BTCUSDT"},
+        }) is True
+
+    def fail_read_all():
+        raise AssertionError("selective JSON payload lookup must not call read_all()")
+
+    monkeypatch.setattr(store, "read_all", fail_read_all)
+    selected = store.read_by_payload_values("position_id", ["POS-2", "POS-100", "POS-2"])
+
+    assert {row["position_id"] for row in selected} == {"POS-2", "POS-100"}
+    assert store.last_error is None

@@ -252,6 +252,87 @@ class PostgresEvidenceStore:
                         return None
         return None
 
+    def read_by_identity_keys(self, identity_keys: Iterable[str]) -> list[dict[str, Any]]:
+        """Fetch only selected evidence identities without materializing the store."""
+        keys = list(dict.fromkeys(str(value).strip() for value in identity_keys if str(value).strip()))
+        if not keys:
+            self.last_error = None
+            return []
+        rows_out: list[dict[str, Any]] = []
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    conn = self._connect()
+                    for offset in range(0, len(keys), 500):
+                        batch = keys[offset:offset + 500]
+                        rows = conn.execute(
+                            """
+                            SELECT payload
+                            FROM paper_evidence
+                            WHERE evidence_type = %s
+                              AND identity_key = ANY(%s::text[])
+                            """,
+                            (self.evidence_type, batch),
+                        ).fetchall()
+                        rows_out.extend(
+                            dict(row[0]) for row in rows
+                            if row and isinstance(row[0], Mapping)
+                        )
+                    self.last_error = None
+                    return rows_out
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    rows_out = []
+                    if attempt == 1:
+                        return []
+        return []
+
+    def read_by_payload_values(
+        self,
+        payload_field: str,
+        values: Iterable[str],
+    ) -> list[dict[str, Any]]:
+        """Fetch only rows whose JSON payload field matches a bounded value set."""
+        field = str(payload_field or "").strip()
+        keys = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        if not field or not keys:
+            self.last_error = None
+            return []
+        rows_out: list[dict[str, Any]] = []
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_schema()
+                    conn = self._connect()
+                    for offset in range(0, len(keys), 500):
+                        batch = keys[offset:offset + 500]
+                        rows = conn.execute(
+                            """
+                            SELECT payload
+                            FROM paper_evidence
+                            WHERE evidence_type = %s
+                              AND payload ->> %s = ANY(%s::text[])
+                            """,
+                            (self.evidence_type, field, batch),
+                        ).fetchall()
+                        rows_out.extend(
+                            dict(row[0]) for row in rows
+                            if row and isinstance(row[0], Mapping)
+                        )
+                    self.last_error = None
+                    return rows_out
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._reset_connection()
+                    self._initialized = False
+                    rows_out = []
+                    if attempt == 1:
+                        return []
+        return []
+
     def read_all(self) -> list[dict[str, Any]]:
         with self._lock:
             for attempt in range(2):

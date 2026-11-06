@@ -1849,11 +1849,31 @@ def _read_forensic_evidence(store: Any, timestamp_field: str, start: str, end: s
     return rows
 
 
+def _forensic_capture_id(outcome: Mapping[str, Any]) -> str:
+    entry_v2 = outcome.get("entry_v2", {})
+    entry_v2 = entry_v2 if isinstance(entry_v2, dict) else {}
+    chain = outcome.get("entry_decision_chain", {})
+    chain = chain if isinstance(chain, dict) else {}
+    chain_v2 = chain.get("entry_v2", {})
+    chain_v2 = chain_v2 if isinstance(chain_v2, dict) else {}
+    brain = outcome.get("brain", {})
+    brain = brain if isinstance(brain, dict) else {}
+    return str(
+        entry_v2.get("capture_id")
+        or chain_v2.get("capture_id")
+        or brain.get("capture_id")
+        or ""
+    ).strip()
+
+
 def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
-    """Read and join durable MAIN/BYBIT/OKX captures and closed outcomes."""
+    """Read closed outcomes first, then retrieve only their matching entry captures."""
     start, end = _paper_forensics_time_range()
     venues: dict[str, Any] = {}
 
+    # MAIN's capture store can contain many candle windows. Do not use
+    # read_all()/read_time_range() on that store: fetch only capture IDs
+    # referenced by closed outcomes through its indexed identity key.
     main_capture_store = getattr(
         globals().get("_entry_v2_runtime_capture"),
         "capture_store",
@@ -1866,17 +1886,33 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
             start,
             end,
         )
-        main_captures = _read_forensic_evidence(
-            main_capture_store,
-            "captured_at",
-            start,
-            end,
+        main_capture_ids = {
+            capture_id
+            for outcome in main_outcomes
+            if isinstance(outcome, dict)
+            for capture_id in (_forensic_capture_id(outcome),)
+            if capture_id
+        }
+        if main_capture_store is None or not callable(
+            getattr(main_capture_store, "read_by_identity_keys", None)
+        ):
+            raise RuntimeError("MAIN_CAPTURE_SELECTIVE_READ_UNAVAILABLE")
+        main_captures = main_capture_store.read_by_identity_keys(main_capture_ids)
+        if getattr(main_capture_store, "last_error", None):
+            raise RuntimeError("MAIN_CAPTURE_SELECTIVE_READ_FAILED")
+        _legacy.logger.info(
+            "[PAPER-FORENSICS] MAIN outcomes=%d referenced_capture_ids=%d matched_captures=%d",
+            len(main_outcomes),
+            len(main_capture_ids),
+            len(main_captures),
         )
         venues["MAIN"] = build_linked_entry_outcome_analysis(
             "MAIN",
             main_outcomes,
             main_captures,
         )
+        del main_outcomes
+        del main_captures
     except Exception as exc:
         _legacy.logger.exception("MAIN linked entry/outcome forensics failed")
         venues["MAIN"] = {
@@ -1897,11 +1933,26 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
                 start,
                 end,
             )
-            captures = _read_forensic_evidence(
-                getattr(lab, "entry_captures", None),
-                "captured_at",
-                start,
-                end,
+            position_ids = {
+                str(outcome.get("position_id") or "").strip()
+                for outcome in outcomes
+                if isinstance(outcome, dict)
+                and str(outcome.get("position_id") or "").strip()
+            }
+            capture_store = getattr(lab, "entry_captures", None)
+            if capture_store is None or not callable(
+                getattr(capture_store, "read_by_payload_values", None)
+            ):
+                raise RuntimeError(f"{venue}_CAPTURE_SELECTIVE_READ_UNAVAILABLE")
+            captures = capture_store.read_by_payload_values("position_id", position_ids)
+            if getattr(capture_store, "last_error", None):
+                raise RuntimeError(f"{venue}_CAPTURE_SELECTIVE_READ_FAILED")
+            _legacy.logger.info(
+                "[PAPER-FORENSICS] %s outcomes=%d referenced_position_ids=%d matched_captures=%d",
+                venue,
+                len(outcomes),
+                len(position_ids),
+                len(captures),
             )
             venues[venue] = build_linked_entry_outcome_analysis(
                 venue,
@@ -1929,12 +1980,13 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
         "window_end_utc": end,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "join_keys": {
-            "MAIN": "entry_v2.capture_id -> ENTRY_V2_CAPTURE.capture_id",
-            "BYBIT": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id",
-            "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id",
+            "MAIN": "entry_v2.capture_id -> ENTRY_V2_CAPTURE.capture_id (selective identity lookup)",
+            "BYBIT": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
+            "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
         },
         "venues": venues,
         "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
+        "capture_read_policy": "ONLY_ENTRY_CAPTURES_REFERENCED_BY_WINDOWED_CLOSED_OUTCOMES",
     }
 
 
