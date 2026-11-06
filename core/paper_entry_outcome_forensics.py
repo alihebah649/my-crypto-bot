@@ -512,6 +512,7 @@ def build_linked_entry_outcome_analysis(
         "by_entry_v2_shadow_approval": _group(joined, "entry_v2_approved_shadow"),
         "by_entry_v2_shadow_failed_gate": _group(joined, "entry_v2_failed_gate_shadow"),
         "by_market_regime": _group(joined, "market_regime"),
+        "by_market_regime_source": _group(joined, "market_regime_source"),
         "losers_with_positive_net_favorable_excursion": [
             public_sample(row) for row in losing_positive_mfe[:10]
         ],
