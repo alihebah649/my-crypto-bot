@@ -113,6 +113,7 @@ def test_hosted_lab_outcome_joins_to_capture_by_position_id():
     assert result["overall"]["paired_expected_rr_sample_count"] == 1
     assert result["overall"]["paired_average_expected_rr"] == 1.5
     assert result["overall"]["paired_average_expected_net_rr_after_fees"] == 1.3
+    assert result["overall"]["average_fees_as_r_multiple"] == 0.02
     assert result["by_trade_mode_and_score_band"]["SWING"]["80_84"]["closed_trades"] == 1
     assert result["overall"]["losers_with_positive_net_favorable_excursion"] == 1
 
