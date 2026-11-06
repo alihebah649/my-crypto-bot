@@ -339,7 +339,8 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
 def _group(rows: list[Mapping[str, Any]], key: str) -> dict[str, Any]:
     buckets: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
-        label = str(row.get(key) or "UNKNOWN").upper()
+        value = row.get(key)
+        label = "UNKNOWN" if value is None or value == "" else str(value).upper()
         buckets[label].append(row)
     return {
         label: _aggregate(buckets[label])
