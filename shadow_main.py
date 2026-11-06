@@ -1415,7 +1415,13 @@ def _hosted_lab_daily_report_for_venue(venue: str, date_key: str) -> str:
     outcomes = store.read_time_range("closed_at_utc", start_utc, end_utc)
     if getattr(store, "last_error", None):
         raise RuntimeError("HOSTED_PAPER_LAB_OUTCOME_READ_FAILED")
-    return format_hosted_lab_daily_report(venue_name, date_key, outcomes)
+    return format_hosted_lab_daily_report(
+        venue_name,
+        date_key,
+        outcomes,
+        paper_cash=lab.adapter.balance.cash,
+        open_positions=len(lab.repository.get_open_positions()),
+    )
 
 
 @app.get("/paper/hosted-labs/daily-reports/<date_key>")
@@ -1442,7 +1448,7 @@ def _hosted_paper_lab_daily_reports(date_key: str):
             )
             reports[venue] = None
     return jsonify({
-        "available": all(report is not None for report in reports.values()),
+        "available": bool(reports) and all(report is not None for report in reports.values()),
         "mode": "PAPER_ONLY",
         "date": date_key,
         "reports": reports,
