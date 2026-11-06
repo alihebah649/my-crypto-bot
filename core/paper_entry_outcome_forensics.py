@@ -162,6 +162,22 @@ def _joined_row(
     protection_detail = _mapping(
         exit_protection.get("paper_profit_protection_detail")
     )
+    shadow_trial = _mapping(exit_protection.get("net_floor_shadow_trial"))
+    shadow_status = str(shadow_trial.get("status") or "UNKNOWN").upper()
+    shadow_triggered_value = shadow_trial.get("triggered")
+    shadow_triggered = (
+        shadow_triggered_value if isinstance(shadow_triggered_value, bool) else None
+    )
+    shadow_net_pnl = _first_number(
+        shadow_trial.get("net_pnl_estimate_after_fees")
+    )
+    shadow_exit_price = _price(shadow_trial.get("exit_price"))
+    shadow_delta_vs_actual = (
+        shadow_net_pnl - net_pnl
+        if shadow_net_pnl is not None and net_pnl is not None
+        and shadow_triggered is True
+        else None
+    )
     entry_v2_approved = capture_v2.get(
         "approved",
         outcome_v2.get("approved", chain_v2.get("approved")),
@@ -320,6 +336,23 @@ def _joined_row(
             }
             if protection_detail else None
         ),
+        "profit_protection_shadow_status": shadow_status,
+        "profit_protection_shadow_triggered": shadow_triggered,
+        "profit_protection_shadow_net_pnl_after_fees": shadow_net_pnl,
+        "profit_protection_shadow_delta_vs_actual": shadow_delta_vs_actual,
+        "profit_protection_shadow_exit_price": shadow_exit_price,
+        "profit_protection_shadow_detail": (
+            {
+                "current_gain_percent": _number(shadow_trial.get("current_gain_percent")),
+                "peak_gain_percent": _number(shadow_trial.get("peak_gain_percent")),
+                "retrace_percent": _number(shadow_trial.get("retrace_percent")),
+                "gross_pnl_estimate": _number(shadow_trial.get("gross_pnl_estimate")),
+                "entry_fee_paid": _number(shadow_trial.get("entry_fee_paid")),
+                "estimated_exit_fee": _number(shadow_trial.get("estimated_exit_fee")),
+                "net_pnl_estimate_after_fees": shadow_net_pnl,
+            }
+            if shadow_trial else None
+        ),
         "target_reached": target_reached,
         "entry_v2_approved_shadow": entry_v2_approved,
         "entry_v2_decision_shadow": str(
@@ -392,6 +425,30 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         if row.get("paper_profit_protection_triggered") is True
     ]
     peak_gain_values = [_number(row.get("peak_gain_percent")) for row in rows]
+    shadow_observed_rows = [
+        row for row in rows
+        if str(row.get("profit_protection_shadow_status") or "UNKNOWN").upper()
+        in {"OBSERVING", "TRIGGERED"}
+    ]
+    shadow_triggered_rows = [
+        row for row in rows
+        if str(row.get("profit_protection_shadow_status") or "UNKNOWN").upper()
+        == "TRIGGERED"
+    ]
+    shadow_estimates = [
+        _number(row.get("profit_protection_shadow_net_pnl_after_fees"))
+        for row in shadow_triggered_rows
+    ]
+    shadow_actuals = [_number(row.get("net_pnl")) for row in shadow_triggered_rows]
+    shadow_deltas = [
+        _number(row.get("profit_protection_shadow_delta_vs_actual"))
+        for row in shadow_triggered_rows
+    ]
+    shadow_skipped_partial = sum(
+        str(row.get("profit_protection_shadow_status") or "").upper()
+        == "SKIPPED_PARTIAL_EXIT"
+        for row in rows
+    )
 
     def mean(values: list[float | None]) -> float | None:
         clean = [value for value in values if value is not None and isfinite(value)]
@@ -445,6 +502,23 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             round(len(protection_triggered_rows) / len(protection_rows) * 100.0, 2)
             if protection_rows else None
         ),
+        "net_floor_shadow_observed_trades": len(shadow_observed_rows),
+        "net_floor_shadow_triggered_trades": len(shadow_triggered_rows),
+        "net_floor_shadow_trigger_rate_percent": (
+            round(len(shadow_triggered_rows) / len(shadow_observed_rows) * 100.0, 2)
+            if shadow_observed_rows else None
+        ),
+        "net_floor_shadow_skipped_partial_exit_trades": shadow_skipped_partial,
+        "net_floor_shadow_estimated_net_pnl_on_triggered_trades": round(
+            sum(value or 0.0 for value in shadow_estimates), 6
+        ),
+        "actual_net_pnl_on_shadow_triggered_trades": round(
+            sum(value or 0.0 for value in shadow_actuals), 6
+        ),
+        "net_floor_shadow_delta_vs_actual_on_triggered_trades": round(
+            sum(value or 0.0 for value in shadow_deltas), 6
+        ),
+        "average_net_floor_shadow_delta_vs_actual": mean(shadow_deltas),
     }
 
 
@@ -549,6 +623,10 @@ def build_linked_entry_outcome_analysis(
             "realized_r_multiple_net", "stop_atr_multiple",
             "net_mfe", "peak_gain_percent", "peak_gain_band",
             "paper_profit_protection_triggered", "paper_profit_protection_detail",
+            "profit_protection_shadow_status", "profit_protection_shadow_triggered",
+            "profit_protection_shadow_net_pnl_after_fees",
+            "profit_protection_shadow_delta_vs_actual", "profit_protection_shadow_exit_price",
+            "profit_protection_shadow_detail",
             "target_reached", "close_reason",
             "entry_v2_approved_shadow", "entry_v2_failed_gate_shadow",
             "market_regime",
@@ -586,6 +664,9 @@ def build_linked_entry_outcome_analysis(
         "by_trade_mode_and_paper_profit_protection": _group_by_two_keys(
             joined, "trade_mode", "paper_profit_protection_triggered"
         ),
+        "by_trade_mode_and_profit_protection_shadow_status": _group_by_two_keys(
+            joined, "trade_mode", "profit_protection_shadow_status"
+        ),
         "by_close_reason": _group(joined, "close_reason"),
         "by_paper_profit_protection_triggered": _group(
             joined, "paper_profit_protection_triggered"
@@ -605,6 +686,8 @@ def build_linked_entry_outcome_analysis(
             "Net favorable excursion subtracts the trade's recorded total fees from the peak-price gross gain; it is a counterfactual estimate, not an executed exit.",
             "Peak-gain bands use the captured maximum favorable percentage; they do not reconstruct the order of intratrade price ticks.",
             "Profit-protection activation is read from the persisted exit_protection flag; historical rows without that flag remain unknown.",
+            "Net-floor shadow exits are counterfactual Paper-only observations at the first qualifying fresh mark; they do not execute an exit or model later slippage.",
+            "Shadow-versus-actual PnL deltas are only computed for completed trades where the shadow trigger was persisted; partial-exit trades are excluded.",
             "A missing capture is reported as unmatched and is never silently filled with current strategy settings.",
         ],
     }
