@@ -1208,6 +1208,28 @@ def _apply_paper_exit_protection() -> None:
             position, runtime.facade.calculator
         ):
             runtime.repository.update(position)
+            shadow_trial = position.metadata.get("paper_profit_protection_shadow", {})
+            _legacy.logger.info(
+                "[PAPER-PROFIT-PROTECTION-SHADOW] %s",
+                json.dumps(
+                    {
+                        "venue": "MAIN",
+                        "position_id": str(position.position_id),
+                        "symbol": str(position.symbol).upper(),
+                        "trade_mode": str(position.entry_metadata.get("trade_mode", "UNKNOWN")).upper(),
+                        "status": shadow_trial.get("status"),
+                        "triggered": shadow_trial.get("triggered"),
+                        "current_gain_percent": shadow_trial.get("current_gain_percent"),
+                        "peak_gain_percent": shadow_trial.get("peak_gain_percent"),
+                        "retrace_percent": shadow_trial.get("retrace_percent"),
+                        "net_pnl_estimate_after_fees": shadow_trial.get("net_pnl_estimate_after_fees"),
+                        "exit_price": shadow_trial.get("exit_price"),
+                        "reason": shadow_trial.get("reason"),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
         protection_snapshot = profit_protection_snapshot(
             entry_price=position.entry_price,
             current_price=current,
