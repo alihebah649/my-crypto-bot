@@ -41,6 +41,7 @@ from core.entry_decision_attribution import build_entry_decision_chain
 from core.paper_outcome_evidence import build_paper_outcome_evidence
 from core.paper_outcome_analysis import build_paper_outcome_analysis
 from core.paper_outcome_report import format_paper_outcome_report
+from core.hosted_paper_lab_report import format_hosted_lab_daily_report
 from core.paper_market_data_comparison import compare_paper_outcomes_by_market_data_source
 from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
@@ -1393,6 +1394,124 @@ def _hosted_paper_labs_health():
     return jsonify(payload), 200
 
 
+
+def _hosted_lab_daily_report_for_venue(venue: str, date_key: str) -> str:
+    """Build one lab's local-day report from its own durable outcome store."""
+    venue_name = str(venue or "").strip().upper()
+    runner = globals().get("_hosted_paper_lab_runner")
+    if venue_name not in {"BYBIT", "OKX"} or runner is None:
+        raise ValueError("HOSTED_PAPER_LAB_UNAVAILABLE")
+    lab = runner.labs.get(venue_name)
+    store = getattr(lab, "outcomes", None)
+    if store is None or not callable(getattr(store, "read_time_range", None)):
+        raise RuntimeError("HOSTED_PAPER_LAB_OUTCOME_STORE_UNAVAILABLE")
+
+    local_start = _legacy.datetime.strptime(date_key, "%Y-%m-%d").replace(
+        tzinfo=_legacy.REPORT_TIMEZONE
+    )
+    local_end = local_start + _legacy.timedelta(days=1)
+    start_utc = local_start.astimezone(_legacy.timezone.utc).isoformat()
+    end_utc = local_end.astimezone(_legacy.timezone.utc).isoformat()
+    outcomes = store.read_time_range("closed_at_utc", start_utc, end_utc)
+    if getattr(store, "last_error", None):
+        raise RuntimeError("HOSTED_PAPER_LAB_OUTCOME_READ_FAILED")
+    return format_hosted_lab_daily_report(
+        venue_name,
+        date_key,
+        outcomes,
+        paper_cash=lab.adapter.balance.cash,
+        open_positions=len(lab.repository.get_open_positions()),
+    )
+
+
+@app.get("/paper/hosted-labs/daily-reports/<date_key>")
+def _hosted_paper_lab_daily_reports(date_key: str):
+    """Read-only daily reports for the isolated Bybit and OKX Paper portfolios."""
+    try:
+        _legacy.datetime.strptime(date_key, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return jsonify({"available": False, "reason": "INVALID_DATE"}), 400
+    runner = globals().get("_hosted_paper_lab_runner")
+    if runner is None:
+        return jsonify({"available": False, "reason": "HOSTED_PAPER_LABS_UNAVAILABLE"}), 503
+    reports = {}
+    for venue in ("BYBIT", "OKX"):
+        if venue not in runner.labs:
+            continue
+        try:
+            reports[venue] = _hosted_lab_daily_report_for_venue(venue, date_key)
+        except Exception:
+            _legacy.logger.exception(
+                "Hosted Paper daily report build failed venue=%s date=%s",
+                venue,
+                date_key,
+            )
+            reports[venue] = None
+    return jsonify({
+        "available": bool(reports) and all(report is not None for report in reports.values()),
+        "mode": "PAPER_ONLY",
+        "date": date_key,
+        "reports": reports,
+    }), 200
+
+
+def _hosted_lab_daily_report_loop() -> None:
+    """Send one separate Telegram daily close report for each hosted lab."""
+    report_date = _legacy.datetime.now(_legacy.REPORT_TIMEZONE).strftime("%Y-%m-%d")
+    sent_dates: dict[str, str] = {}
+    last_attempt_at: dict[str, float] = {}
+    while True:
+        try:
+            today = _legacy.datetime.now(_legacy.REPORT_TIMEZONE).strftime("%Y-%m-%d")
+            if today != report_date:
+                runner = globals().get("_hosted_paper_lab_runner")
+                venues = [
+                    venue for venue in ("BYBIT", "OKX")
+                    if runner is not None and venue in runner.labs
+                ]
+                if not venues:
+                    report_date = today
+                    sent_dates.clear()
+                    last_attempt_at.clear()
+                else:
+                    for venue in venues:
+                        if sent_dates.get(venue) == report_date:
+                            continue
+                        now = time.monotonic()
+                        attempt_key = f"{report_date}:{venue}"
+                        if now - last_attempt_at.get(attempt_key, 0.0) < 300.0:
+                            continue
+                        last_attempt_at[attempt_key] = now
+                        try:
+                            report = _hosted_lab_daily_report_for_venue(venue, report_date)
+                            if _legacy.send_telegram_message(report):
+                                sent_dates[venue] = report_date
+                                _legacy.logger.info(
+                                    "[HOSTED-PAPER-LAB-DAILY-REPORT] sent venue=%s date=%s",
+                                    venue,
+                                    report_date,
+                                )
+                            else:
+                                _legacy.logger.warning(
+                                    "[HOSTED-PAPER-LAB-DAILY-REPORT] Telegram send failed venue=%s date=%s",
+                                    venue,
+                                    report_date,
+                                )
+                        except Exception:
+                            _legacy.logger.exception(
+                                "[HOSTED-PAPER-LAB-DAILY-REPORT] failed venue=%s date=%s",
+                                venue,
+                                report_date,
+                            )
+                    if all(sent_dates.get(venue) == report_date for venue in venues):
+                        report_date = today
+                        sent_dates.clear()
+                        last_attempt_at.clear()
+        except Exception:
+            _legacy.logger.exception("Hosted Paper lab daily report loop failed")
+        time.sleep(30.0)
+
+
 _MARKET_HEALTH_STATE = "UNKNOWN"
 _MARKET_HEALTH_LAST_ALERT_AT = 0.0
 _MARKET_HEALTH_HEARTBEAT_SECONDS = 3600.0
@@ -1951,6 +2070,7 @@ def _paper_engine_thread_watchdog() -> None:
 
 if __name__ == "__main__":
     threading.Thread(target=_legacy._daily_report_loop, daemon=True, name="paper-daily-report").start()
+    threading.Thread(target=_hosted_lab_daily_report_loop, daemon=True, name="hosted-lab-daily-reports").start()
     threading.Thread(target=_market_health_loop, daemon=True, name="paper-market-health").start()
     _dual_mode_engine_thread = threading.Thread(
         target=_run_dual_mode_engine_thread,
