@@ -196,6 +196,9 @@ def build_paper_outcome_evidence(
             "paper_profit_protection_detail": _safe(
                 exit_metadata.get("paper_profit_protection_detail")
             ),
+            "net_floor_shadow_trial": _safe(
+                position_metadata.get("paper_profit_protection_shadow")
+            ),
         },
         "close_reason": getattr(
             getattr(position, "close_reason", None),
