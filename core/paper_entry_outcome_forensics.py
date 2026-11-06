@@ -183,13 +183,20 @@ def _joined_row(
         if fees is not None and quote_notional is not None and quote_notional > 0
         else None
     )
+    risk_notional = (
+        stop_distance * quantity
+        if stop_distance is not None and quantity is not None
+        and stop_distance > 0 and quantity > 0
+        else None
+    )
     realized_r = (
-        net_pnl / (stop_distance * quantity)
-        if net_pnl is not None
-        and stop_distance is not None
-        and quantity is not None
-        and stop_distance > 0
-        and quantity > 0
+        net_pnl / risk_notional
+        if net_pnl is not None and risk_notional is not None
+        else None
+    )
+    fee_r_multiple = (
+        fees / risk_notional
+        if fees is not None and risk_notional is not None
         else None
     )
 
@@ -266,6 +273,7 @@ def _joined_row(
         "planned_net_reward_percent": planned_net_reward_percent,
         "stop_atr_multiple": stop_atr_multiple,
         "realized_r_multiple_net": realized_r,
+        "fees_as_r_multiple": fee_r_multiple,
         "highest_price": highest,
         "max_profit_percent": max_profit_percent,
         "net_mfe": net_mfe,
@@ -323,6 +331,7 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         _number(row.get("expected_net_rr_after_fees")) for row in paired_rr_rows
     ]
     valid_realized_r = [_number(row.get("realized_r_multiple_net")) for row in rows]
+    valid_fee_r = [_number(row.get("fees_as_r_multiple")) for row in rows]
     valid_stop_atr = [_number(row.get("stop_atr_multiple")) for row in rows]
     valid_mfe = [_number(row.get("net_mfe")) for row in rows]
     losing_rows = [row for row in rows if (_number(row.get("net_pnl")) or 0.0) < 0]
@@ -357,6 +366,8 @@ def _aggregate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "paired_average_expected_rr": mean(paired_gross_rr),
         "paired_average_expected_net_rr_after_fees": mean(paired_net_rr),
         "average_realized_r_multiple_net": mean(valid_realized_r),
+        "average_fees_as_r_multiple": mean(valid_fee_r),
+        "fees_as_r_sample_count": sum(value is not None for value in valid_fee_r),
         "average_stop_atr_multiple": mean(valid_stop_atr),
         "average_fee_percent_of_entry_notional": mean([
             _number(row.get("fee_percent_of_entry_notional")) for row in rows
