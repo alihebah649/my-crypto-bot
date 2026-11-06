@@ -979,7 +979,7 @@ class _VenueLab:
             decision="PAPER_POSITION_OPENED",
             brain_record=brain_record,
             position_id=str(position.position_id),
-                market_regime=market_regime,
+            market_regime=market_regime,
         )
         self.entry_allowed += 1
         logger.info(
