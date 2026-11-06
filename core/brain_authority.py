@@ -84,6 +84,7 @@ class GuardedBrainAuthority:
         existing_position: bool = False,
         capture_id: str | None = None,
         entry_v2_shadow: Mapping[str, Any] | None = None,
+        paper_trial_seller_pressure_veto: bool = False,
     ) -> BrainAuthorityRecord:
         lane = self._lane_strategy(strategy, trade_mode)
         symbol_view = derive_market_regime(lane)
@@ -106,10 +107,20 @@ class GuardedBrainAuthority:
             symbol_regime=symbol_view.regime,
         )
 
+        paper_trial_veto_applied = bool(
+            paper_trial_seller_pressure_veto
+            and str(trade_mode).upper() == "SCALP"
+            and str(
+                (entry_v2_shadow or {}).get("failed_gate")
+                or (entry_v2_shadow or {}).get("v2_failed_gate")
+                or ""
+            ).upper() == "SELLER_PRESSURE_NOT_INVALIDATED"
+        )
         selective_veto_reason = selective_entry_veto(
             lane,
             entry_v2_shadow,
             trade_mode=str(trade_mode).upper(),
+            paper_trial_seller_pressure_veto=paper_trial_seller_pressure_veto,
         )
         if selective_veto_reason:
             decision = BrainDecision(
@@ -120,7 +131,12 @@ class GuardedBrainAuthority:
                     **dict(decision.metadata),
                     "authority": self.VERSION,
                     "entry_v2_selective_veto": True,
-                    "entry_v2_failed_gate": str((entry_v2_shadow or {}).get("failed_gate") or ""),
+                    "entry_v2_failed_gate": str(
+                        (entry_v2_shadow or {}).get("failed_gate")
+                        or (entry_v2_shadow or {}).get("v2_failed_gate")
+                        or ""
+                    ),
+                    "paper_trial_seller_pressure_veto": paper_trial_veto_applied,
                 },
             )
 
@@ -155,6 +171,12 @@ class GuardedBrainAuthority:
                 "symbol_regime": symbol_view.to_dict(),
                 "entry_v2_shadow": dict(entry_v2_shadow or {}),
                 "selective_v2_veto": selective_veto_reason,
+                "paper_trial_seller_pressure_veto_enabled": bool(
+                    paper_trial_seller_pressure_veto
+                ),
+                "paper_trial_seller_pressure_veto_applied": bool(
+                    paper_trial_veto_applied
+                ),
                 "brain_metadata": dict(decision.metadata),
             },
         )

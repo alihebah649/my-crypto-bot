@@ -84,6 +84,13 @@ PAPER_CROSS_VENUE_DIAGNOSTICS_ENABLED = (
     in {"1", "true", "yes", "on"}
 )
 
+# Opt-in experiment: MAIN/Binance SCALP only. Disabled unless explicitly
+# enabled in the Render environment; hosted Bybit/OKX labs never pass this flag.
+PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED = (
+    os.getenv("PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 _paper_original_process_market_cycle = _legacy.process_market_cycle
 
 _paper_original_notify_closed_positions = _notify_closed_positions
@@ -357,6 +364,11 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         existing_position=active_position,
         capture_id=capture_id,
         entry_v2_shadow=lane_capture,
+        paper_trial_seller_pressure_veto=bool(
+            PAPER_VENUE_MODE == "MIXED"
+            and lane == "SCALP"
+            and PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED
+        ),
     )
     record_dict = record.to_dict()
     trace = runtime.last_entry_diagnostics.setdefault(normalized, {"symbol": normalized})
@@ -375,6 +387,15 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         runtime.last_entry_diagnostics.setdefault("__brain_authority__", {})[
             "persistence_error"
         ] = f"{type(exc).__name__}: {exc}"
+
+    if record.context.get("paper_trial_seller_pressure_veto_applied"):
+        _legacy.logger.warning(
+            "[PAPER-TRIAL-MAIN-SCALP-SELLER-PRESSURE] BLOCK symbol=%s score=%.1f regime=%s capture_id=%s",
+            normalized,
+            record.strategy_score,
+            market_view.regime,
+            capture_id or "NONE",
+        )
 
     if not record.allowed:
         trace["result"] = "REJECTED_BRAIN_AUTHORITY"
