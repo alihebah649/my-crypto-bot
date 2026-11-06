@@ -80,7 +80,7 @@ def format_hosted_lab_daily_report(
         f"{'TOTAL':<8} | {total_wins:<3} | {total_losses:<4} | {total_net:+.2f}$"
         if rows_with_pnl else f"{'TOTAL':<8} | {'0':<3} | {'0':<4} | {'—':<10}",
         "```",
-        "📚 مصدر النتائج: Postgres PAPER_OUTCOME",
+        f"📚 مصدر النتائج: Postgres PAPER_OUTCOME_{venue_name}_HOSTED_LAB",
         "",
         format_paper_outcome_report(build_paper_outcome_analysis(rows)),
         "PAPER ONLY",
