@@ -135,8 +135,17 @@ def test_unmatched_outcome_is_reported_and_never_filled_from_unrelated_capture()
 
     assert result["coverage"]["matched_closed_trades"] == 0
     assert result["coverage"]["unmatched_outcomes"] == 1
-    assert result["overall"]["closed_trades"] == 0
     assert result["coverage"]["unmatched_entry_captures"] == 1
+    assert result["coverage"]["outcome_context_fallback_trades"] == 0
+    assert result["coverage"]["unmatched_outcomes_without_entry_context"] == 1
+    assert result["coverage"]["analyzed_closed_trades"] == 1
+    assert result["coverage"]["decision_evidence_coverage_percent"] == 0.0
+    # The realized PnL belongs to this closed outcome and is valid even when
+    # its entry-decision evidence is missing. No unrelated capture is reused.
+    assert result["overall"]["closed_trades"] == 1
+    assert result["overall"]["net_pnl_after_fees"] == -0.4
+    assert result["worst_trades"][0]["position_id"] == "POS-UNKNOWN"
+    assert result["worst_trades"][0]["decision_evidence_source"] == "OUTCOME_ONLY"
 
 
 def test_forensics_rejects_unsupported_venue():
