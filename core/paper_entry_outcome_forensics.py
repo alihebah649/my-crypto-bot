@@ -101,18 +101,31 @@ def _peak_gain_band(value: Any) -> str:
 def _joined_row(
     venue: str,
     outcome: Mapping[str, Any],
-    capture: Mapping[str, Any],
+    capture: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    # An exact capture remains the strongest source. When it is absent, the
+    # closed outcome may still contain a frozen copy of entry-time fields.
+    # Keep the provenance explicit rather than treating that fallback as a
+    # recovered ENTRY_V2_CAPTURE row.
+    capture = _mapping(capture)
     candidate, legacy, scenario, scenario_risk = _capture_parts(capture)
     outcome_v2 = _mapping(outcome.get("entry_v2"))
-    chain_v2 = _mapping(_mapping(outcome.get("entry_decision_chain")).get("entry_v2"))
+    entry_chain = _mapping(outcome.get("entry_decision_chain"))
+    chain_v2 = _mapping(entry_chain.get("entry_v2"))
+    chain_legacy = _mapping(entry_chain.get("legacy"))
     capture_v2 = _mapping(capture.get("v2_decision"))
+    outcome_forensics = _mapping(outcome.get("entry_forensics"))
+    outcome_regime = _mapping(outcome.get("regime"))
+    outcome_strategy = _mapping(outcome.get("strategy"))
+    chain_brain = _mapping(entry_chain.get("brain_authority"))
+    chain_final = _mapping(entry_chain.get("final"))
 
     mode = str(
         outcome.get("trade_mode")
         or candidate.get("trade_mode")
         or scenario.get("trade_mode")
         or legacy.get("trade_mode")
+        or entry_chain.get("trade_mode")
         or "UNKNOWN"
     ).upper()
     entry = _price(
@@ -134,6 +147,13 @@ def _joined_row(
             stop = _price(outcome.get("entry_stop_loss"))
     if stop is None:
         stop = _price(scenario_risk.get("atr_stop_loss") or outcome.get("stop_loss"))
+    if stop is None:
+        # The normalized outcome persists the entry-time stop distance even
+        # when its absolute stop price is unavailable.
+        stop_percent = _number(outcome_forensics.get("stop_distance_percent"))
+        entry_for_stop = _price(entry)
+        if stop_percent is not None and stop_percent > 0 and entry_for_stop is not None:
+            stop = entry_for_stop * (1.0 - stop_percent / 100.0)
 
     target = _price(
         scenario_risk.get("target_price")
@@ -144,11 +164,12 @@ def _joined_row(
         capture.get("entry_economics") or outcome.get("entry_economics")
     )
     risk = _mapping(scenario_risk)
-    strategy = _mapping(outcome.get("strategy"))
+    strategy = outcome_strategy
     atr = _first_number(
         legacy.get("atr"),
         strategy.get("atr"),
         candidate.get("atr"),
+        outcome_forensics.get("atr"),
     )
     quantity = _first_number(outcome.get("quantity"))
     gross_pnl = _first_number(outcome.get("gross_pnl"))
@@ -193,6 +214,7 @@ def _joined_row(
         strategy.get("score"),
         strategy.get("scalp_score") if mode == "SCALP" else None,
         strategy.get("swing_score") if mode == "SWING" else None,
+        chain_legacy.get("score"),
     )
     expected_rr = _first_number(
         economics.get("reward_risk"),
@@ -269,7 +291,7 @@ def _joined_row(
     raw_regime = (
         capture.get("market_regime")
         or candidate.get("market_regime")
-        or _mapping(outcome.get("regime")).get("market")
+        or outcome_regime.get("market")
         or _mapping(scenario.get("market")).get("regime")
         or strategy.get("market_regime")
     )
@@ -277,7 +299,7 @@ def _joined_row(
         "ENTRY_CAPTURE"
         if capture.get("market_regime") or candidate.get("market_regime")
         else "OUTCOME_REGIME"
-        if _mapping(outcome.get("regime")).get("market")
+        if outcome_regime.get("market")
         else "ENTRY_SCENARIO"
         if _mapping(scenario.get("market")).get("regime")
         else "STRATEGY_SNAPSHOT"
@@ -285,6 +307,93 @@ def _joined_row(
         else "UNKNOWN"
     )
     market_regime = str(raw_regime or "UNKNOWN").upper()
+    symbol_regime = str(
+        outcome_regime.get("symbol")
+        or strategy.get("symbol_regime")
+        or _mapping(scenario.get("market")).get("symbol_regime")
+        or "UNKNOWN"
+    ).upper()
+    mtf_bias = str(
+        outcome_forensics.get("mtf_bias")
+        or strategy.get("mtf_bias")
+        or outcome_regime.get("mtf_bias")
+        or "UNKNOWN"
+    ).upper()
+    mtf_net = _first_number(
+        outcome_forensics.get("mtf_net"),
+        strategy.get("mtf_net"),
+        outcome_regime.get("mtf_net"),
+    )
+    rsi5m = _first_number(
+        legacy.get("rsi5m"),
+        strategy.get("rsi5m"),
+        outcome_forensics.get("rsi5m"),
+    )
+    volume_ratio_5m = _first_number(
+        legacy.get("volume_ratio_5m"),
+        strategy.get("volume_ratio_5m"),
+        outcome_forensics.get("volume_ratio_5m"),
+    )
+    mtf_net_band = (
+        "UNKNOWN" if mtf_net is None else
+        "BELOW_-20" if mtf_net <= -20 else
+        "-20_TO_-10" if mtf_net < -10 else
+        "-10_TO_0" if mtf_net < 0 else
+        "0_TO_10" if mtf_net < 10 else
+        "10_TO_20" if mtf_net < 20 else
+        "20_PLUS"
+    )
+    volume_band = (
+        "UNKNOWN" if volume_ratio_5m is None else
+        "BELOW_1_0" if volume_ratio_5m < 1.0 else
+        "1_00_TO_1_49" if volume_ratio_5m < 1.5 else
+        "1_50_TO_1_99" if volume_ratio_5m < 2.0 else
+        "2_PLUS"
+    )
+    rsi5m_band = (
+        "UNKNOWN" if rsi5m is None else
+        "30_OR_BELOW" if rsi5m <= 30 else
+        "30_TO_40" if rsi5m < 40 else
+        "40_TO_49" if rsi5m < 49 else
+        "49_TO_60" if rsi5m < 60 else
+        "60_PLUS"
+    )
+    outcome_has_entry_context = any(
+        value is not None and value != ""
+        for value in (
+            outcome.get("entry_stop_loss"),
+            outcome.get("signal_entry_price"),
+            outcome_v2.get("decision"),
+            outcome_v2.get("approved"),
+            outcome_v2.get("failed_gate"),
+            outcome_v2.get("reward_risk"),
+            outcome_v2.get("target_price"),
+            economics.get("reward_risk"),
+            economics.get("risk_percent"),
+            economics.get("net_reward_percent"),
+            strategy.get("score"),
+            strategy.get("scalp_score"),
+            strategy.get("swing_score"),
+            strategy.get("rsi5m"),
+            strategy.get("volume_ratio_5m"),
+            outcome_forensics.get("mtf_bias"),
+            outcome_forensics.get("mtf_net"),
+            outcome_regime.get("market"),
+            chain_legacy.get("score"),
+            chain_legacy.get("signal"),
+            chain_brain.get("allowed"),
+            chain_brain.get("reason"),
+            chain_final.get("failed_gate"),
+        )
+    )
+    capture_matched = bool(capture)
+    decision_evidence_source = (
+        "ENTRY_CAPTURE"
+        if capture_matched
+        else "OUTCOME_EMBEDDED_ENTRY_CONTEXT"
+        if outcome_has_entry_context
+        else "OUTCOME_ONLY"
+    )
     score_band = (
         "UNKNOWN" if score is None else
         "BELOW_65" if score < 65 else
@@ -299,6 +408,11 @@ def _joined_row(
 
     return {
         "venue": str(venue).upper(),
+        "position_id": str(outcome.get("position_id") or "").strip(),
+        "capture_id": str(capture.get("capture_id") or _capture_id_from_outcome(outcome) or "").strip() or None,
+        "capture_matched": capture_matched,
+        "decision_evidence_source": decision_evidence_source,
+        "entry_context_available": bool(capture_matched or outcome_has_entry_context),
         "symbol": symbol,
         "trade_mode": mode,
         "score": score,
@@ -373,11 +487,14 @@ def _joined_row(
             or "UNKNOWN"
         ).upper(),
         "market_regime": market_regime,
-        "rsi5m": _first_number(legacy.get("rsi5m"), strategy.get("rsi5m")),
-        "volume_ratio_5m": _first_number(
-            legacy.get("volume_ratio_5m"),
-            strategy.get("volume_ratio_5m"),
-        ),
+        "symbol_regime": symbol_regime,
+        "mtf_bias": mtf_bias,
+        "mtf_net": mtf_net,
+        "mtf_net_band": mtf_net_band,
+        "rsi5m": rsi5m,
+        "rsi5m_band": rsi5m_band,
+        "volume_ratio_5m": volume_ratio_5m,
+        "volume_band": volume_band,
         "atr_percent_of_entry": _first_number(
             _mapping(outcome.get("entry_forensics")).get("atr_percent_of_entry"),
             (atr / entry * 100.0) if atr is not None and entry is not None and entry > 0 else None,
@@ -570,10 +687,16 @@ def build_linked_entry_outcome_analysis(
     capture_rows = [row for row in captures if isinstance(row, Mapping)]
     by_id, by_position = _capture_index(capture_rows)
 
+    # Aggregate every closed outcome. Exact capture matches and outcome-only
+    # fallbacks are tracked separately so wider analysis coverage is never
+    # misreported as recovered capture linkage.
     joined: list[dict[str, Any]] = []
     unmatched_outcomes: list[Mapping[str, Any]] = []
     matched_capture_ids: set[str] = set()
     matched_position_keys: set[str] = set()
+    capture_matched_count = 0
+    outcome_context_fallback_count = 0
+    unmatched_without_entry_context_count = 0
 
     for outcome in outcome_rows:
         position_id = str(outcome.get("position_id") or "").strip()
@@ -583,14 +706,24 @@ def build_linked_entry_outcome_analysis(
             capture = by_position.get(position_id)
         if capture is None:
             unmatched_outcomes.append(outcome)
-            continue
-        joined.append(_joined_row(venue_name, outcome, capture))
-        matched_capture_id = str(capture.get("capture_id") or "").strip()
-        if matched_capture_id:
-            matched_capture_ids.add(matched_capture_id)
-        if position_id:
-            matched_position_keys.add(position_id)
+            row = _joined_row(venue_name, outcome, {})
+            if row.get("entry_context_available"):
+                outcome_context_fallback_count += 1
+            else:
+                unmatched_without_entry_context_count += 1
+        else:
+            row = _joined_row(venue_name, outcome, capture)
+            capture_matched_count += 1
+            matched_capture_id = str(capture.get("capture_id") or "").strip()
+            if matched_capture_id:
+                matched_capture_ids.add(matched_capture_id)
+            if position_id:
+                matched_position_keys.add(position_id)
+        joined.append(row)
 
+    decision_evidence_covered = sum(
+        bool(row.get("entry_context_available")) for row in joined
+    )
     unmatched_captures = len([
         capture for capture in capture_rows
         if str(capture.get("capture_id") or "").strip() not in matched_capture_ids
@@ -618,6 +751,8 @@ def build_linked_entry_outcome_analysis(
 
     def public_sample(row: Mapping[str, Any]) -> dict[str, Any]:
         fields = (
+            "position_id", "capture_id", "capture_matched",
+            "decision_evidence_source", "entry_context_available",
             "symbol", "trade_mode", "score", "net_pnl", "fees",
             "expected_rr", "expected_net_rr_after_fees",
             "realized_r_multiple_net", "stop_atr_multiple",
@@ -629,21 +764,35 @@ def build_linked_entry_outcome_analysis(
             "profit_protection_shadow_detail",
             "target_reached", "close_reason",
             "entry_v2_approved_shadow", "entry_v2_failed_gate_shadow",
-            "market_regime",
+            "market_regime", "market_regime_source", "symbol_regime",
+            "mtf_bias", "mtf_net", "mtf_net_band",
+            "rsi5m", "rsi5m_band", "volume_ratio_5m", "volume_band",
         )
         return {key: row.get(key) for key in fields}
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "venue": venue_name,
         "coverage": {
             "outcome_records_read": len(outcome_rows),
             "entry_captures_read": len(capture_rows),
-            "matched_closed_trades": len(joined),
+            "matched_closed_trades": capture_matched_count,
             "unmatched_outcomes": len(unmatched_outcomes),
             "unmatched_entry_captures": unmatched_captures,
             "matched_percent_of_outcomes": (
+                round(capture_matched_count / len(outcome_rows) * 100.0, 2)
+                if outcome_rows else None
+            ),
+            "outcome_context_fallback_trades": outcome_context_fallback_count,
+            "unmatched_outcomes_without_entry_context": unmatched_without_entry_context_count,
+            "analyzed_closed_trades": len(joined),
+            "analyzed_percent_of_outcomes": (
                 round(len(joined) / len(outcome_rows) * 100.0, 2)
+                if outcome_rows else None
+            ),
+            "decision_evidence_covered_trades": decision_evidence_covered,
+            "decision_evidence_coverage_percent": (
+                round(decision_evidence_covered / len(outcome_rows) * 100.0, 2)
                 if outcome_rows else None
             ),
         },
@@ -657,6 +806,24 @@ def build_linked_entry_outcome_analysis(
         ),
         "by_trade_mode_and_market_regime": _group_by_two_keys(
             joined, "trade_mode", "market_regime"
+        ),
+        "by_trade_mode_and_symbol_regime": _group_by_two_keys(
+            joined, "trade_mode", "symbol_regime"
+        ),
+        "by_trade_mode_and_mtf_bias": _group_by_two_keys(
+            joined, "trade_mode", "mtf_bias"
+        ),
+        "by_trade_mode_and_mtf_net_band": _group_by_two_keys(
+            joined, "trade_mode", "mtf_net_band"
+        ),
+        "by_trade_mode_and_volume_band": _group_by_two_keys(
+            joined, "trade_mode", "volume_band"
+        ),
+        "by_trade_mode_and_rsi5m_band": _group_by_two_keys(
+            joined, "trade_mode", "rsi5m_band"
+        ),
+        "by_trade_mode_and_decision_evidence_source": _group_by_two_keys(
+            joined, "trade_mode", "decision_evidence_source"
         ),
         "by_trade_mode_and_peak_gain_band": _group_by_two_keys(
             joined, "trade_mode", "peak_gain_band"
@@ -688,7 +855,8 @@ def build_linked_entry_outcome_analysis(
             "Profit-protection activation is read from the persisted exit_protection flag; historical rows without that flag remain unknown.",
             "Net-floor shadow exits are counterfactual Paper-only observations at the first qualifying fresh mark; they do not execute an exit or model later slippage.",
             "Shadow-versus-actual PnL deltas are only computed for completed trades where the shadow trigger was persisted; partial-exit trades are excluded.",
-            "A missing capture is reported as unmatched and is never silently filled with current strategy settings.",
+            "A missing capture remains unmatched for capture-linkage coverage; aggregate analysis may use entry-time fields already embedded in that same closed outcome, with explicit OUTCOME_EMBEDDED_ENTRY_CONTEXT provenance.",
+            "Market-regime, symbol-regime, MTF bias/net, RSI and volume are reported as separate dimensions; MTF fields are not inferred into an overall market-regime label.",
         ],
     }
 

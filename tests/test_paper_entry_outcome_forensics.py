@@ -135,8 +135,17 @@ def test_unmatched_outcome_is_reported_and_never_filled_from_unrelated_capture()
 
     assert result["coverage"]["matched_closed_trades"] == 0
     assert result["coverage"]["unmatched_outcomes"] == 1
-    assert result["overall"]["closed_trades"] == 0
     assert result["coverage"]["unmatched_entry_captures"] == 1
+    assert result["coverage"]["outcome_context_fallback_trades"] == 0
+    assert result["coverage"]["unmatched_outcomes_without_entry_context"] == 1
+    assert result["coverage"]["analyzed_closed_trades"] == 1
+    assert result["coverage"]["decision_evidence_coverage_percent"] == 0.0
+    # The realized PnL belongs to this closed outcome and is valid even when
+    # its entry-decision evidence is missing. No unrelated capture is reused.
+    assert result["overall"]["closed_trades"] == 1
+    assert result["overall"]["net_pnl_after_fees"] == -0.4
+    assert result["worst_trades"][0]["position_id"] == "POS-UNKNOWN"
+    assert result["worst_trades"][0]["decision_evidence_source"] == "OUTCOME_ONLY"
 
 
 def test_forensics_rejects_unsupported_venue():
@@ -409,3 +418,111 @@ def test_forensics_reports_peak_gain_bands_and_profit_protection_state():
     assert round(report["overall"]["net_floor_shadow_delta_vs_actual_on_triggered_trades"], 4) == 0.7996
     assert report["by_trade_mode_and_profit_protection_shadow_status"]["SWING"]["TRIGGERED"]["closed_trades"] == 1
     assert report["worst_trades"][0]["profit_protection_shadow_triggered"] is True
+
+
+def test_missing_capture_uses_embedded_outcome_entry_context_without_claiming_capture_match():
+    outcome = {
+        "position_id": "POS-OUTCOME-FALLBACK",
+        "symbol": "BTCUSDT",
+        "trade_mode": "SCALP",
+        "entry_price": 100.0,
+        "entry_stop_loss": 99.0,
+        "quantity": 1.0,
+        "gross_pnl": -0.1,
+        "realized_pnl": -0.3,
+        "fees": 0.2,
+        "highest_price": 100.2,
+        "max_profit_percent": 0.2,
+        "close_reason": "STOP_LOSS",
+        "entry_forensics": {
+            "stop_distance_source": "ENTRY_METADATA",
+            "mtf_bias": "BEARISH",
+            "mtf_net": -24,
+            "volume_ratio_5m": 0.8,
+        },
+        "entry_economics": {
+            "reward_risk": 1.4,
+            "risk_percent": 1.0,
+            "net_reward_percent": 1.1,
+        },
+        "entry_v2": {
+            "capture_id": "CAPTURE-NOT-PERSISTED",
+            "decision": "REJECT",
+            "approved": False,
+            "failed_gate": "SELLER_PRESSURE_NOT_INVALIDATED",
+            "target_price": 101.4,
+        },
+        "strategy": {
+            "score": 65,
+            "scalp_score": 65,
+            "rsi5m": 52,
+            "atr": 0.5,
+            "mtf_bias": "BEARISH",
+            "mtf_net": -24,
+            "volume_ratio_5m": 0.8,
+        },
+        "regime": {
+            "market": None,
+            "symbol": "BEAR",
+        },
+    }
+
+    report = build_linked_entry_outcome_analysis("MAIN", [outcome], [])
+
+    coverage = report["coverage"]
+    assert coverage["matched_closed_trades"] == 0
+    assert coverage["matched_percent_of_outcomes"] == 0.0
+    assert coverage["unmatched_outcomes"] == 1
+    assert coverage["outcome_context_fallback_trades"] == 1
+    assert coverage["unmatched_outcomes_without_entry_context"] == 0
+    assert coverage["analyzed_closed_trades"] == 1
+    assert coverage["analyzed_percent_of_outcomes"] == 100.0
+    assert coverage["decision_evidence_covered_trades"] == 1
+    assert coverage["decision_evidence_coverage_percent"] == 100.0
+
+    assert report["overall"]["closed_trades"] == 1
+    assert report["overall"]["net_pnl_after_fees"] == -0.3
+    assert report["overall"]["average_expected_rr"] == 1.4
+    assert report["overall"]["average_expected_net_rr_after_fees"] == 1.1
+    assert report["by_trade_mode_and_failed_gate"]["SCALP"]["SELLER_PRESSURE_NOT_INVALIDATED"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_score_band"]["SCALP"]["65_69"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_mtf_bias"]["SCALP"]["BEARISH"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_mtf_net_band"]["SCALP"]["BELOW_-20"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_volume_band"]["SCALP"]["BELOW_1_0"]["closed_trades"] == 1
+    assert report["by_trade_mode_and_rsi5m_band"]["SCALP"]["49_TO_60"]["closed_trades"] == 1
+
+    worst = report["worst_trades"][0]
+    assert worst["position_id"] == "POS-OUTCOME-FALLBACK"
+    assert worst["capture_id"] == "CAPTURE-NOT-PERSISTED"
+    assert worst["capture_matched"] is False
+    assert worst["decision_evidence_source"] == "OUTCOME_EMBEDDED_ENTRY_CONTEXT"
+    assert worst["market_regime"] == "UNKNOWN"
+    assert worst["symbol_regime"] == "BEAR"
+    assert worst["mtf_bias"] == "BEARISH"
+    assert worst["mtf_net"] == -24
+
+
+def test_outcome_without_embedded_entry_context_still_counts_in_actual_results():
+    outcome = {
+        "position_id": "POS-OUTCOME-ONLY",
+        "symbol": "ETHUSDT",
+        "trade_mode": "SWING",
+        "entry_price": 50.0,
+        "quantity": 2.0,
+        "gross_pnl": 0.2,
+        "realized_pnl": 0.0,
+        "fees": 0.2,
+        "close_reason": "TIME_EXIT",
+    }
+
+    report = build_linked_entry_outcome_analysis("OKX", [outcome], [])
+
+    assert report["coverage"]["matched_closed_trades"] == 0
+    assert report["coverage"]["outcome_context_fallback_trades"] == 0
+    assert report["coverage"]["unmatched_outcomes_without_entry_context"] == 1
+    assert report["coverage"]["analyzed_closed_trades"] == 1
+    assert report["coverage"]["decision_evidence_coverage_percent"] == 0.0
+    assert report["overall"]["closed_trades"] == 1
+    assert report["overall"]["net_pnl_after_fees"] == 0.0
+    assert report["by_trade_mode"]["SWING"]["closed_trades"] == 1
+    assert report["worst_trades"][0]["decision_evidence_source"] == "OUTCOME_ONLY"
