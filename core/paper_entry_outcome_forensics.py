@@ -117,6 +117,8 @@ def _joined_row(
     outcome_forensics = _mapping(outcome.get("entry_forensics"))
     outcome_regime = _mapping(outcome.get("regime"))
     outcome_strategy = _mapping(outcome.get("strategy"))
+    chain_brain = _mapping(entry_chain.get("brain_authority"))
+    chain_final = _mapping(entry_chain.get("final"))
 
     mode = str(
         outcome.get("trade_mode")
@@ -361,7 +363,7 @@ def _joined_row(
         for value in (
             outcome.get("entry_stop_loss"),
             outcome.get("signal_entry_price"),
-            outcome_v2.get("capture_id"),
+            outcome_v2.get("decision"),
             outcome_v2.get("approved"),
             outcome_v2.get("failed_gate"),
             outcome_v2.get("reward_risk"),
@@ -377,6 +379,11 @@ def _joined_row(
             outcome_forensics.get("mtf_bias"),
             outcome_forensics.get("mtf_net"),
             outcome_regime.get("market"),
+            chain_legacy.get("score"),
+            chain_legacy.get("signal"),
+            chain_brain.get("allowed"),
+            chain_brain.get("reason"),
+            chain_final.get("failed_gate"),
         )
     )
     capture_matched = bool(capture)
@@ -764,7 +771,7 @@ def build_linked_entry_outcome_analysis(
         return {key: row.get(key) for key in fields}
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "venue": venue_name,
         "coverage": {
             "outcome_records_read": len(outcome_rows),
