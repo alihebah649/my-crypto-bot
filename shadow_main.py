@@ -207,9 +207,13 @@ def _record_blocked_entry_shadow(
         return
 
     with _paper_blocked_entry_shadow_lock:
-        if normalized in _paper_blocked_entry_shadow_active_by_symbol:
+        active = _paper_blocked_entry_shadow_active_by_symbol.get(normalized)
+        if active is not None:
             # Do not create repeated virtual positions from every one-minute
             # scan while the same symbol already has an open counterfactual.
+            active["repeat_blocked_candidates_suppressed"] = int(
+                active.get("repeat_blocked_candidates_suppressed", 0) or 0
+            ) + 1
             return
 
     capture_store = getattr(
@@ -252,6 +256,7 @@ def _record_blocked_entry_shadow(
     )
     watch["record_type"] = "START"
     watch["record_id"] = f"{identity}:START"
+    watch["repeat_blocked_candidates_suppressed"] = 0
     watch["trial_name"] = _BLOCKED_ENTRY_SHADOW_TRIAL_NAME
     watch["venue"] = "BINANCE"
     watch["venue_mode"] = "MAIN"
