@@ -57,6 +57,11 @@ from core.paper_runtime_retention import (
     prune_main_paper_history,
 )
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
+from core.paper_blocked_entry_shadow import (
+    TRIAL_NAME as _BLOCKED_ENTRY_SHADOW_TRIAL_NAME,
+    advance_blocked_entry_watch,
+    build_blocked_entry_watch,
+)
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
     build_paper_market_health_summary,
@@ -123,6 +128,214 @@ _paper_outcome_store = (
     if _evidence_database_url
     else None
 )
+# Counterfactual-only path tracking for the existing MAIN/SCALP seller-pressure
+# Paper veto. It is disabled unless that exact Paper trial is enabled and
+# persists only one START and one FINAL event per blocked capture.
+_PAPER_BLOCKED_ENTRY_SHADOW_ENABLED = bool(
+    PAPER_VENUE_MODE == "MIXED"
+    and PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED
+    and _evidence_database_url
+)
+_paper_blocked_entry_shadow_store = (
+    PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type="PAPER_BLOCKED_ENTRY_SHADOW",
+        max_records=1_000,
+    )
+    if _PAPER_BLOCKED_ENTRY_SHADOW_ENABLED
+    else None
+)
+_paper_blocked_entry_shadow_lock = threading.RLock()
+_paper_blocked_entry_shadow_active_by_symbol: dict[str, dict[str, Any]] = {}
+
+
+def _restore_blocked_entry_shadow_watches() -> None:
+    store = _paper_blocked_entry_shadow_store
+    if store is None:
+        return
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("BLOCKED_ENTRY_SHADOW_RESTORE_READ_FAILED")
+        final_capture_ids = {
+            str(row.get("source_capture_id") or "").strip()
+            for row in records
+            if isinstance(row, dict) and row.get("record_type") == "FINAL"
+        }
+        restored: dict[str, dict[str, Any]] = {}
+        for row in records:
+            if not isinstance(row, dict) or row.get("record_type") != "START":
+                continue
+            capture_id = str(row.get("source_capture_id") or "").strip()
+            symbol = str(row.get("symbol") or "").upper()
+            if (
+                not capture_id
+                or not symbol
+                or capture_id in final_capture_ids
+                or str(row.get("status") or "").upper() != "OBSERVING"
+            ):
+                continue
+            previous = restored.get(symbol)
+            if previous is None or str(row.get("entry_capture_at_utc") or "") > str(
+                previous.get("entry_capture_at_utc") or ""
+            ):
+                restored[symbol] = dict(row)
+        with _paper_blocked_entry_shadow_lock:
+            _paper_blocked_entry_shadow_active_by_symbol.update(restored)
+        _legacy.logger.warning(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] RESTORED active_symbols=%d",
+            len(restored),
+        )
+    except Exception:
+        _legacy.logger.exception(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] restore failed; no counterfactual result will be inferred"
+        )
+
+
+_restore_blocked_entry_shadow_watches()
+
+
+def _record_blocked_entry_shadow(
+    symbol: str,
+    capture_id: str | None,
+    blocked_reason: str,
+) -> None:
+    store = _paper_blocked_entry_shadow_store
+    normalized = str(symbol or "").upper()
+    identity = str(capture_id or "").strip()
+    if store is None or not normalized or not identity:
+        return
+
+    with _paper_blocked_entry_shadow_lock:
+        if normalized in _paper_blocked_entry_shadow_active_by_symbol:
+            # Do not create repeated virtual positions from every one-minute
+            # scan while the same symbol already has an open counterfactual.
+            return
+
+    capture_store = getattr(
+        globals().get("_entry_v2_runtime_capture"),
+        "capture_store",
+        None,
+    )
+    lookup = getattr(capture_store, "get_by_identity", None)
+    if not callable(lookup):
+        _legacy.logger.warning(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] capture lookup unavailable symbol=%s",
+            normalized,
+        )
+        return
+    try:
+        capture = lookup(identity)
+    except Exception as exc:
+        _legacy.logger.warning(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] capture lookup failed symbol=%s error=%s",
+            normalized,
+            type(exc).__name__,
+        )
+        return
+    if not isinstance(capture, dict) or str(capture.get("capture_id") or "") != identity:
+        _legacy.logger.warning(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] exact capture missing symbol=%s capture_id=%s",
+            normalized,
+            identity,
+        )
+        return
+
+    fee_rate = float(
+        getattr(getattr(runtime, "execution_adapter", None), "fee_rate", 0.001)
+        or 0.001
+    )
+    watch = build_blocked_entry_watch(
+        capture,
+        fee_rate=fee_rate,
+        blocked_reason=blocked_reason,
+    )
+    watch["record_type"] = "START"
+    watch["record_id"] = f"{identity}:START"
+    watch["trial_name"] = _BLOCKED_ENTRY_SHADOW_TRIAL_NAME
+    watch["venue"] = "BINANCE"
+    watch["venue_mode"] = "MAIN"
+    try:
+        inserted = store.append(watch)
+        if not inserted:
+            if getattr(store, "last_error", None):
+                raise RuntimeError("BLOCKED_ENTRY_SHADOW_START_PERSIST_FAILED")
+            # An idempotent duplicate is already durable; restore it into the
+            # in-memory watcher only when its start snapshot is measurable.
+        if str(watch.get("status")) == "OBSERVING":
+            with _paper_blocked_entry_shadow_lock:
+                _paper_blocked_entry_shadow_active_by_symbol[normalized] = dict(watch)
+        _legacy.logger.warning(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] START %s",
+            json.dumps(watch, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        _legacy.logger.exception(
+            "[PAPER-BLOCKED-ENTRY-SHADOW] start persistence failed symbol=%s capture_id=%s",
+            normalized,
+            identity,
+        )
+
+
+def _advance_blocked_entry_shadow_watches() -> None:
+    store = _paper_blocked_entry_shadow_store
+    if store is None:
+        return
+    stream = globals().get("_binance_market_stream")
+    get_history = getattr(stream, "get_kline_history", None)
+    if not callable(get_history):
+        return
+
+    with _paper_blocked_entry_shadow_lock:
+        watches = list(_paper_blocked_entry_shadow_active_by_symbol.items())
+    for symbol, previous in watches:
+        try:
+            candles = get_history(symbol, "5m", 60) or []
+            updated, changed = advance_blocked_entry_watch(previous, candles)
+        except Exception:
+            _legacy.logger.exception(
+                "[PAPER-BLOCKED-ENTRY-SHADOW] path update failed symbol=%s",
+                symbol,
+            )
+            continue
+
+        status = str(updated.get("status") or "").upper()
+        if status == "OBSERVING":
+            if changed:
+                with _paper_blocked_entry_shadow_lock:
+                    current = _paper_blocked_entry_shadow_active_by_symbol.get(symbol)
+                    if current and current.get("source_capture_id") == updated.get("source_capture_id"):
+                        _paper_blocked_entry_shadow_active_by_symbol[symbol] = updated
+            continue
+
+        final_event = dict(updated)
+        final_event["record_type"] = "FINAL"
+        final_event["record_id"] = f"{updated.get('source_capture_id')}:FINAL"
+        final_event["trial_name"] = _BLOCKED_ENTRY_SHADOW_TRIAL_NAME
+        final_event["venue"] = "BINANCE"
+        final_event["venue_mode"] = "MAIN"
+        try:
+            inserted = store.append(final_event)
+            if not inserted and getattr(store, "last_error", None):
+                raise RuntimeError("BLOCKED_ENTRY_SHADOW_FINAL_PERSIST_FAILED")
+            with _paper_blocked_entry_shadow_lock:
+                current = _paper_blocked_entry_shadow_active_by_symbol.get(symbol)
+                if current and current.get("source_capture_id") == updated.get("source_capture_id"):
+                    _paper_blocked_entry_shadow_active_by_symbol.pop(symbol, None)
+            _legacy.logger.warning(
+                "[PAPER-BLOCKED-ENTRY-SHADOW] FINAL %s",
+                json.dumps(final_event, ensure_ascii=False, separators=(",", ":")),
+            )
+        except Exception:
+            # Retain the completed in-memory record and retry the idempotent
+            # FINAL append on the next scan. A restart can reconstruct it
+            # again from START plus the retained 5m candle history.
+            with _paper_blocked_entry_shadow_lock:
+                _paper_blocked_entry_shadow_active_by_symbol[symbol] = updated
+            _legacy.logger.exception(
+                "[PAPER-BLOCKED-ENTRY-SHADOW] final persistence failed symbol=%s",
+                symbol,
+            )
 # The daily report loop lives in shadow_main_legacy.py. That module has its own
 # global namespace, so the active durable store must be explicitly bound there;
 # otherwise the report silently falls back to process-local runtime positions.
@@ -390,6 +603,15 @@ def _brain_authority_entry_gate(symbol: str, score: dict, mode: str) -> bool:
         ] = f"{type(exc).__name__}: {exc}"
 
     if record.context.get("paper_trial_seller_pressure_veto_applied"):
+        if (
+            not record.allowed
+            and record.brain_reason == "PAPER_TRIAL_MAIN_SCALP_SELLER_PRESSURE"
+        ):
+            _record_blocked_entry_shadow(
+                normalized,
+                capture_id,
+                record.brain_reason,
+            )
         _legacy.logger.warning(
             "[PAPER-TRIAL-MAIN-SCALP-SELLER-PRESSURE] BLOCK symbol=%s score=%.1f regime=%s capture_id=%s",
             normalized,
@@ -1308,6 +1530,10 @@ def _process_market_cycle_with_overlays():
         runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["summary"] = shadow_summary
     except Exception:
         _legacy.logger.exception("Entry v2 shadow capture failed")
+    try:
+        _advance_blocked_entry_shadow_watches()
+    except Exception:
+        _legacy.logger.exception("Blocked-entry Paper shadow tracker failed")
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
@@ -2198,6 +2424,81 @@ def _paper_forensic_entry_outcomes():
     status_code = 200 if payload.get("available") else 503
     _emit_linked_entry_outcome_forensics_logs(payload)
     return jsonify(payload), status_code
+
+
+@app.get("/paper/blocked-entry-shadow-report")
+def _paper_blocked_entry_shadow_report():
+    """Read-only counterfactual outcomes for the existing MAIN/SCALP Paper veto."""
+    store = _paper_blocked_entry_shadow_store
+    if store is None:
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "BLOCKED_ENTRY_SHADOW_TRACKER_DISABLED_OR_POSTGRES_UNAVAILABLE",
+        }), 503
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("BLOCKED_ENTRY_SHADOW_READ_FAILED")
+        starts = {
+            str(row.get("source_capture_id") or ""): row
+            for row in records
+            if isinstance(row, dict) and row.get("record_type") == "START"
+        }
+        finals = [
+            row for row in records
+            if isinstance(row, dict) and row.get("record_type") == "FINAL"
+        ]
+        final_ids = {
+            str(row.get("source_capture_id") or "")
+            for row in finals
+        }
+        active = [
+            row for key, row in starts.items()
+            if key and key not in final_ids and str(row.get("status") or "") == "OBSERVING"
+        ]
+        counts = {}
+        for row in finals:
+            status = str(row.get("status") or "UNKNOWN")
+            counts[status] = counts.get(status, 0) + 1
+        payload = {
+            "available": True,
+            "mode": "PAPER_ONLY",
+            "trial_name": _BLOCKED_ENTRY_SHADOW_TRIAL_NAME,
+            "start_records": len(starts),
+            "completed_records": len(finals),
+            "active_records": len(active),
+            "completed_by_status": counts,
+            "active": active,
+            "recent_completed": finals[-50:],
+            "model": {
+                "path_source": "BINANCE_RELAY_WEBSOCKET_CLOSED_5M_CANDLES",
+                "stop_target_source": "ENTRY_V2_CAPTURE",
+                "horizon_closed_5m_bars": 24,
+                "estimated_round_trip_fees": "2 x configured Paper fee rate",
+                "spread_and_slippage": "NOT_INCLUDED",
+                "same_candle_stop_and_target": "AMBIGUOUS_NOT_COUNTED_AS_WIN_OR_LOSS",
+                "no_paper_positions_or_orders_are_created": True,
+            },
+        }
+        _legacy.logger.info(
+            "[PAPER-BLOCKED-ENTRY-SHADOW-REPORT] %s",
+            json.dumps({
+                "start_records": payload["start_records"],
+                "completed_records": payload["completed_records"],
+                "active_records": payload["active_records"],
+                "completed_by_status": counts,
+            }, ensure_ascii=False, separators=(",", ":")),
+        )
+        return jsonify(payload), 200
+    except Exception as exc:
+        _legacy.logger.exception("Blocked-entry Paper shadow report failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "BLOCKED_ENTRY_SHADOW_READ_FAILED",
+            "error": type(exc).__name__,
+        }), 503
 
 
 
