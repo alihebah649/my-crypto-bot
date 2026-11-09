@@ -65,10 +65,10 @@ def build_precalibration_decision_record(
     brain_allowed = bool(brain.get("allowed"))
 
     preflight = str(preflight_rejection or "").strip().upper()
-    if existing_position:
-        disposition = "SKIPPED_EXISTING_POSITION"
-    elif preflight:
+    if preflight:
         disposition = preflight
+    elif existing_position:
+        disposition = "SKIPPED_EXISTING_POSITION"
     elif not brain_allowed:
         disposition = "BRAIN_SELECTIVE_VETO" if selective_veto else "BRAIN_REJECTED"
     elif str(target_status or "").upper() != "VALID" or target_price is None:
@@ -76,7 +76,7 @@ def build_precalibration_decision_record(
     elif not bool(economics.get("approved")):
         disposition = "ENTRY_ECONOMICS_REJECTED"
     else:
-        disposition = "WATCH_ELIGIBLE"
+        disposition = "BRAIN_ECONOMICS_QUALIFIED_WATCH"
 
     return {
         "schema_version": 1,
@@ -112,6 +112,9 @@ def build_precalibration_decision_record(
         "entry_v2_failed_gate": str(entry_v2_failed_gate or ""),
         "economics": economics,
         "disposition": disposition,
+        "risk_authority": "NOT_SIMULATED",
+        "trade_manager_authority": "NOT_SIMULATED",
+        "execution_authority": "NOT_SIMULATED",
         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
         "mode": "PAPER_ONLY",
         "trading_logic_changed": False,
@@ -215,8 +218,9 @@ def build_precalibration_shadow_report(records: Any) -> dict[str, Any]:
         "average_net_r_after_estimated_fees": round(sum(net_r_values) / len(net_r_values), 6) if net_r_values else None,
         "recent": recent,
         "interpretation": {
-            "eligibility": "Only prior-formula-only candidates that pass the current Brain, Entry v2 selective veto, valid-target, and Paper entry-economics checks are monitored.",
+            "eligibility": "Only prior-formula-only candidates that pass the real preflight guards, current Brain (including Entry v2 selective veto), valid-target, and Paper entry-economics checks are monitored.",
             "path": "Entry v2 ATR stop and pivot target over at most 24 newly closed Binance 5m candles.",
+            "unmodeled_authorities": "Risk Manager, Trade Manager, and Execution are not simulated; a measured price-path watch is not proof that a real Paper position would have been accepted or filled.",
             "fees": "Uses the MAIN Paper execution adapter fee rate on both entry and exit.",
             "excluded": "AMBIGUOUS_SAME_CANDLE, DATA_GAP, and UNMEASURABLE_CONTEXT are not included in decisive win/loss statistics.",
             "caveat": "Counterfactual price-path only; no simulated order fill, spread, slippage, queue position, or actual execution. This does not create a Paper position.",
