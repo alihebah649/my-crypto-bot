@@ -1,8 +1,8 @@
 """Durable, read-only attribution for Paper entry funnel decisions.
 
-The funnel stores the final disposition alongside the existing Brain Authority
-evidence row (same capture_id). It does not create a second evidence table and
-never changes a trading decision.
+The funnel stores compact final-disposition records in a separate evidence type
+within the existing paper_evidence table, linked by the same capture_id. Brain
+Authority records remain immutable and the funnel never changes a decision.
 """
 from __future__ import annotations
 
