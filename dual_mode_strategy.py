@@ -445,7 +445,7 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         and r5 <= SCALP_MAX_RSI
         and v5 >= SCALP_MIN_VOLUME_RATIO
         and (bool(found and confirmed) or recovery_confirmation)
-        and not mtf_countertrend_veto
+        and not mtf_strong_bearish_stack
     )
     scalp_pre_calibration_signal = (
         "BUY"
