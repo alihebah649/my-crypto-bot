@@ -57,6 +57,7 @@ from core.paper_runtime_retention import (
     prune_main_paper_history,
 )
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
+from core.paper_signal_cycle_summary import build_paper_signal_cycle_summary
 from core.paper_entry_funnel import build_entry_funnel_record, build_entry_funnel_report
 from core.paper_blocked_entry_shadow import (
     TRIAL_NAME as _BLOCKED_ENTRY_SHADOW_TRIAL_NAME,
@@ -1700,6 +1701,24 @@ def _reset_entry_diagnostics_for_cycle() -> None:
             runtime.last_entry_diagnostics.pop(symbol, None)
 
 
+def _log_paper_signal_cycle_summary() -> None:
+    """Emit compact per-cycle score/signal/gate counts; diagnostics only."""
+    try:
+        summary = build_paper_signal_cycle_summary(
+            _legacy.latest_scores,
+            scalp_threshold=SCALP_SCORE_THRESHOLD,
+            swing_threshold=SWING_SCORE_THRESHOLD,
+            venue_mode=PAPER_VENUE_MODE,
+        )
+        summary["generated_at_epoch_ms"] = int(time.time() * 1000)
+        _legacy.logger.info(
+            "[PAPER-SIGNAL-FUNNEL] %s",
+            json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        _legacy.logger.exception("Paper signal funnel cycle summary failed")
+
+
 def _process_market_cycle_with_overlays():
     _reset_entry_diagnostics_for_cycle()
     original_has_position = runtime.controller.has_position
@@ -1708,6 +1727,7 @@ def _process_market_cycle_with_overlays():
         result = _paper_original_process_market_cycle()
     finally:
         runtime.controller.has_position = original_has_position
+    _log_paper_signal_cycle_summary()
     try:
         shadow_summary = _entry_v2_runtime_capture.capture_cycle()
         runtime.last_entry_diagnostics.setdefault("__entry_v2_shadow__", {})["summary"] = shadow_summary
