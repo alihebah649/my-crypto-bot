@@ -183,3 +183,37 @@ def test_report_excludes_ambiguous_and_data_gap_from_decisive_results():
     assert report["outcomes"]["AMBIGUOUS_SAME_CANDLE"] == 1
     assert report["outcomes"]["DATA_GAP"] == 1
     assert report["interpretation"]["trading_logic_changed"] is False
+
+
+def test_preflight_data_ticker_and_cooldown_rejections_precede_brain():
+    stale_data = _decision(preflight_rejection="STALE_ENTRY_DATA")
+    stale_ticker = _decision(preflight_rejection="STALE_TICKER")
+    cooldown = _decision(
+        preflight_rejection="LOSS_COOLDOWN",
+        preflight_details={"remaining_seconds": 125.0},
+    )
+
+    assert stale_data["disposition"] == "STALE_ENTRY_DATA"
+    assert stale_data["brain_reason"] == "CONFIRMED_ENTRY"
+    assert stale_ticker["disposition"] == "STALE_TICKER"
+    assert cooldown["disposition"] == "LOSS_COOLDOWN"
+    assert cooldown["preflight_details"]["remaining_seconds"] == 125.0
+
+
+def test_report_counts_watch_eligible_as_a_disposition():
+    rows = [
+        {
+            "record_type": "START",
+            "record_id": "eligible:START",
+            "candidate_id": "eligible",
+            "symbol": "TRXUSDT",
+            "status": "OBSERVING",
+            "disposition": "WATCH_ELIGIBLE",
+        }
+    ]
+
+    report = build_precalibration_shadow_report(rows)
+
+    assert report["unique_candidate_count"] == 1
+    assert report["dispositions"]["WATCH_ELIGIBLE"] == 1
+    assert report["watch_active"] == 1
