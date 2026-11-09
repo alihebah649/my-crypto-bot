@@ -6,8 +6,6 @@ never changes a trading decision.
 """
 from __future__ import annotations
 
-from collections import defaultdict
-from copy import deepcopy
 from datetime import datetime, timezone
 from math import floor
 from typing import Any, Mapping
