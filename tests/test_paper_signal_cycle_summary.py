@@ -66,3 +66,59 @@ def test_cycle_summary_handles_empty_score_universe():
     assert result["swing_scores_at_or_above_threshold"] == 0
     assert result["buy_symbol_count"] == 0
     assert result["top_scores"] == []
+
+
+def test_cycle_summary_compares_prior_scalp_formula_without_approving_current_signal():
+    result = build_paper_signal_cycle_summary(
+        {
+            "BTCUSDT": {
+                "score": 61,
+                "trade_mode": "NONE",
+                "scalp_score": 61,
+                "scalp_signal": "HOLD",
+                "scalp_gate": False,
+                "scalp_gate_reasons": ["SCALP_STRUCTURE_NOT_CONFIRMED"],
+                "scalp_score_raw": 95,
+                "scalp_pre_calibration_score": 100,
+                "scalp_pre_calibration_gate": True,
+                "scalp_pre_calibration_signal": "BUY",
+                "scalp_reversion_family_points": 22,
+                "rsi5m": 20,
+                "volume_ratio_5m": 1.2,
+                "pattern": "BULLISH_REVERSAL",
+                "pattern_confirmed": True,
+                "scalp_recovery_confirmation": True,
+                "scalp_structural_confirmation": False,
+                "mtf_bias": "NEUTRAL",
+                "mtf_net": 0,
+                "swing_score": 53,
+                "swing_signal": "HOLD",
+            },
+            "ETHUSDT": {
+                "score": 42,
+                "trade_mode": "NONE",
+                "scalp_score": 30,
+                "scalp_signal": "HOLD",
+                "scalp_gate": False,
+                "scalp_gate_reasons": ["5M_VOLUME_TOO_LOW"],
+                "scalp_pre_calibration_score": 42,
+                "scalp_pre_calibration_gate": False,
+                "scalp_pre_calibration_signal": "HOLD",
+                "swing_score": 42,
+                "swing_signal": "HOLD",
+            },
+        },
+        venue_mode="MIXED",
+    )
+
+    assert result["scalp_scores_at_or_above_threshold"] == 0
+    assert result["scalp_signals_buy"] == 0
+    assert result["scalp_pre_calibration_scores_at_or_above_threshold"] == 1
+    assert result["scalp_pre_calibration_signals_buy"] == 1
+    assert result["scalp_pre_calibration_only_signals"] == 1
+    assert result["scalp_gate_reason_counts_all_symbols"] == {
+        "5M_VOLUME_TOO_LOW": 1,
+        "SCALP_STRUCTURE_NOT_CONFIRMED": 1,
+    }
+    assert result["scalp_pre_calibration_candidates"][0]["symbol"] == "BTCUSDT"
+    assert result["interpretation"]["trading_logic_changed"] is False
