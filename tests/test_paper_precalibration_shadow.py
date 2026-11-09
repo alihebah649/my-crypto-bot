@@ -105,7 +105,7 @@ def test_existing_position_is_not_treated_as_a_recovered_opportunity():
 
 def test_report_excludes_ambiguous_and_data_gap_from_decisive_results():
     rows = [
-        _decision(),
+        _decision(candidate_id="candidate-a"),
         {
             "record_type": "START",
             "record_id": "candidate-a:START",
