@@ -211,7 +211,7 @@ def test_report_counts_watch_eligible_as_a_disposition():
             "candidate_id": "eligible",
             "symbol": "TRXUSDT",
             "status": "OBSERVING",
-            "disposition": "WATCH_ELIGIBLE",
+            "disposition": "BRAIN_ECONOMICS_QUALIFIED_WATCH",
         }
     ]
 
