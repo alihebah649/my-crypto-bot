@@ -48,8 +48,27 @@ def build_entry_funnel_record(
     if not identity:
         return None
 
-    record = deepcopy(dict(brain_record)) if isinstance(brain_record, Mapping) else {}
-    has_brain_decision = str(record.get("stage") or "").upper() == "ENTRY_GATE"
+    source = dict(brain_record) if isinstance(brain_record, Mapping) else {}
+    has_brain_decision = str(source.get("stage") or "").upper() == "ENTRY_GATE"
+    # Copy only the small fields required by the funnel. The original Brain
+    # evidence remains the authoritative, immutable source for full context.
+    record = {
+        key: source[key]
+        for key in (
+            "authority_version",
+            "symbol",
+            "trade_mode",
+            "stage",
+            "strategy_action",
+            "strategy_score",
+            "brain_action",
+            "brain_confidence",
+            "brain_reason",
+            "allowed",
+            "market_regime",
+        )
+        if key in source
+    }
     record.setdefault("authority_version", "v1_guarded")
     record["capture_id"] = identity
     record["symbol"] = str(symbol or record.get("symbol") or "").upper()
@@ -64,7 +83,14 @@ def build_entry_funnel_record(
         record.setdefault("brain_reason", "PRE_BRAIN_REJECTION")
         record.setdefault("allowed", None)
 
-    timestamp = str(captured_at or record.get("captured_at") or "").strip()
+    source_context = source.get("context")
+    source_v2 = source_context.get("entry_v2_shadow", {}) if isinstance(source_context, Mapping) else {}
+    timestamp = str(
+        captured_at
+        or source.get("captured_at")
+        or (source_v2.get("captured_at") if isinstance(source_v2, Mapping) else "")
+        or ""
+    ).strip()
     if timestamp:
         record["captured_at"] = timestamp
 
