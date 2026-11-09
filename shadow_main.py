@@ -1511,6 +1511,8 @@ def _paper_entry_funnel_report():
     """Read-only daily attribution of captured candidates through final Paper disposition."""
     try:
         records = _brain_authority_store.read_all()
+        if getattr(_brain_authority_store, "last_error", None):
+            raise RuntimeError("BRAIN_AUTHORITY_EVIDENCE_READ_FAILED")
         payload = build_entry_funnel_report(records)
         payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         payload["persistent_store"] = _brain_authority_store.summary()
