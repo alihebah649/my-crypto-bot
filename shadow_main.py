@@ -3003,6 +3003,47 @@ def _paper_forensic_entry_outcomes():
     return jsonify(payload), status_code
 
 
+@app.get("/paper/precalibration-shadow-report")
+def _paper_precalibration_shadow_report():
+    """Read-only outcomes for prior-formula Scalp candidates that pass current downstream gates."""
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "PRECALIBRATION_SHADOW_TRACKER_DISABLED_OR_POSTGRES_UNAVAILABLE",
+        }), 503
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("PRECALIBRATION_SHADOW_READ_FAILED")
+        payload = build_precalibration_shadow_report(records)
+        payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        payload["persistent_store"] = store.summary()
+        _legacy.logger.info(
+            "[PAPER-PRECALIBRATION-SHADOW-REPORT] %s",
+            json.dumps({
+                "unique_candidate_count": payload["unique_candidate_count"],
+                "watch_started": payload["watch_started"],
+                "watch_active": payload["watch_active"],
+                "watch_completed": payload["watch_completed"],
+                "dispositions": payload["dispositions"],
+                "outcomes": payload["outcomes"],
+                "decisive_outcomes": payload["decisive_outcomes"],
+                "net_profit_factor_after_estimated_fees": payload["net_profit_factor_after_estimated_fees"],
+            }, ensure_ascii=False, separators=(",", ":")),
+        )
+        return jsonify(payload), 200
+    except Exception as exc:
+        _legacy.logger.exception("Pre-calibration Paper shadow report failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "PRECALIBRATION_SHADOW_READ_FAILED",
+            "error": type(exc).__name__,
+        }), 503
+
+
 @app.get("/paper/blocked-entry-shadow-report")
 def _paper_blocked_entry_shadow_report():
     """Read-only counterfactual outcomes for the existing MAIN/SCALP Paper veto."""
