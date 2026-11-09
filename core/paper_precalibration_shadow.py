@@ -158,7 +158,7 @@ def build_precalibration_shadow_report(records: Any) -> dict[str, Any]:
         for row in decision_by_id.values()
     )
     disposition_counts.update(
-        str(row.get("disposition") or "WATCH_ELIGIBLE").upper()
+        str(row.get("disposition") or "BRAIN_ECONOMICS_QUALIFIED_WATCH").upper()
         for row in start_by_id.values()
     )
     outcome_counts = Counter(
