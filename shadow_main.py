@@ -1034,6 +1034,16 @@ def _persist_entry_funnel_outcome_impl(
         )
         return False
     if not append(record):
+        # append() is intentionally idempotent. A duplicate is success only
+        # when the durable final disposition already matches this exact capture.
+        lookup = getattr(store, "get_by_identity", None)
+        existing = lookup(str(capture_id)) if callable(lookup) else None
+        if (
+            isinstance(existing, dict)
+            and str(existing.get("capture_id") or "") == str(capture_id)
+            and existing.get("final_decision") == record.get("final_decision")
+        ):
+            return True
         _legacy.logger.warning(
             "PAPER ENTRY FUNNEL append failed symbol=%s mode=%s capture_id=%s error=%s",
             normalized,
