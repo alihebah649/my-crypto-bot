@@ -292,6 +292,32 @@ def _restore_precalibration_shadow_watches() -> None:
 _restore_precalibration_shadow_watches()
 
 
+def _persist_precalibration_decision(record: dict[str, Any]) -> bool:
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return False
+    candidate_id = str(record.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return False
+    payload = dict(record)
+    payload.setdefault("schema_version", 1)
+    payload.setdefault("trial_name", _PRECALIBRATION_SHADOW_TRIAL_NAME)
+    payload["record_type"] = "DECISION"
+    payload["record_id"] = f"{candidate_id}:DECISION"
+    payload.setdefault("mode", "PAPER_ONLY")
+    inserted = store.append(payload)
+    if not inserted and getattr(store, "last_error", None):
+        raise RuntimeError("PRECALIBRATION_SHADOW_DECISION_PERSIST_FAILED")
+    with _paper_precalibration_shadow_lock:
+        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
+    if inserted:
+        _legacy.logger.info(
+            "[PAPER-PRECALIBRATION-SHADOW] DECISION %s",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    return inserted
+
+
 def _record_precalibration_shadow_candidates() -> None:
     """Evaluate old-formula-only Scalp candidates through current downstream gates."""
     store = _paper_precalibration_shadow_store
@@ -330,12 +356,23 @@ def _record_precalibration_shadow_candidates() -> None:
             if candidate_id in _paper_precalibration_shadow_seen_candidate_ids:
                 continue
             active = _paper_precalibration_shadow_active_by_symbol.get(normalized)
-            if active is not None:
-                active["repeat_precalibration_candidates_suppressed"] = int(
-                    active.get("repeat_precalibration_candidates_suppressed", 0) or 0
-                ) + 1
-                _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
-                continue
+            active_candidate_id = (
+                str(active.get("candidate_id") or active.get("source_capture_id") or "")
+                if isinstance(active, dict) else ""
+            )
+        if active_candidate_id:
+            _persist_precalibration_decision({
+                "candidate_id": candidate_id,
+                "symbol": normalized,
+                "trade_mode": "SCALP",
+                "signal_candle_open_time_ms": int(raw_score.get("scalp_signal_candle_open_time_ms")),
+                "prior_formula_score": float(raw_score.get("scalp_pre_calibration_score") or 0.0),
+                "current_formula_score": float(raw_score.get("scalp_score") or 0.0),
+                "disposition": "SUPPRESSED_ACTIVE_WATCH",
+                "active_candidate_id": active_candidate_id,
+                "reason": "ONE_ACTIVE_COUNTERFACTUAL_WATCH_PER_SYMBOL",
+            })
+            continue
 
         try:
             close_time_ms = int(float(raw_score.get("scalp_signal_candle_close_time_ms") or 0))
@@ -367,20 +404,55 @@ def _record_precalibration_shadow_candidates() -> None:
             entry_v2_summary = _entry_v2_capture_summary(capture)
             active_modes = _active_trade_modes(normalized)
             existing_position = "SCALP" in active_modes
-            shadow_brain = GuardedBrainAuthority(brain=brain_authority.brain)
-            brain_record = shadow_brain.evaluate_entry(
-                normalized,
-                candidate_score,
-                trade_mode="SCALP",
-                market_regime=market_view.regime,
-                existing_position=existing_position,
-                capture_id=capture.capture_id,
-                entry_v2_shadow=entry_v2_summary,
-                paper_trial_seller_pressure_veto=bool(
-                    PAPER_VENUE_MODE == "MIXED"
-                    and PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED
-                ),
-            ).to_dict()
+
+            # Match the real Paper pre-Brain execution guards in their actual
+            # order. Missing freshness metadata behaves exactly as the live
+            # guard does: unknown remains allowed, while explicitly STALE blocks.
+            preflight_rejection = None
+            preflight_details: dict[str, Any] = {}
+            freshness = raw_score.get("entry_freshness_5m")
+            if not entry_execution_freshness_allowed(freshness, "SCALP"):
+                preflight_rejection = "STALE_ENTRY_DATA"
+                preflight_details["decision_candle_age_seconds"] = (
+                    freshness.get("decision_candle_age_seconds")
+                    if isinstance(freshness, dict) else None
+                )
+
+            if preflight_rejection is None:
+                with _ticker_cache_lock:
+                    stale_active = _ticker_cache_stale_active
+                    stale_symbols = set(_ticker_stale_symbols)
+                if stale_active and (not stale_symbols or normalized in stale_symbols):
+                    preflight_rejection = "STALE_TICKER"
+
+            if preflight_rejection is None and not existing_position:
+                remaining_cooldown = _loss_cooldown(normalized)
+                if remaining_cooldown > 0:
+                    preflight_rejection = "LOSS_COOLDOWN"
+                    preflight_details["remaining_seconds"] = round(remaining_cooldown, 1)
+
+            if preflight_rejection is not None:
+                brain_record = {
+                    "brain_action": "NOT_EVALUATED",
+                    "brain_reason": preflight_rejection,
+                    "allowed": False,
+                    "context": {},
+                }
+            else:
+                shadow_brain = GuardedBrainAuthority(brain=brain_authority.brain)
+                brain_record = shadow_brain.evaluate_entry(
+                    normalized,
+                    candidate_score,
+                    trade_mode="SCALP",
+                    market_regime=market_view.regime,
+                    existing_position=existing_position,
+                    capture_id=capture.capture_id,
+                    entry_v2_shadow=entry_v2_summary,
+                    paper_trial_seller_pressure_veto=bool(
+                        PAPER_VENUE_MODE == "MIXED"
+                        and PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED
+                    ),
+                ).to_dict()
 
             risk = capture_dict.get("entry_scenario", {}).get("risk", {})
             entry_price = float(candidate_score.get("price") or 0.0)
@@ -423,6 +495,8 @@ def _record_precalibration_shadow_candidates() -> None:
                 existing_position=existing_position,
                 market_regime=market_view.regime,
                 symbol_regime=str(symbol_view.get("regime") or "UNKNOWN"),
+                preflight_rejection=preflight_rejection,
+                preflight_details=preflight_details,
             )
 
             if decision["disposition"] == "WATCH_ELIGIBLE":
@@ -443,14 +517,7 @@ def _record_precalibration_shadow_candidates() -> None:
                         "record_type": "DECISION",
                         "record_id": f"{candidate_id}:DECISION",
                     }
-                    inserted = store.append(event)
-                    if inserted:
-                        with _paper_precalibration_shadow_lock:
-                            _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
-                        _legacy.logger.info(
-                            "[PAPER-PRECALIBRATION-SHADOW] DECISION %s",
-                            json.dumps(event, ensure_ascii=False, separators=(",", ":")),
-                        )
+                    _persist_precalibration_decision(event)
                     continue
 
                 watch.update(decision)
@@ -489,24 +556,7 @@ def _record_precalibration_shadow_candidates() -> None:
                     with _paper_precalibration_shadow_lock:
                         _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
             else:
-                event = {
-                    **decision,
-                    "record_type": "DECISION",
-                    "record_id": f"{candidate_id}:DECISION",
-                }
-                inserted = store.append(event)
-                if inserted:
-                    with _paper_precalibration_shadow_lock:
-                        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
-                    _legacy.logger.info(
-                        "[PAPER-PRECALIBRATION-SHADOW] DECISION %s",
-                        json.dumps(event, ensure_ascii=False, separators=(",", ":")),
-                    )
-                elif getattr(store, "last_error", None):
-                    raise RuntimeError("PRECALIBRATION_SHADOW_DECISION_PERSIST_FAILED")
-                else:
-                    with _paper_precalibration_shadow_lock:
-                        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
+                _persist_precalibration_decision(decision)
         except Exception as exc:
             _legacy.logger.exception(
                 "[PAPER-PRECALIBRATION-SHADOW] candidate evaluation failed symbol=%s error=%s",
