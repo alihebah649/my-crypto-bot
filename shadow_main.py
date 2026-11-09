@@ -405,20 +405,32 @@ def _record_precalibration_shadow_candidates() -> None:
             active_modes = _active_trade_modes(normalized)
             existing_position = "SCALP" in active_modes
 
-            # Match the real Paper pre-Brain execution guards in their actual
-            # order. Missing freshness metadata behaves exactly as the live
-            # guard does: unknown remains allowed, while explicitly STALE blocks.
+            # Match the real Legacy/MAIN Paper gates in order: BTC crash,
+            # existing position, valid price/ATR stop, freshness, ticker,
+            # cooldown, then Brain and fee-aware entry economics.
             preflight_rejection = None
             preflight_details: dict[str, Any] = {}
-            freshness = raw_score.get("entry_freshness_5m")
-            if not entry_execution_freshness_allowed(freshness, "SCALP"):
-                preflight_rejection = "STALE_ENTRY_DATA"
-                preflight_details["decision_candle_age_seconds"] = (
-                    freshness.get("decision_candle_age_seconds")
-                    if isinstance(freshness, dict) else None
-                )
+            entry_price = float(candidate_score.get("price") or 0.0)
+            atr_value = float(candidate_score.get("atr") or 0.0)
+            stop_price = risk.get("atr_stop_loss")
+            if bool(_last_btc_guard.get("crashing")):
+                preflight_rejection = "BTC_CRASH_GUARD"
+            elif not existing_position and (entry_price <= 0.0 or atr_value <= 0.0):
+                preflight_rejection = "INVALID_ATR_OR_PRICE"
+            elif not existing_position and (
+                stop_price is None or float(stop_price) <= 0.0
+            ):
+                preflight_rejection = "INVALID_STOP"
+            elif not existing_position:
+                freshness = raw_score.get("entry_freshness_5m")
+                if not entry_execution_freshness_allowed(freshness, "SCALP"):
+                    preflight_rejection = "STALE_ENTRY_DATA"
+                    preflight_details["decision_candle_age_seconds"] = (
+                        freshness.get("decision_candle_age_seconds")
+                        if isinstance(freshness, dict) else None
+                    )
 
-            if preflight_rejection is None:
+            if preflight_rejection is None and not existing_position:
                 with _ticker_cache_lock:
                     stale_active = _ticker_cache_stale_active
                     stale_symbols = set(_ticker_stale_symbols)
@@ -455,8 +467,6 @@ def _record_precalibration_shadow_candidates() -> None:
                 ).to_dict()
 
             risk = capture_dict.get("entry_scenario", {}).get("risk", {})
-            entry_price = float(candidate_score.get("price") or 0.0)
-            stop_price = risk.get("atr_stop_loss")
             target_price = risk.get("target_price")
             target_status = str(risk.get("target_status") or "UNKNOWN").upper()
             reward_risk = risk.get("reward_risk")
@@ -499,7 +509,7 @@ def _record_precalibration_shadow_candidates() -> None:
                 preflight_details=preflight_details,
             )
 
-            if decision["disposition"] == "WATCH_ELIGIBLE":
+            if decision["disposition"] == "BRAIN_ECONOMICS_QUALIFIED_WATCH":
                 # Reuse the exact Entry v2 stop/target and fee-aware 24-bar
                 # path model already used by the seller-pressure counterfactual.
                 capture_for_watch = dict(capture_dict)
