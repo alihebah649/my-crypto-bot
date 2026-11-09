@@ -945,7 +945,7 @@ def _entry_decision_chain_for(symbol: str, mode: str, score: dict, *, final_appr
     )
 
 
-def _persist_entry_funnel_outcome(
+def _persist_entry_funnel_outcome_impl(
     symbol: str,
     mode: str,
     final_status: str,
@@ -1022,6 +1022,18 @@ def _persist_entry_funnel_outcome(
         )
         return False
     return True
+
+
+def _persist_entry_funnel_outcome(*args, **kwargs) -> bool:
+    """Best-effort diagnostics must never interrupt the Paper entry lifecycle."""
+    try:
+        return _persist_entry_funnel_outcome_impl(*args, **kwargs)
+    except Exception as exc:
+        _legacy.logger.warning(
+            "PAPER ENTRY FUNNEL diagnostics skipped after error=%s",
+            type(exc).__name__,
+        )
+        return False
 
 
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
@@ -1334,7 +1346,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
-        _persist_entry_funnel_outcome(symbol, mode, "POSITION_COMMITTED", strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, position_opened=True, details={"position_id": str(position.position_id), "execution_price": float(execution_price)})
+        _persist_entry_funnel_outcome(symbol, mode, "POSITION_COMMITTED", strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, position_opened=True, details={"position_id": str(getattr(position, "position_id", "") or ""), "execution_price": float(execution_price)})
     else:
         pre_execution_chain["final"] = {
             "approved": False,
