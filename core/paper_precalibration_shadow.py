@@ -56,6 +56,8 @@ def build_precalibration_decision_record(
     symbol_regime: str,
     preflight_rejection: str | None = None,
     preflight_details: Mapping[str, Any] | None = None,
+    market_data_rejection: str | None = None,
+    market_data_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a compact, immutable explanation for a pre-calibration candidate."""
     brain = dict(brain_record or {})
@@ -65,6 +67,7 @@ def build_precalibration_decision_record(
     brain_allowed = bool(brain.get("allowed"))
 
     preflight = str(preflight_rejection or "").strip().upper()
+    market_rejection = str(market_data_rejection or "").strip().upper()
     if preflight:
         disposition = preflight
     elif existing_position:
@@ -75,6 +78,8 @@ def build_precalibration_decision_record(
         disposition = "NO_VALID_TARGET"
     elif not bool(economics.get("approved")):
         disposition = "ENTRY_ECONOMICS_REJECTED"
+    elif market_rejection:
+        disposition = market_rejection
     else:
         disposition = "BRAIN_ECONOMICS_QUALIFIED_WATCH"
 
@@ -104,6 +109,8 @@ def build_precalibration_decision_record(
         "selective_v2_veto": str(selective_veto or ""),
         "preflight_rejection": preflight,
         "preflight_details": dict(preflight_details or {}),
+        "market_data_rejection": market_rejection,
+        "market_data_details": dict(market_data_details or {}),
         "existing_position": bool(existing_position),
         "market_regime": str(market_regime or "UNKNOWN").upper(),
         "symbol_regime": str(symbol_regime or "UNKNOWN").upper(),
