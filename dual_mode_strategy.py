@@ -423,6 +423,36 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         scalp_raw -= 8
     scalp_raw = max(0, min(scalp_raw, 100))
 
+    # Counterfactual-only compatibility score: reproduce the Scalp score and
+    # entry-gate formula that preceded the evidence-family cap and structural
+    # confirmation requirement. This is observability only; it never feeds the
+    # current scalp score, signal, Brain, Risk, or execution path.
+    pre_calibration_pattern_points = (
+        30 if found and confirmed else (8 if found else 0)
+    )
+    scalp_pre_calibration_score = (
+        macro_points
+        + rsi_points
+        + bb5_points
+        + volume_points
+        + pre_calibration_pattern_points
+        + (SCALP_RECOVERY_POINTS if recovery_confirmation else 0)
+        + (4 if mtf_bullish else (-8 if mtf_bearish else 0))
+    )
+    scalp_pre_calibration_score = max(0, min(scalp_pre_calibration_score, 100))
+    scalp_pre_calibration_gate = bool(
+        macro_points > 0
+        and r5 <= SCALP_MAX_RSI
+        and v5 >= SCALP_MIN_VOLUME_RATIO
+        and (bool(found and confirmed) or recovery_confirmation)
+        and not mtf_countertrend_veto
+    )
+    scalp_pre_calibration_signal = (
+        "BUY"
+        if scalp_pre_calibration_score >= SCALP_SCORE_THRESHOLD and scalp_pre_calibration_gate
+        else "HOLD"
+    )
+
     confirmed_reversal = bool(found and confirmed)
     high_confidence_recovery = bool(
         scalp >= SCALP_SCORE_THRESHOLD
@@ -511,6 +541,9 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
         "scalp_recovery_points": SCALP_RECOVERY_POINTS,
         "scalp_score_raw": scalp_raw,
+        "scalp_pre_calibration_score": scalp_pre_calibration_score,
+        "scalp_pre_calibration_gate": scalp_pre_calibration_gate,
+        "scalp_pre_calibration_signal": scalp_pre_calibration_signal,
         "scalp_reversion_family_points": reversion_points,
         "scalp_structural_confirmation": structural["confirmed"],
         "scalp_structural_higher_low": structural["higher_low"],
