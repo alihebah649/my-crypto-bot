@@ -138,7 +138,11 @@ def build_entry_funnel_report(records: Any) -> dict[str, Any]:
         final = final if isinstance(final, Mapping) else {}
         final_status = str(final.get("status") or "").upper()
         brain_reason = str(record.get("brain_reason") or "").upper()
-        failed_gate = str(final.get("failed_gate") or brain_reason or "UNKNOWN").upper()
+        failed_gate = str(final.get("failed_gate") or "").upper()
+        if not failed_gate and stage == "ENTRY_GATE" and allowed is False:
+            failed_gate = brain_reason or "BRAIN_AUTHORITY"
+        if not failed_gate and stage == "ENTRY_PIPELINE":
+            failed_gate = "PRE_BRAIN_REJECTION"
         timestamp = _record_timestamp(record)
         day = timestamp.date().isoformat() if timestamp else "UNKNOWN_DATE"
 
