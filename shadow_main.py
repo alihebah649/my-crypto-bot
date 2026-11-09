@@ -1038,10 +1038,20 @@ def _persist_entry_funnel_outcome_impl(
         # when the durable final disposition already matches this exact capture.
         lookup = getattr(store, "get_by_identity", None)
         existing = lookup(str(capture_id)) if callable(lookup) else None
+        existing_final = existing.get("final_decision") if isinstance(existing, dict) else {}
+        expected_final = record.get("final_decision") or {}
+        existing_stable = {
+            key: value for key, value in (existing_final or {}).items()
+            if key != "recorded_at_utc"
+        } if isinstance(existing_final, dict) else {}
+        expected_stable = {
+            key: value for key, value in expected_final.items()
+            if key != "recorded_at_utc"
+        } if isinstance(expected_final, dict) else {}
         if (
             isinstance(existing, dict)
             and str(existing.get("capture_id") or "") == str(capture_id)
-            and existing.get("final_decision") == record.get("final_decision")
+            and existing_stable == expected_stable
         ):
             return True
         _legacy.logger.warning(
