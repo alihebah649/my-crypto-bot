@@ -967,7 +967,14 @@ def _persist_entry_funnel_outcome_impl(
     authority = authority if isinstance(authority, dict) else None
     v2_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
     v2_capture = v2_capture_snapshot if isinstance(v2_capture_snapshot, dict) else (v2_by_mode.get(lane, {}) or {})
-    capture_id = (authority or {}).get("capture_id") or v2_capture.get("capture_id")
+    current_v2_capture_id = str(v2_capture.get("capture_id") or "")
+    authority_capture_id = str((authority or {}).get("capture_id") or "")
+    # A pre-Brain rejection can happen before the current cycle refreshes its
+    # Brain record. Never attach that rejection to the previous cycle's capture.
+    if current_v2_capture_id and authority_capture_id and current_v2_capture_id != authority_capture_id:
+        authority = None
+        authority_capture_id = ""
+    capture_id = authority_capture_id or current_v2_capture_id
     if not capture_id:
         return False
 
