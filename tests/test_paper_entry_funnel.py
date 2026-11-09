@@ -42,6 +42,7 @@ def test_final_record_preserves_brain_decision_and_attaches_final_outcome():
     assert result["final_decision"]["status"] == "POSITION_COMMITTED"
     assert result["final_decision"]["position_opened"] is True
     assert result["final_decision"]["details"]["position_id"] == "PAPER-1"
+    assert "context" not in result
 
 
 def test_pre_brain_rejection_is_recorded_without_fabricating_brain_approval():
