@@ -2100,6 +2100,14 @@ def _process_market_cycle_with_overlays():
     except Exception:
         _legacy.logger.exception("Entry v2 shadow capture failed")
     try:
+        _record_precalibration_shadow_candidates()
+    except Exception:
+        _legacy.logger.exception("Pre-calibration Paper shadow candidate evaluation failed")
+    try:
+        _advance_precalibration_shadow_watches()
+    except Exception:
+        _legacy.logger.exception("Pre-calibration Paper shadow path advancement failed")
+    try:
         _advance_blocked_entry_shadow_watches()
     except Exception:
         _legacy.logger.exception("Blocked-entry Paper shadow tracker failed")
