@@ -131,6 +131,14 @@ def build_paper_entry_gate_summary(
         else:
             swing_status = "THRESHOLD_MET_SIGNAL_HOLD"
 
+        pre_calibration_score = _number(raw.get("scalp_pre_calibration_score"))
+        pre_calibration_signal = _signal(raw.get("scalp_pre_calibration_signal"))
+        pre_calibration_gate_value = raw.get("scalp_pre_calibration_gate")
+        pre_calibration_gate = (
+            pre_calibration_gate_value
+            if isinstance(pre_calibration_gate_value, bool)
+            else None
+        )
         row: dict[str, Any] = {
             "symbol": normalized_symbol,
             "score": selected_score,
@@ -141,10 +149,27 @@ def build_paper_entry_gate_summary(
             "scalp_gate": scalp_gate,
             "scalp_status": scalp_status,
             "scalp_gate_reasons": scalp_reasons,
+            "scalp_score_raw": _number(raw.get("scalp_score_raw")),
+            "scalp_pre_calibration_score": pre_calibration_score,
+            "scalp_pre_calibration_threshold_met": (
+                pre_calibration_score is not None
+                and pre_calibration_score >= float(scalp_threshold)
+            ),
+            "scalp_pre_calibration_signal": pre_calibration_signal,
+            "scalp_pre_calibration_gate": pre_calibration_gate,
+            "scalp_reversion_family_points": _number(raw.get("scalp_reversion_family_points")),
             "scalp_confirmed_reversal": raw.get("scalp_confirmed_reversal"),
             "scalp_recovery_confirmation": raw.get("scalp_recovery_confirmation"),
             "scalp_structural_confirmation": raw.get("scalp_structural_confirmation"),
             "scalp_recovery_trigger_count": raw.get("scalp_recovery_trigger_count"),
+            "scalp_volume_ratio_5m": _number(raw.get("volume_ratio_5m")),
+            "scalp_rsi5m": _number(raw.get("rsi5m")),
+            "scalp_pattern": str(raw.get("pattern") or "UNKNOWN"),
+            "scalp_pattern_confirmed": raw.get("pattern_confirmed"),
+            "mtf_bias": str(raw.get("mtf_bias") or "UNKNOWN"),
+            "mtf_net": _number(raw.get("mtf_net")),
+            "mtf_strong_bearish_stack": raw.get("mtf_strong_bearish_stack"),
+            "seller_failure_confirmed": raw.get("seller_failure_confirmed"),
             "swing_score": swing_score,
             "swing_signal": swing_signal,
             "swing_threshold_met": swing_score is not None and swing_score >= float(swing_threshold),
