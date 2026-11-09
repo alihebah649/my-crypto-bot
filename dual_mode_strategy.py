@@ -540,6 +540,14 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "scalp_rsi_rise_min": SCALP_RSI_RISE_MIN,
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
         "scalp_recovery_points": SCALP_RECOVERY_POINTS,
+        "scalp_signal_candle_open_time_ms": (
+            int(float(c5[-1].get("open_time")))
+            if c5 and c5[-1].get("open_time") is not None else None
+        ),
+        "scalp_signal_candle_close_time_ms": (
+            int(float(c5[-1].get("close_time")))
+            if c5 and c5[-1].get("close_time") is not None else None
+        ),
         "scalp_score_raw": scalp_raw,
         "scalp_pre_calibration_score": scalp_pre_calibration_score,
         "scalp_pre_calibration_gate": scalp_pre_calibration_gate,
