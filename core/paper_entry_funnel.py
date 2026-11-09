@@ -168,13 +168,16 @@ def build_entry_funnel_report(records: Any) -> dict[str, Any]:
         if final_status:
             stats["final_decisions_recorded"] += 1
             _increment(final_status_counts, final_status)
-            _increment(failed_gate_counts, failed_gate)
+            if failed_gate and final_status != "POSITION_COMMITTED":
+                _increment(failed_gate_counts, failed_gate)
             if final_status == "POSITION_COMMITTED" or bool(final.get("position_opened")):
                 stats["position_committed"] += 1
             elif stage == "ENTRY_GATE" and allowed is True:
                 stats["blocked_after_brain"] += 1
         else:
             stats["final_outcome_unknown"] += 1
+            if stage == "ENTRY_GATE" and allowed is False and brain_reason:
+                _increment(failed_gate_counts, brain_reason)
 
         daily_row = daily.setdefault(day, {
             "capture_records": 0,
