@@ -235,3 +235,26 @@ def test_preflight_rejection_precedes_brain_and_existing_position_only_applies_w
 
     assert btc_crash["disposition"] == "BTC_CRASH_GUARD"
     assert stale_data["disposition"] == "STALE_ENTRY_DATA"
+
+
+def test_market_data_rebase_is_excluded_only_after_brain_and_fee_economics_pass():
+    rebased = _decision(
+        market_data_rejection="MARKET_DATA_REBASE_NOT_MODELED",
+        market_data_details={
+            "market_data_source": "BYBIT",
+            "reason": "BINANCE_ENTRY_STOP_REBASED_BUT_PIVOT_TARGET_NOT_RECOMPUTED_ON_BINANCE_CANDLES",
+        },
+    )
+    brain_rejected = _decision(
+        brain_record=_brain(False, "BEAR_RECOVERY_NOT_CONFIRMED"),
+        market_data_rejection="MARKET_DATA_REBASE_NOT_MODELED",
+    )
+    economics_rejected = _decision(
+        economics=_economics(False),
+        market_data_rejection="MARKET_DATA_REBASE_NOT_MODELED",
+    )
+
+    assert rebased["disposition"] == "MARKET_DATA_REBASE_NOT_MODELED"
+    assert rebased["market_data_details"]["market_data_source"] == "BYBIT"
+    assert brain_rejected["disposition"] == "BRAIN_REJECTED"
+    assert economics_rejected["disposition"] == "ENTRY_ECONOMICS_REJECTED"
