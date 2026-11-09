@@ -65,7 +65,10 @@ def test_candidate_identity_deduplicates_same_closed_candle_and_separates_new_ba
 def test_candidate_is_watch_eligible_only_after_brain_and_fee_economics_pass():
     row = _decision()
 
-    assert row["disposition"] == "WATCH_ELIGIBLE"
+    assert row["disposition"] == "BRAIN_ECONOMICS_QUALIFIED_WATCH"
+    assert row["risk_authority"] == "NOT_SIMULATED"
+    assert row["trade_manager_authority"] == "NOT_SIMULATED"
+    assert row["execution_authority"] == "NOT_SIMULATED"
     assert row["brain_allowed"] is True
     assert row["target_status"] == "VALID"
     assert row["estimated_round_trip_fee_percent"] == 0.2
@@ -215,5 +218,20 @@ def test_report_counts_watch_eligible_as_a_disposition():
     report = build_precalibration_shadow_report(rows)
 
     assert report["unique_candidate_count"] == 1
-    assert report["dispositions"]["WATCH_ELIGIBLE"] == 1
+    assert report["dispositions"]["BRAIN_ECONOMICS_QUALIFIED_WATCH"] == 1
+    assert "not simulated" in report["interpretation"]["unmodeled_authorities"].lower()
     assert report["watch_active"] == 1
+
+
+def test_preflight_rejection_precedes_brain_and_existing_position_only_applies_without_earlier_guard():
+    btc_crash = _decision(
+        preflight_rejection="BTC_CRASH_GUARD",
+        existing_position=True,
+    )
+    stale_data = _decision(
+        preflight_rejection="STALE_ENTRY_DATA",
+        brain_record=_brain(True),
+    )
+
+    assert btc_crash["disposition"] == "BTC_CRASH_GUARD"
+    assert stale_data["disposition"] == "STALE_ENTRY_DATA"
