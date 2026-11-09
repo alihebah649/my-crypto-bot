@@ -268,3 +268,82 @@ def test_capture_cycle_skips_expensive_historical_analysis(tmp_path, monkeypatch
     assert summary["historical_outcomes"] is None
     assert summary["shadow_report"] is None
     assert callable(bridge.historical_analysis)
+
+
+def test_counterfactual_candidate_capture_does_not_mutate_live_capture_state():
+    class Legacy:
+        latest_scores = {
+            "SHADOWUSDT": {
+                "symbol": "SHADOWUSDT",
+                "signal": "HOLD",
+                "trade_mode": "NONE",
+                "scalp_signal": "HOLD",
+                "swing_signal": "HOLD",
+                "score": 58,
+                "scalp_score": 58,
+                "swing_score": 42,
+                "price": 100.0,
+                "atr": 1.0,
+                "scalp_confirmed_reversal": True,
+                "scalp_recovery_confirmation": True,
+                "scalp_structural_confirmation": True,
+                "volume_ratio_5m": 1.2,
+                "scalp_reasons": ["5M_BULLISH_ENGULFING_CONFIRMED"],
+            }
+        }
+
+        def fetch_strategy_data(self):
+            candles = {"SHADOWUSDT": [_candle(100 + i) for i in range(12)]}
+            return (
+                {"SHADOWUSDT": {"lastPrice": "100", "bidPrice": "99.99", "askPrice": "100.01"}},
+                candles,
+                candles,
+            )
+
+    class Runtime:
+        def __init__(self):
+            self.last_entry_diagnostics = {}
+
+    legacy = Legacy()
+    runtime = Runtime()
+    bridge = install(
+        legacy=legacy,
+        runtime=runtime,
+        mtf_candles={
+            "SHADOWUSDT": {
+                "1h": [_candle(200 + i) for i in range(12)],
+                "4h": [_candle(300 + i) for i in range(12)],
+            }
+        },
+        trading_symbols=["SHADOWUSDT"],
+    )
+    legacy.fetch_strategy_data()
+
+    synthetic = dict(legacy.latest_scores["SHADOWUSDT"])
+    synthetic.update({
+        "signal": "BUY",
+        "trade_mode": "SCALP",
+        "scalp_signal": "BUY",
+        "scalp_score": 70,
+        "score": 70,
+    })
+    before_keys = set(bridge._cycle_captured_keys)
+    before_latest = dict(bridge._latest)
+    before_by_mode = dict(bridge._latest_by_mode)
+    before_diagnostics = dict(runtime.last_entry_diagnostics)
+
+    capture = bridge.build_counterfactual_candidate(
+        "SHADOWUSDT",
+        synthetic,
+        trade_mode="SCALP",
+        captured_at="2026-11-09T08:45:00+00:00",
+    )
+
+    assert capture is not None
+    assert capture.legacy_result["signal"] == "BUY"
+    assert capture.legacy_result["scalp_score"] == 70
+    assert capture.entry_scenario["risk"]["atr_stop_loss"] == 98.0
+    assert bridge._cycle_captured_keys == before_keys
+    assert bridge._latest == before_latest
+    assert bridge._latest_by_mode == before_by_mode
+    assert runtime.last_entry_diagnostics == before_diagnostics
