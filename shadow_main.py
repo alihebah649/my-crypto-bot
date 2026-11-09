@@ -57,6 +57,7 @@ from core.paper_runtime_retention import (
     prune_main_paper_history,
 )
 from core.paper_entry_gate_summary import build_paper_entry_gate_summary
+from core.paper_entry_funnel import build_entry_funnel_record, build_entry_funnel_report
 from core.paper_blocked_entry_shadow import (
     TRIAL_NAME as _BLOCKED_ENTRY_SHADOW_TRIAL_NAME,
     advance_blocked_entry_watch,
@@ -944,6 +945,106 @@ def _entry_decision_chain_for(symbol: str, mode: str, score: dict, *, final_appr
     )
 
 
+def _persist_entry_funnel_outcome_impl(
+    symbol: str,
+    mode: str,
+    final_status: str,
+    *,
+    failed_gate: str | None = None,
+    strategy_snapshot: dict | None = None,
+    execution_attempted: bool = False,
+    position_opened: bool = False,
+    details: dict | None = None,
+    brain_record_snapshot: dict | None = None,
+    v2_capture_snapshot: dict | None = None,
+) -> bool:
+    """Upsert the final Paper entry disposition into its existing Brain evidence row."""
+    normalized = str(symbol or "").upper()
+    lane = str(mode or "UNKNOWN").upper()
+    trace = runtime.last_entry_diagnostics.get(normalized, {}) or {}
+    authority_by_mode = trace.get("brain_authority_by_mode", {}) or {}
+    authority = brain_record_snapshot if isinstance(brain_record_snapshot, dict) else authority_by_mode.get(lane)
+    authority = authority if isinstance(authority, dict) else None
+    v2_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
+    v2_capture = v2_capture_snapshot if isinstance(v2_capture_snapshot, dict) else (v2_by_mode.get(lane, {}) or {})
+    current_v2_capture_id = str(v2_capture.get("capture_id") or "")
+    authority_capture_id = str((authority or {}).get("capture_id") or "")
+    # A pre-Brain rejection can happen before the current cycle refreshes its
+    # Brain record. Never attach that rejection to the previous cycle's capture.
+    if current_v2_capture_id and authority_capture_id and current_v2_capture_id != authority_capture_id:
+        authority = None
+        authority_capture_id = ""
+    capture_id = authority_capture_id or current_v2_capture_id
+    if not capture_id:
+        return False
+
+    snapshot = strategy_snapshot if isinstance(strategy_snapshot, dict) else {}
+    captured_at = v2_capture.get("captured_at")
+    context = (authority or {}).get("context", {})
+    nested_v2 = context.get("entry_v2_shadow", {}) if isinstance(context, dict) else {}
+    if not captured_at and isinstance(nested_v2, dict):
+        captured_at = nested_v2.get("captured_at")
+    score_key = "scalp_score" if lane == "SCALP" else "swing_score"
+    strategy_score = snapshot.get(score_key, snapshot.get("score"))
+    market_view = trace.get("brain_authority_market_regime", {})
+    record = build_entry_funnel_record(
+        authority,
+        symbol=normalized,
+        trade_mode=lane,
+        capture_id=str(capture_id),
+        captured_at=str(captured_at or ""),
+        strategy_action=str(
+            snapshot.get("scalp_signal" if lane == "SCALP" else "swing_signal")
+            or snapshot.get("signal")
+            or "BUY"
+        ),
+        strategy_score=float(strategy_score) if strategy_score is not None else None,
+        final_status=final_status,
+        failed_gate=failed_gate,
+        execution_attempted=execution_attempted,
+        position_opened=position_opened,
+        details={
+            "market_regime": market_view.get("regime") if isinstance(market_view, dict) else None,
+            **(details or {}),
+        },
+        recorded_at_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    if not record:
+        return False
+
+    upsert = getattr(_brain_authority_store, "upsert", None)
+    if not callable(upsert):
+        _legacy.logger.warning(
+            "PAPER ENTRY FUNNEL persistence unavailable symbol=%s mode=%s capture_id=%s",
+            normalized,
+            lane,
+            capture_id,
+        )
+        return False
+    if not upsert(record):
+        _legacy.logger.warning(
+            "PAPER ENTRY FUNNEL persistence failed symbol=%s mode=%s capture_id=%s error=%s",
+            normalized,
+            lane,
+            capture_id,
+            getattr(_brain_authority_store, "last_error", None),
+        )
+        return False
+    return True
+
+
+def _persist_entry_funnel_outcome(*args, **kwargs) -> bool:
+    """Best-effort diagnostics must never interrupt the Paper entry lifecycle."""
+    try:
+        return _persist_entry_funnel_outcome_impl(*args, **kwargs)
+    except Exception as exc:
+        _legacy.logger.warning(
+            "PAPER ENTRY FUNNEL diagnostics skipped after error=%s",
+            type(exc).__name__,
+        )
+        return False
+
+
 def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: str):
     score = _legacy.latest_scores.get(symbol, {}) or _legacy.market_state.get(symbol, {}) or {}
     # Freeze the exact candidate snapshot before Brain and all downstream work.
@@ -976,6 +1077,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             "entry_freshness_5m": freshness,
         })
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_ENTRY_DATA")
+        _persist_entry_funnel_outcome(symbol, mode, "REJECTED_STALE_ENTRY_DATA", failed_gate="STALE_ENTRY_DATA", strategy_snapshot=candidate_strategy_snapshot, details={"decision_candle_age_seconds": (freshness or {}).get("decision_candle_age_seconds")})
         _legacy.logger.info(
             "ENTRY BLOCKED %s: stale 5m decision data mode=%s age=%ss",
             symbol,
@@ -990,6 +1092,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_STALE_TICKER", "ticker_stale_active": True, "trade_mode": mode, "execution": "NOT_RUN"})
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="STALE_TICKER")
+        _persist_entry_funnel_outcome(symbol, mode, "REJECTED_STALE_TICKER", failed_gate="STALE_TICKER", strategy_snapshot=candidate_strategy_snapshot)
         _legacy.logger.info("ENTRY BLOCKED %s: stale ticker snapshot active mode=%s", symbol, mode)
         return None
     remaining = _loss_cooldown(symbol)
@@ -997,12 +1100,14 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         trace.update({"result": "REJECTED_LOSS_COOLDOWN", "loss_cooldown_seconds": round(remaining, 1), "loss_cooldown_hours": round(remaining / 3600.0, 2), "trade_mode": mode, "execution": "NOT_RUN"})
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate="LOSS_COOLDOWN")
+        _persist_entry_funnel_outcome(symbol, mode, "REJECTED_LOSS_COOLDOWN", failed_gate="LOSS_COOLDOWN", strategy_snapshot=candidate_strategy_snapshot, details={"remaining_seconds": round(remaining, 1)})
         _legacy.logger.info("ENTRY BLOCKED %s: loss cooldown active for %.0fs mode=%s", symbol, remaining, mode)
         return None
     if not _brain_authority_entry_gate(symbol, candidate_strategy_snapshot, mode):
         trace = runtime.last_entry_diagnostics.setdefault(symbol, {"symbol": symbol})
         failed = trace.get("brain_authority_rejection_reason") or "BRAIN_AUTHORITY"
         _record_chain(final_approved=False, execution_attempted=False, position_opened=False, failed_gate=str(failed))
+        _persist_entry_funnel_outcome(symbol, mode, "REJECTED_BRAIN_AUTHORITY", failed_gate=str(failed), strategy_snapshot=candidate_strategy_snapshot)
         return None
 
     # Entry v2 remains advisory, but live Paper execution must not knowingly
@@ -1041,6 +1146,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
             position_opened=False,
             failed_gate=failed,
         )
+        _persist_entry_funnel_outcome(symbol, mode, "REJECTED_ENTRY_ECONOMICS", failed_gate=str(economics.get("reason") or "ENTRY_ECONOMICS"), strategy_snapshot=candidate_strategy_snapshot, details={"reward_risk": economics.get("reward_risk"), "required_reward_risk": economics.get("required_reward_risk"), "net_reward_percent": economics.get("net_reward_percent")})
         _legacy.logger.info(
             "ENTRY BLOCKED %s: paper entry economics mode=%s rr=%s net_reward=%s reason=%s",
             symbol,
@@ -1082,6 +1188,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
                 position_opened=False,
                 failed_gate="MARKET_DATA_SOURCE_MISMATCH",
             )
+            _persist_entry_funnel_outcome(symbol, mode, "REJECTED_MARKET_DATA_SOURCE_MISMATCH", failed_gate="MARKET_DATA_SOURCE_MISMATCH", strategy_snapshot=candidate_strategy_snapshot, details={"market_data_alignment": market_data_alignment})
             _legacy.logger.info(
                 "ENTRY BLOCKED %s: Bybit signal not aligned with Binance execution reference reason=%s mode=%s",
                 symbol,
@@ -1109,6 +1216,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
                 position_opened=False,
                 failed_gate="MARKET_DATA_SOURCE_MISMATCH",
             )
+            _persist_entry_funnel_outcome(symbol, mode, "REJECTED_MARKET_DATA_SOURCE_MISMATCH", failed_gate="MARKET_DATA_SOURCE_MISMATCH", strategy_snapshot=candidate_strategy_snapshot, details={"market_data_alignment": market_data_alignment})
             return None
 
         risk_distance = float(entry_price) - float(stop_loss)
@@ -1128,6 +1236,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
                 position_opened=False,
                 failed_gate="MARKET_DATA_SOURCE_MISMATCH",
             )
+            _persist_entry_funnel_outcome(symbol, mode, "REJECTED_MARKET_DATA_SOURCE_MISMATCH", failed_gate="MARKET_DATA_SOURCE_MISMATCH", strategy_snapshot=candidate_strategy_snapshot, details={"market_data_alignment": market_data_alignment})
             return None
 
         execution_price = execution_reference_price
@@ -1246,6 +1355,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
+        _persist_entry_funnel_outcome(symbol, mode, "POSITION_COMMITTED", strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, position_opened=True, details={"position_id": str(getattr(position, "position_id", "") or ""), "execution_price": float(execution_price)}, brain_record_snapshot=pre_execution_brain, v2_capture_snapshot=pre_execution_v2)
     else:
         pre_execution_chain["final"] = {
             "approved": False,
@@ -1255,6 +1365,8 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         }
         chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
+        downstream_gate = str(downstream_trace.get("risk_reason") or downstream_trace.get("result") or "DOWNSTREAM_OPEN_POSITION")
+        _persist_entry_funnel_outcome(symbol, mode, "DOWNSTREAM_ENTRY_REJECTED", failed_gate=downstream_gate, strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, details={"risk_gateway": downstream_trace.get("risk_gateway"), "risk_reason": downstream_trace.get("risk_reason"), "facade": downstream_trace.get("facade"), "execution": downstream_trace.get("execution"), "result": downstream_trace.get("result")}, brain_record_snapshot=pre_execution_brain, v2_capture_snapshot=pre_execution_v2)
     return position
 
 
@@ -1288,11 +1400,15 @@ def _open_position_with_selected_mode(symbol: str, entry_price: float, stop_loss
             requested_modes = []
         else:
             requested_modes = [selected_mode]
+    if dual_lane_duplicate_blocked:
+        for blocked_mode in modes:
+            _persist_entry_funnel_outcome(symbol, blocked_mode, "SKIPPED_EXISTING_POSITION", failed_gate="SAME_UNDERLYING_SIGNAL_ALREADY_ACTIVE", strategy_snapshot=score, details={"active_modes": sorted(active_modes)})
     skipped_existing = []
     opened = []
     for mode in requested_modes:
         if mode in active_modes:
             skipped_existing.append(mode)
+            _persist_entry_funnel_outcome(symbol, mode, "SKIPPED_EXISTING_POSITION", failed_gate="ACTIVE_POSITION_SAME_MODE", strategy_snapshot=score)
             continue
         position = _open_one_position(symbol, entry_price, stop_loss, mode)
         if position is not None:
@@ -1388,6 +1504,22 @@ def paper_market_data_comparison():
     return jsonify(
         compare_paper_outcomes_by_market_data_source(records)
     ), 200
+
+
+@app.get("/paper/entry-funnel-report")
+def _paper_entry_funnel_report():
+    """Read-only daily attribution of captured candidates through final Paper disposition."""
+    try:
+        records = _brain_authority_store.read_all()
+        if getattr(_brain_authority_store, "last_error", None):
+            raise RuntimeError("BRAIN_AUTHORITY_EVIDENCE_READ_FAILED")
+        payload = build_entry_funnel_report(records)
+        payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        payload["persistent_store"] = _brain_authority_store.summary()
+        return jsonify(payload), 200
+    except Exception as exc:
+        _legacy.logger.exception("Paper entry funnel report failed")
+        return jsonify({"available": False, "mode": "PAPER_ONLY", "error": type(exc).__name__}), 503
 
 
 @app.get("/paper/brain-authority")
