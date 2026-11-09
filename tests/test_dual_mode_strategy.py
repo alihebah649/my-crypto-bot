@@ -334,3 +334,14 @@ def test_pre_calibration_scalp_shadow_reconstructs_prior_formula_without_changin
     assert result["scalp_pre_calibration_score"] == 100
     assert result["scalp_pre_calibration_gate"] is True
     assert result["scalp_pre_calibration_signal"] == "BUY"
+
+
+def test_signal_candle_timestamp_helpers_tolerate_missing_and_malformed_metadata():
+    assert dual_mode_strategy._safe_candle_timestamp_ms([], "open_time") is None
+    assert dual_mode_strategy._safe_candle_timestamp_ms([{}], "open_time") is None
+    assert dual_mode_strategy._safe_candle_timestamp_ms(
+        [{"open_time": "not-a-time"}], "open_time"
+    ) is None
+    assert dual_mode_strategy._safe_candle_timestamp_ms(
+        [{"open_time": "1794213900000"}], "open_time"
+    ) == 1794213900000

@@ -178,6 +178,100 @@ class EntryV2RuntimeCapture:
             or legacy_result.get("swing_signal") == "BUY"
         )
 
+    def build_counterfactual_candidate(
+        self,
+        symbol: str,
+        legacy_result: Mapping[str, Any],
+        *,
+        trade_mode: str,
+        captured_at: str,
+    ) -> EntryV2ShadowCapture | None:
+        """Build an Entry v2 snapshot without persisting or mutating live capture state.
+
+        Used only to evaluate a candidate that an alternative score formula
+        would have emitted. It deliberately does not update _latest, diagnostics,
+        cycle keys, history, repository metadata, or the capture store.
+        """
+        if not isinstance(legacy_result, Mapping) or not self._is_candidate(legacy_result):
+            return None
+
+        normalized = str(symbol).upper()
+        requested_mode = str(trade_mode or "").upper()
+        if requested_mode not in {"SCALP", "SWING"}:
+            return None
+        if legacy_result.get(f"{requested_mode.lower()}_signal") != "BUY":
+            return None
+
+        lane_result = dict(legacy_result)
+        lane_result["trade_mode"] = requested_mode
+        lane_result["signal"] = "BUY"
+        if requested_mode == "SCALP":
+            if lane_result.get("scalp_score") is not None:
+                lane_result["score"] = lane_result.get("scalp_score")
+        else:
+            if lane_result.get("swing_score") is not None:
+                lane_result["score"] = lane_result.get("swing_score")
+
+        candles_15m = (
+            self._last_candles_15m.get(normalized, [])
+            or self._last_candles_15m.get(symbol, [])
+            or []
+        )
+        candles_5m = (
+            self._last_candles_5m.get(normalized, [])
+            or self._last_candles_5m.get(symbol, [])
+            or []
+        )
+        ticker = (
+            self._last_tickers.get(normalized, {})
+            or self._last_tickers.get(symbol, {})
+            or {}
+        )
+        context = self._current_mtf_candles()
+        context = context.get(normalized, {}) or context.get(symbol, {}) or {}
+        candles_1h = context.get("1h", []) or []
+        candles_4h = context.get("4h", []) or []
+
+        price = float(lane_result.get("price", ticker.get("lastPrice", 0.0)) or 0.0)
+        atr = float(lane_result.get("atr", 0.0) or 0.0)
+        stop_loss = price - (2.0 * atr) if price > 0 and atr > 0 else 0.0
+        stop_distance_percent = (2.0 * atr / price * 100.0) if price > 0 and atr > 0 else 0.0
+        bid = float(ticker.get("bidPrice", price) or price)
+        ask = float(ticker.get("askPrice", price) or price)
+        spread_percent = ((ask - bid) / price * 100.0) if price > 0 else 0.0
+        target_rr = calculate_target_rr(
+            trade_mode=requested_mode,
+            entry_price=price,
+            stop_loss=stop_loss,
+            candles_by_timeframe={
+                "5m": candles_5m,
+                "15m": candles_15m,
+                "1h": candles_1h,
+                "4h": candles_4h,
+            },
+        )
+        facts = EntryV2MarketFacts(
+            legacy_result=lane_result,
+            candles_5m=candles_5m,
+            candles_15m=candles_15m,
+            candles_1h=candles_1h,
+            candles_4h=candles_4h,
+            stop_distance_percent=stop_distance_percent,
+            reward_risk=target_rr.reward_risk if target_rr.status == "VALID" else None,
+            spread_percent=spread_percent,
+            target_price=target_rr.target_price,
+            target_source=target_rr.target_source,
+            target_status=target_rr.status,
+            btc_guard=(
+                "REJECT"
+                if bool(
+                    (self.btc_guard_provider() if self.btc_guard_provider else {}).get("crashing")
+                )
+                else "PASS"
+            ),
+        )
+        return capture_entry_v2(normalized, facts, captured_at=str(captured_at))
+
     def capture_candidate(
         self,
         symbol: str,

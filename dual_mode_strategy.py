@@ -41,6 +41,18 @@ def _closed_candles(candles, captured_at=None):
     return list(candles[:-1]) if len(candles) > 1 else []
 
 
+def _safe_candle_timestamp_ms(candles, field):
+    """Return a valid candle timestamp without letting malformed metadata break scoring."""
+    if not candles or not isinstance(candles[-1], dict):
+        return None
+    value = candles[-1].get(field)
+    try:
+        timestamp = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return timestamp if timestamp > 0 else None
+
+
 def calculate_ema(prices, period=100):
     if len(prices) < period:
         return 0.0
@@ -540,6 +552,8 @@ def score_symbol(symbol, ticker, candles_15m, candles_5m, candles_1h=None, candl
         "scalp_rsi_rise_min": SCALP_RSI_RISE_MIN,
         "scalp_recovery_trigger_min": SCALP_RECOVERY_TRIGGER_MIN,
         "scalp_recovery_points": SCALP_RECOVERY_POINTS,
+        "scalp_signal_candle_open_time_ms": _safe_candle_timestamp_ms(c5, "open_time"),
+        "scalp_signal_candle_close_time_ms": _safe_candle_timestamp_ms(c5, "close_time"),
         "scalp_score_raw": scalp_raw,
         "scalp_pre_calibration_score": scalp_pre_calibration_score,
         "scalp_pre_calibration_gate": scalp_pre_calibration_gate,

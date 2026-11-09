@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import inspect
 import json
 import os
@@ -48,6 +49,13 @@ from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
+from core.brain_market_regime import derive_market_breadth
+from core.paper_precalibration_shadow import (
+    TRIAL_NAME as _PRECALIBRATION_SHADOW_TRIAL_NAME,
+    build_precalibration_decision_record,
+    build_precalibration_shadow_report,
+    candidate_identity as _precalibration_candidate_identity,
+)
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.paper_runtime_memory import build_paper_runtime_memory_snapshot
@@ -64,6 +72,7 @@ from core.paper_blocked_entry_shadow import (
     advance_blocked_entry_watch,
     build_blocked_entry_watch,
 )
+from engine.entry_v2_capture import capture_summary as _entry_v2_capture_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
     build_paper_market_health_summary,
@@ -206,6 +215,423 @@ def _restore_blocked_entry_shadow_watches() -> None:
 
 
 _restore_blocked_entry_shadow_watches()
+
+
+# Track only SCALP setups that the previous score formula would have admitted
+# but the current formula holds back. A watch begins only after the current
+# Brain, its selective Entry v2 veto, and Paper entry economics all pass.
+_PAPER_PRECALIBRATION_SHADOW_ENABLED = bool(
+    PAPER_VENUE_MODE == "MIXED" and _evidence_database_url
+)
+_paper_precalibration_shadow_store = (
+    PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type="PAPER_SCALP_PRECALIBRATION_SHADOW",
+        max_records=1_000,
+    )
+    if _PAPER_PRECALIBRATION_SHADOW_ENABLED
+    else None
+)
+_paper_precalibration_shadow_lock = threading.RLock()
+_paper_precalibration_shadow_active_by_symbol: dict[str, dict[str, Any]] = {}
+_paper_precalibration_shadow_seen_candidate_ids: set[str] = set()
+
+
+def _restore_precalibration_shadow_watches() -> None:
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("PRECALIBRATION_SHADOW_RESTORE_READ_FAILED")
+        final_ids = {
+            str(row.get("candidate_id") or row.get("source_capture_id") or "").strip()
+            for row in records
+            if isinstance(row, dict) and row.get("record_type") == "FINAL"
+        }
+        restored: dict[str, dict[str, Any]] = {}
+        seen: set[str] = set()
+        for row in records:
+            if not isinstance(row, dict):
+                continue
+            candidate_id = str(
+                row.get("candidate_id") or row.get("source_capture_id") or ""
+            ).strip()
+            if candidate_id:
+                seen.add(candidate_id)
+            if (
+                row.get("record_type") != "START"
+                or not candidate_id
+                or candidate_id in final_ids
+                or str(row.get("status") or "").upper() != "OBSERVING"
+            ):
+                continue
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            previous = restored.get(symbol)
+            if previous is None or str(row.get("entry_capture_at_utc") or "") > str(
+                previous.get("entry_capture_at_utc") or ""
+            ):
+                restored[symbol] = dict(row)
+        with _paper_precalibration_shadow_lock:
+            _paper_precalibration_shadow_active_by_symbol.update(restored)
+            _paper_precalibration_shadow_seen_candidate_ids.update(seen)
+        _legacy.logger.warning(
+            "[PAPER-PRECALIBRATION-SHADOW] RESTORED active_symbols=%d seen_candidates=%d",
+            len(restored),
+            len(seen),
+        )
+    except Exception:
+        _legacy.logger.exception(
+            "[PAPER-PRECALIBRATION-SHADOW] restore failed; no counterfactual result will be inferred"
+        )
+
+
+_restore_precalibration_shadow_watches()
+
+
+def _persist_precalibration_decision(record: dict[str, Any]) -> bool:
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return False
+    candidate_id = str(record.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return False
+    payload = dict(record)
+    payload.setdefault("schema_version", 1)
+    payload.setdefault("trial_name", _PRECALIBRATION_SHADOW_TRIAL_NAME)
+    payload["record_type"] = "DECISION"
+    payload["record_id"] = f"{candidate_id}:DECISION"
+    payload.setdefault("mode", "PAPER_ONLY")
+    inserted = store.append(payload)
+    if not inserted and getattr(store, "last_error", None):
+        raise RuntimeError("PRECALIBRATION_SHADOW_DECISION_PERSIST_FAILED")
+    with _paper_precalibration_shadow_lock:
+        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
+    if inserted:
+        _legacy.logger.info(
+            "[PAPER-PRECALIBRATION-SHADOW] DECISION %s",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    return inserted
+
+
+def _record_precalibration_shadow_candidates() -> None:
+    """Evaluate old-formula-only Scalp candidates through current downstream gates."""
+    store = _paper_precalibration_shadow_store
+    capture_runtime = globals().get("_entry_v2_runtime_capture")
+    if store is None or capture_runtime is None:
+        return
+
+    scores = getattr(_legacy, "latest_scores", {}) or {}
+    if not isinstance(scores, dict):
+        return
+    market_view = derive_market_breadth(
+        scores,
+        btc_crashing=bool(_last_btc_guard.get("crashing")),
+    )
+    fee_rate = float(
+        getattr(getattr(runtime, "execution_adapter", None), "fee_rate", 0.001) or 0.001
+    )
+
+    for symbol, raw_score in scores.items():
+        if not isinstance(raw_score, dict):
+            continue
+        if (
+            str(raw_score.get("scalp_pre_calibration_signal") or "HOLD").upper() != "BUY"
+            or str(raw_score.get("scalp_signal") or "HOLD").upper() == "BUY"
+        ):
+            continue
+
+        normalized = str(symbol or "").upper()
+        candidate_id = _precalibration_candidate_identity(
+            normalized,
+            raw_score.get("scalp_signal_candle_open_time_ms"),
+        )
+        if not candidate_id:
+            continue
+        with _paper_precalibration_shadow_lock:
+            if candidate_id in _paper_precalibration_shadow_seen_candidate_ids:
+                continue
+            active = _paper_precalibration_shadow_active_by_symbol.get(normalized)
+            active_candidate_id = (
+                str(active.get("candidate_id") or active.get("source_capture_id") or "")
+                if isinstance(active, dict) else ""
+            )
+        if active_candidate_id:
+            _persist_precalibration_decision({
+                "candidate_id": candidate_id,
+                "symbol": normalized,
+                "trade_mode": "SCALP",
+                "signal_candle_open_time_ms": int(raw_score.get("scalp_signal_candle_open_time_ms")),
+                "prior_formula_score": float(raw_score.get("scalp_pre_calibration_score") or 0.0),
+                "current_formula_score": float(raw_score.get("scalp_score") or 0.0),
+                "disposition": "SUPPRESSED_ACTIVE_WATCH",
+                "active_candidate_id": active_candidate_id,
+                "reason": "ONE_ACTIVE_COUNTERFACTUAL_WATCH_PER_SYMBOL",
+            })
+            continue
+
+        try:
+            close_time_ms = int(float(raw_score.get("scalp_signal_candle_close_time_ms") or 0))
+            if close_time_ms <= 0:
+                raise ValueError("CLOSED_5M_CANDLE_CLOSE_TIME_UNAVAILABLE")
+            captured_at = datetime.fromtimestamp(
+                close_time_ms / 1000.0, tz=timezone.utc
+            ).isoformat()
+
+            prior_score = float(raw_score.get("scalp_pre_calibration_score") or 0.0)
+            candidate_score = dict(raw_score)
+            candidate_score.update({
+                "trade_mode": "SCALP",
+                "signal": "BUY",
+                "scalp_signal": "BUY",
+                "scalp_score": prior_score,
+                "score": prior_score,
+            })
+            capture = capture_runtime.build_counterfactual_candidate(
+                normalized,
+                candidate_score,
+                trade_mode="SCALP",
+                captured_at=captured_at,
+            )
+            if capture is None:
+                raise RuntimeError("ENTRY_V2_COUNTERFACTUAL_CAPTURE_UNAVAILABLE")
+
+            capture_dict = capture.to_dict()
+            entry_v2_summary = _entry_v2_capture_summary(capture)
+            active_modes = _active_trade_modes(normalized)
+            existing_position = "SCALP" in active_modes
+
+            # Match the real Legacy/MAIN Paper gates in order: BTC crash,
+            # existing position, valid price/ATR stop, freshness, ticker,
+            # cooldown, then Brain and fee-aware entry economics.
+            preflight_rejection = None
+            preflight_details: dict[str, Any] = {}
+            entry_price = float(candidate_score.get("price") or 0.0)
+            atr_value = float(candidate_score.get("atr") or 0.0)
+            stop_price = risk.get("atr_stop_loss")
+            if bool(_last_btc_guard.get("crashing")):
+                preflight_rejection = "BTC_CRASH_GUARD"
+            elif not existing_position and (entry_price <= 0.0 or atr_value <= 0.0):
+                preflight_rejection = "INVALID_ATR_OR_PRICE"
+            elif not existing_position and (
+                stop_price is None or float(stop_price) <= 0.0
+            ):
+                preflight_rejection = "INVALID_STOP"
+            elif not existing_position:
+                freshness = raw_score.get("entry_freshness_5m")
+                if not entry_execution_freshness_allowed(freshness, "SCALP"):
+                    preflight_rejection = "STALE_ENTRY_DATA"
+                    preflight_details["decision_candle_age_seconds"] = (
+                        freshness.get("decision_candle_age_seconds")
+                        if isinstance(freshness, dict) else None
+                    )
+
+            if preflight_rejection is None and not existing_position:
+                with _ticker_cache_lock:
+                    stale_active = _ticker_cache_stale_active
+                    stale_symbols = set(_ticker_stale_symbols)
+                if stale_active and (not stale_symbols or normalized in stale_symbols):
+                    preflight_rejection = "STALE_TICKER"
+
+            if preflight_rejection is None and not existing_position:
+                remaining_cooldown = _loss_cooldown(normalized)
+                if remaining_cooldown > 0:
+                    preflight_rejection = "LOSS_COOLDOWN"
+                    preflight_details["remaining_seconds"] = round(remaining_cooldown, 1)
+
+            if preflight_rejection is not None:
+                brain_record = {
+                    "brain_action": "NOT_EVALUATED",
+                    "brain_reason": preflight_rejection,
+                    "allowed": False,
+                    "context": {},
+                }
+            else:
+                shadow_brain = GuardedBrainAuthority(brain=brain_authority.brain)
+                brain_record = shadow_brain.evaluate_entry(
+                    normalized,
+                    candidate_score,
+                    trade_mode="SCALP",
+                    market_regime=market_view.regime,
+                    existing_position=existing_position,
+                    capture_id=capture.capture_id,
+                    entry_v2_shadow=entry_v2_summary,
+                    paper_trial_seller_pressure_veto=bool(
+                        PAPER_VENUE_MODE == "MIXED"
+                        and PAPER_MAIN_SCALP_SELLER_PRESSURE_VETO_ENABLED
+                    ),
+                ).to_dict()
+
+            risk = capture_dict.get("entry_scenario", {}).get("risk", {})
+            target_price = risk.get("target_price")
+            target_status = str(risk.get("target_status") or "UNKNOWN").upper()
+            reward_risk = risk.get("reward_risk")
+            economics = paper_entry_economics(
+                trade_mode="SCALP",
+                entry_price=entry_price,
+                stop_loss=float(stop_price or 0.0),
+                target_price=float(target_price) if target_price is not None else None,
+                target_status=target_status,
+                reward_risk=float(reward_risk) if reward_risk is not None else None,
+                fee_rate=fee_rate,
+            )
+            symbol_view = (
+                brain_record.get("context", {}).get("symbol_regime", {})
+                if isinstance(brain_record.get("context"), dict)
+                else {}
+            )
+            decision = build_precalibration_decision_record(
+                candidate_id=candidate_id,
+                symbol=normalized,
+                candle_open_time_ms=int(raw_score.get("scalp_signal_candle_open_time_ms")),
+                captured_at_utc=captured_at,
+                prior_score=prior_score,
+                current_score=float(raw_score.get("scalp_score") or 0.0),
+                entry_price=entry_price,
+                stop_price=float(stop_price) if stop_price is not None else None,
+                target_price=float(target_price) if target_price is not None else None,
+                target_status=target_status,
+                reward_risk=float(reward_risk) if reward_risk is not None else None,
+                fee_rate_per_side=fee_rate,
+                brain_record=brain_record,
+                economics=economics,
+                entry_v2_capture_id=capture.capture_id,
+                entry_v2_decision=str(capture_dict.get("v2_decision", {}).get("decision") or ""),
+                entry_v2_failed_gate=str(capture_dict.get("v2_decision", {}).get("failed_gate") or ""),
+                existing_position=existing_position,
+                market_regime=market_view.regime,
+                symbol_regime=str(symbol_view.get("regime") or "UNKNOWN"),
+                preflight_rejection=preflight_rejection,
+                preflight_details=preflight_details,
+            )
+
+            if decision["disposition"] == "BRAIN_ECONOMICS_QUALIFIED_WATCH":
+                # Reuse the exact Entry v2 stop/target and fee-aware 24-bar
+                # path model already used by the seller-pressure counterfactual.
+                capture_for_watch = dict(capture_dict)
+                capture_for_watch["capture_id"] = candidate_id
+                watch = build_blocked_entry_watch(
+                    capture_for_watch,
+                    fee_rate=fee_rate,
+                    blocked_reason="SCALP_PRECALIBRATION_SCORE_DIFFERENCE",
+                )
+                if str(watch.get("status") or "").upper() != "OBSERVING":
+                    decision["disposition"] = "UNMEASURABLE_CONTEXT"
+                    decision["measurement_reason"] = str(watch.get("status") or "UNKNOWN")
+                    event = {
+                        **decision,
+                        "record_type": "DECISION",
+                        "record_id": f"{candidate_id}:DECISION",
+                    }
+                    _persist_precalibration_decision(event)
+                    continue
+
+                watch.update(decision)
+                watch.update({
+                    "record_type": "START",
+                    "record_id": f"{candidate_id}:START",
+                    "candidate_id": candidate_id,
+                    "trial_name": _PRECALIBRATION_SHADOW_TRIAL_NAME,
+                    "venue": "BINANCE",
+                    "venue_mode": "MAIN",
+                    "mode": "PAPER_ONLY",
+                    "entry_v2_capture_id": capture.capture_id,
+                    "entry_v2_decision": capture_dict.get("v2_decision", {}),
+                    "brain_shadow_record": brain_record,
+                    "economics": economics,
+                    "repeat_precalibration_candidates_suppressed": 0,
+                    "signal_candle_open_time_ms": int(
+                        raw_score.get("scalp_signal_candle_open_time_ms")
+                    ),
+                    "current_scalp_gate_reasons": list(
+                        raw_score.get("scalp_gate_reasons") or []
+                    ),
+                })
+                inserted = store.append(watch)
+                if inserted:
+                    with _paper_precalibration_shadow_lock:
+                        _paper_precalibration_shadow_active_by_symbol[normalized] = dict(watch)
+                        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
+                    _legacy.logger.info(
+                        "[PAPER-PRECALIBRATION-SHADOW] START %s",
+                        json.dumps(watch, ensure_ascii=False, separators=(",", ":")),
+                    )
+                elif getattr(store, "last_error", None):
+                    raise RuntimeError("PRECALIBRATION_SHADOW_START_PERSIST_FAILED")
+                else:
+                    with _paper_precalibration_shadow_lock:
+                        _paper_precalibration_shadow_seen_candidate_ids.add(candidate_id)
+            else:
+                _persist_precalibration_decision(decision)
+        except Exception as exc:
+            _legacy.logger.exception(
+                "[PAPER-PRECALIBRATION-SHADOW] candidate evaluation failed symbol=%s error=%s",
+                normalized,
+                type(exc).__name__,
+            )
+
+
+def _advance_precalibration_shadow_watches() -> None:
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return
+    stream = globals().get("_binance_market_stream")
+    get_history = getattr(stream, "get_kline_history", None)
+    if not callable(get_history):
+        return
+
+    with _paper_precalibration_shadow_lock:
+        watches = list(_paper_precalibration_shadow_active_by_symbol.items())
+    for symbol, previous in watches:
+        try:
+            candles = get_history(symbol, "5m", 60) or []
+            updated, _changed = advance_blocked_entry_watch(previous, candles)
+        except Exception:
+            _legacy.logger.exception(
+                "[PAPER-PRECALIBRATION-SHADOW] path update failed symbol=%s",
+                symbol,
+            )
+            continue
+
+        if str(updated.get("status") or "").upper() == "OBSERVING":
+            with _paper_precalibration_shadow_lock:
+                current = _paper_precalibration_shadow_active_by_symbol.get(symbol)
+                if current and current.get("candidate_id") == updated.get("candidate_id"):
+                    _paper_precalibration_shadow_active_by_symbol[symbol] = updated
+            continue
+
+        final_event = dict(updated)
+        candidate_id = str(updated.get("candidate_id") or updated.get("source_capture_id") or "")
+        final_event["record_type"] = "FINAL"
+        final_event["record_id"] = f"{candidate_id}:FINAL"
+        final_event["trial_name"] = _PRECALIBRATION_SHADOW_TRIAL_NAME
+        final_event["candidate_id"] = candidate_id
+        final_event["venue"] = "BINANCE"
+        final_event["venue_mode"] = "MAIN"
+        final_event["mode"] = "PAPER_ONLY"
+        try:
+            inserted = store.append(final_event)
+            if not inserted and getattr(store, "last_error", None):
+                raise RuntimeError("PRECALIBRATION_SHADOW_FINAL_PERSIST_FAILED")
+            with _paper_precalibration_shadow_lock:
+                current = _paper_precalibration_shadow_active_by_symbol.get(symbol)
+                if current and current.get("candidate_id") == candidate_id:
+                    _paper_precalibration_shadow_active_by_symbol.pop(symbol, None)
+            _legacy.logger.info(
+                "[PAPER-PRECALIBRATION-SHADOW] FINAL %s",
+                json.dumps(final_event, ensure_ascii=False, separators=(",", ":")),
+            )
+        except Exception:
+            with _paper_precalibration_shadow_lock:
+                _paper_precalibration_shadow_active_by_symbol[symbol] = updated
+            _legacy.logger.exception(
+                "[PAPER-PRECALIBRATION-SHADOW] final persistence failed symbol=%s",
+                symbol,
+            )
 
 
 def _record_blocked_entry_shadow(
@@ -1734,6 +2160,14 @@ def _process_market_cycle_with_overlays():
     except Exception:
         _legacy.logger.exception("Entry v2 shadow capture failed")
     try:
+        _record_precalibration_shadow_candidates()
+    except Exception:
+        _legacy.logger.exception("Pre-calibration Paper shadow candidate evaluation failed")
+    try:
+        _advance_precalibration_shadow_watches()
+    except Exception:
+        _legacy.logger.exception("Pre-calibration Paper shadow path advancement failed")
+    try:
         _advance_blocked_entry_shadow_watches()
     except Exception:
         _legacy.logger.exception("Blocked-entry Paper shadow tracker failed")
@@ -2627,6 +3061,47 @@ def _paper_forensic_entry_outcomes():
     status_code = 200 if payload.get("available") else 503
     _emit_linked_entry_outcome_forensics_logs(payload)
     return jsonify(payload), status_code
+
+
+@app.get("/paper/precalibration-shadow-report")
+def _paper_precalibration_shadow_report():
+    """Read-only outcomes for prior-formula Scalp candidates that pass current downstream gates."""
+    store = _paper_precalibration_shadow_store
+    if store is None:
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "PRECALIBRATION_SHADOW_TRACKER_DISABLED_OR_POSTGRES_UNAVAILABLE",
+        }), 503
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("PRECALIBRATION_SHADOW_READ_FAILED")
+        payload = build_precalibration_shadow_report(records)
+        payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        payload["persistent_store"] = store.summary()
+        _legacy.logger.info(
+            "[PAPER-PRECALIBRATION-SHADOW-REPORT] %s",
+            json.dumps({
+                "unique_candidate_count": payload["unique_candidate_count"],
+                "watch_started": payload["watch_started"],
+                "watch_active": payload["watch_active"],
+                "watch_completed": payload["watch_completed"],
+                "dispositions": payload["dispositions"],
+                "outcomes": payload["outcomes"],
+                "decisive_outcomes": payload["decisive_outcomes"],
+                "net_profit_factor_after_estimated_fees": payload["net_profit_factor_after_estimated_fees"],
+            }, ensure_ascii=False, separators=(",", ":")),
+        )
+        return jsonify(payload), 200
+    except Exception as exc:
+        _legacy.logger.exception("Pre-calibration Paper shadow report failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "reason": "PRECALIBRATION_SHADOW_READ_FAILED",
+            "error": type(exc).__name__,
+        }), 503
 
 
 @app.get("/paper/blocked-entry-shadow-report")
