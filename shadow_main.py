@@ -479,6 +479,45 @@ def _record_precalibration_shadow_candidates() -> None:
                 reward_risk=float(reward_risk) if reward_risk is not None else None,
                 fee_rate=fee_rate,
             )
+
+            # MAIN normally consumes Binance-only data. If that ever changes
+            # and a candidate comes from Bybit, live execution first rebases
+            # entry/stop to a Binance reference. This shadow path does not yet
+            # recompute the pivot target against Binance candles, so it must
+            # not count that candidate as a comparable price-path watch.
+            market_data_rejection = None
+            market_data_details: dict[str, Any] = {}
+            market_data_source = str(
+                candidate_score.get("market_data_source") or "UNKNOWN"
+            ).upper()
+            if _requires_binance_execution_reference(market_data_source):
+                alignment = candidate_score.get("market_data_alignment") or {}
+                market_data_details = {
+                    "market_data_source": market_data_source,
+                    "market_data_alignment": (
+                        dict(alignment) if isinstance(alignment, dict) else {}
+                    ),
+                }
+                if not isinstance(alignment, dict) or not bool(alignment.get("eligible")):
+                    market_data_rejection = "MARKET_DATA_SOURCE_MISMATCH"
+                else:
+                    reference_price = float(
+                        alignment.get("binance_execution_price", 0.0) or 0.0
+                    )
+                    risk_distance = entry_price - float(stop_price or 0.0)
+                    if (
+                        reference_price <= 0.0
+                        or risk_distance <= 0.0
+                        or reference_price <= risk_distance
+                    ):
+                        market_data_rejection = "MARKET_DATA_SOURCE_MISMATCH"
+                        market_data_details["reason"] = "INVALID_BINANCE_REBASED_ENTRY_OR_STOP"
+                    else:
+                        market_data_rejection = "MARKET_DATA_REBASE_NOT_MODELED"
+                        market_data_details["reason"] = (
+                            "BINANCE_ENTRY_STOP_REBASED_BUT_PIVOT_TARGET_NOT_RECOMPUTED_ON_BINANCE_CANDLES"
+                        )
+
             symbol_view = (
                 brain_record.get("context", {}).get("symbol_regime", {})
                 if isinstance(brain_record.get("context"), dict)
@@ -507,6 +546,8 @@ def _record_precalibration_shadow_candidates() -> None:
                 symbol_regime=str(symbol_view.get("regime") or "UNKNOWN"),
                 preflight_rejection=preflight_rejection,
                 preflight_details=preflight_details,
+                market_data_rejection=market_data_rejection,
+                market_data_details=market_data_details,
             )
 
             if decision["disposition"] == "BRAIN_ECONOMICS_QUALIFIED_WATCH":
