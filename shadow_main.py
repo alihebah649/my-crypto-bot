@@ -955,16 +955,18 @@ def _persist_entry_funnel_outcome_impl(
     execution_attempted: bool = False,
     position_opened: bool = False,
     details: dict | None = None,
+    brain_record_snapshot: dict | None = None,
+    v2_capture_snapshot: dict | None = None,
 ) -> bool:
     """Upsert the final Paper entry disposition into its existing Brain evidence row."""
     normalized = str(symbol or "").upper()
     lane = str(mode or "UNKNOWN").upper()
     trace = runtime.last_entry_diagnostics.get(normalized, {}) or {}
     authority_by_mode = trace.get("brain_authority_by_mode", {}) or {}
-    authority = authority_by_mode.get(lane)
+    authority = brain_record_snapshot if isinstance(brain_record_snapshot, dict) else authority_by_mode.get(lane)
     authority = authority if isinstance(authority, dict) else None
     v2_by_mode = trace.get("entry_v2_shadow_by_mode", {}) or {}
-    v2_capture = v2_by_mode.get(lane, {}) or {}
+    v2_capture = v2_capture_snapshot if isinstance(v2_capture_snapshot, dict) else (v2_by_mode.get(lane, {}) or {})
     capture_id = (authority or {}).get("capture_id") or v2_capture.get("capture_id")
     if not capture_id:
         return False
@@ -1346,7 +1348,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         position.entry_metadata["entry_decision_chain"] = chain
         position.metadata["entry_decision_chain"] = chain
         runtime.repository.update(position)
-        _persist_entry_funnel_outcome(symbol, mode, "POSITION_COMMITTED", strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, position_opened=True, details={"position_id": str(getattr(position, "position_id", "") or ""), "execution_price": float(execution_price)})
+        _persist_entry_funnel_outcome(symbol, mode, "POSITION_COMMITTED", strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, position_opened=True, details={"position_id": str(getattr(position, "position_id", "") or ""), "execution_price": float(execution_price)}, brain_record_snapshot=pre_execution_brain, v2_capture_snapshot=pre_execution_v2)
     else:
         pre_execution_chain["final"] = {
             "approved": False,
@@ -1357,7 +1359,7 @@ def _open_one_position(symbol: str, entry_price: float, stop_loss: float, mode: 
         chain = pre_execution_chain
         runtime.last_entry_diagnostics.setdefault(symbol, {})["entry_decision_chain"] = chain
         downstream_gate = str(downstream_trace.get("risk_reason") or downstream_trace.get("result") or "DOWNSTREAM_OPEN_POSITION")
-        _persist_entry_funnel_outcome(symbol, mode, "DOWNSTREAM_ENTRY_REJECTED", failed_gate=downstream_gate, strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, details={"risk_gateway": downstream_trace.get("risk_gateway"), "risk_reason": downstream_trace.get("risk_reason"), "facade": downstream_trace.get("facade"), "execution": downstream_trace.get("execution"), "result": downstream_trace.get("result")})
+        _persist_entry_funnel_outcome(symbol, mode, "DOWNSTREAM_ENTRY_REJECTED", failed_gate=downstream_gate, strategy_snapshot=candidate_strategy_snapshot, execution_attempted=True, details={"risk_gateway": downstream_trace.get("risk_gateway"), "risk_reason": downstream_trace.get("risk_reason"), "facade": downstream_trace.get("facade"), "execution": downstream_trace.get("execution"), "result": downstream_trace.get("result")}, brain_record_snapshot=pre_execution_brain, v2_capture_snapshot=pre_execution_v2)
     return position
 
 
