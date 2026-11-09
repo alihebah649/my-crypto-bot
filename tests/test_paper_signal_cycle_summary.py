@@ -34,7 +34,7 @@ def test_cycle_summary_separates_score_threshold_from_actual_buy_signal():
             "scalp_gate": False,
             "scalp_gate_reasons": ["NO_15M_MACRO_SUPPORT"],
             "swing_score": 82,
-            "swing_signal": "HOLD",
+            "swing_signal": "BUY",
         },
     }
 
@@ -51,10 +51,10 @@ def test_cycle_summary_separates_score_threshold_from_actual_buy_signal():
         "SCALP_STRUCTURE_NOT_CONFIRMED": 1,
     }
     assert result["swing_scores_at_or_above_threshold"] == 1
-    assert result["swing_signals_buy"] == 0
-    assert result["swing_threshold_met_but_not_buy"] == 1
-    assert result["buy_symbols"] == ["ETHUSDT"]
-    assert result["threshold_candidates"][0]["symbol"] in {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+    assert result["swing_signals_buy"] == 1
+    assert result["swing_threshold_met_but_not_buy"] == 0
+    assert result["buy_symbols"] == ["ETHUSDT", "SOLUSDT"]
+    assert result["threshold_candidates"][0]["symbol"] == "SOLUSDT"
     assert result["interpretation"]["trading_logic_changed"] is False
 
 
