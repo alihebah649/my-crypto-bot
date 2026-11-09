@@ -54,6 +54,8 @@ def build_precalibration_decision_record(
     existing_position: bool,
     market_regime: str,
     symbol_regime: str,
+    preflight_rejection: str | None = None,
+    preflight_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a compact, immutable explanation for a pre-calibration candidate."""
     brain = dict(brain_record or {})
@@ -62,8 +64,11 @@ def build_precalibration_decision_record(
     selective_veto = context.get("selective_v2_veto")
     brain_allowed = bool(brain.get("allowed"))
 
+    preflight = str(preflight_rejection or "").strip().upper()
     if existing_position:
         disposition = "SKIPPED_EXISTING_POSITION"
+    elif preflight:
+        disposition = preflight
     elif not brain_allowed:
         disposition = "BRAIN_SELECTIVE_VETO" if selective_veto else "BRAIN_REJECTED"
     elif str(target_status or "").upper() != "VALID" or target_price is None:
@@ -97,6 +102,8 @@ def build_precalibration_decision_record(
         "brain_reason": str(brain.get("brain_reason") or ""),
         "brain_action": str(brain.get("brain_action") or ""),
         "selective_v2_veto": str(selective_veto or ""),
+        "preflight_rejection": preflight,
+        "preflight_details": dict(preflight_details or {}),
         "existing_position": bool(existing_position),
         "market_regime": str(market_regime or "UNKNOWN").upper(),
         "symbol_regime": str(symbol_regime or "UNKNOWN").upper(),
