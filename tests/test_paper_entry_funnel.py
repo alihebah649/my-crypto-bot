@@ -20,8 +20,9 @@ def _brain_record(capture_id="capture-1", allowed=True, mode="SCALP", at="2026-1
 
 
 def test_final_record_preserves_brain_decision_and_attaches_final_outcome():
+    brain = _brain_record()
     result = build_entry_funnel_record(
-        _brain_record(),
+        brain,
         symbol="BTCUSDT",
         trade_mode="SCALP",
         capture_id="capture-1",
@@ -43,6 +44,13 @@ def test_final_record_preserves_brain_decision_and_attaches_final_outcome():
     assert result["final_decision"]["position_opened"] is True
     assert result["final_decision"]["details"]["position_id"] == "PAPER-1"
     assert "context" not in result
+    assert "final_decision" not in brain
+    assert brain["context"]["entry_v2_shadow"]["captured_at"] == "2026-11-09T08:02:00+00:00"
+
+    merged_report = build_entry_funnel_report([brain, result])
+    assert merged_report["capture_records"] == 1
+    assert merged_report["by_mode"]["SCALP"]["position_committed"] == 1
+    assert merged_report["by_mode"]["SCALP"]["final_outcome_unknown"] == 0
 
 
 def test_pre_brain_rejection_is_recorded_without_fabricating_brain_approval():
