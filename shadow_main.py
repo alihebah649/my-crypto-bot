@@ -120,6 +120,17 @@ else:
     _brain_authority_store = BrainShadowCaptureStore(
         Path(getattr(runtime, "persistence_dir", None) or ".") / "brain_shadow" / "authority_captures.jsonl"
     )
+# Final dispositions are separate append-only evidence rows in the existing
+# paper_evidence table. Keep BRAIN_AUTHORITY immutable; never upsert its rows.
+_paper_entry_funnel_store = (
+    PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type=f"PAPER_ENTRY_FUNNEL{_EVIDENCE_NAMESPACE}",
+        max_records=50_000,
+    )
+    if _evidence_database_url
+    else None
+)
 _paper_outcome_store = (
     PostgresEvidenceStore(
         _evidence_database_url,
@@ -958,7 +969,7 @@ def _persist_entry_funnel_outcome_impl(
     brain_record_snapshot: dict | None = None,
     v2_capture_snapshot: dict | None = None,
 ) -> bool:
-    """Upsert the final Paper entry disposition into its existing Brain evidence row."""
+    """Append final Paper disposition without mutating the original Brain evidence."""
     normalized = str(symbol or "").upper()
     lane = str(mode or "UNKNOWN").upper()
     trace = runtime.last_entry_diagnostics.get(normalized, {}) or {}
@@ -1012,8 +1023,9 @@ def _persist_entry_funnel_outcome_impl(
     if not record:
         return False
 
-    upsert = getattr(_brain_authority_store, "upsert", None)
-    if not callable(upsert):
+    store = _paper_entry_funnel_store
+    append = getattr(store, "append", None)
+    if not callable(append):
         _legacy.logger.warning(
             "PAPER ENTRY FUNNEL persistence unavailable symbol=%s mode=%s capture_id=%s",
             normalized,
@@ -1021,13 +1033,33 @@ def _persist_entry_funnel_outcome_impl(
             capture_id,
         )
         return False
-    if not upsert(record):
+    if not append(record):
+        # append() is intentionally idempotent. A duplicate is success only
+        # when the durable final disposition already matches this exact capture.
+        lookup = getattr(store, "get_by_identity", None)
+        existing = lookup(str(capture_id)) if callable(lookup) else None
+        existing_final = existing.get("final_decision") if isinstance(existing, dict) else {}
+        expected_final = record.get("final_decision") or {}
+        existing_stable = {
+            key: value for key, value in (existing_final or {}).items()
+            if key != "recorded_at_utc"
+        } if isinstance(existing_final, dict) else {}
+        expected_stable = {
+            key: value for key, value in expected_final.items()
+            if key != "recorded_at_utc"
+        } if isinstance(expected_final, dict) else {}
+        if (
+            isinstance(existing, dict)
+            and str(existing.get("capture_id") or "") == str(capture_id)
+            and existing_stable == expected_stable
+        ):
+            return True
         _legacy.logger.warning(
-            "PAPER ENTRY FUNNEL persistence failed symbol=%s mode=%s capture_id=%s error=%s",
+            "PAPER ENTRY FUNNEL append failed symbol=%s mode=%s capture_id=%s error=%s",
             normalized,
             lane,
             capture_id,
-            getattr(_brain_authority_store, "last_error", None),
+            getattr(store, "last_error", None),
         )
         return False
     return True
@@ -1510,12 +1542,26 @@ def paper_market_data_comparison():
 def _paper_entry_funnel_report():
     """Read-only daily attribution of captured candidates through final Paper disposition."""
     try:
-        records = _brain_authority_store.read_all()
+        brain_records = _brain_authority_store.read_all()
         if getattr(_brain_authority_store, "last_error", None):
             raise RuntimeError("BRAIN_AUTHORITY_EVIDENCE_READ_FAILED")
-        payload = build_entry_funnel_report(records)
+        final_records = (
+            _paper_entry_funnel_store.read_all()
+            if _paper_entry_funnel_store is not None
+            else []
+        )
+        if _paper_entry_funnel_store is not None and getattr(_paper_entry_funnel_store, "last_error", None):
+            raise RuntimeError("PAPER_ENTRY_FUNNEL_EVIDENCE_READ_FAILED")
+        payload = build_entry_funnel_report(brain_records + final_records)
         payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
-        payload["persistent_store"] = _brain_authority_store.summary()
+        payload["persistent_store"] = {
+            "brain_authority": _brain_authority_store.summary(),
+            "final_dispositions": (
+                _paper_entry_funnel_store.summary()
+                if _paper_entry_funnel_store is not None
+                else {"backend": "DISABLED"}
+            ),
+        }
         return jsonify(payload), 200
     except Exception as exc:
         _legacy.logger.exception("Paper entry funnel report failed")
