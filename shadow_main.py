@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import inspect
 import json
 import os
@@ -48,6 +49,13 @@ from core.source_parity_shadow import build_source_parity_shadow
 from core.execution_market_alignment import assess_execution_market_alignment
 from core.dual_lane_position_gate import block_for_existing_position
 from core.brain_authority import GuardedBrainAuthority
+from core.brain_market_regime import derive_market_breadth
+from core.paper_precalibration_shadow import (
+    TRIAL_NAME as _PRECALIBRATION_SHADOW_TRIAL_NAME,
+    build_precalibration_decision_record,
+    build_precalibration_shadow_report,
+    candidate_identity as _precalibration_candidate_identity,
+)
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
 from core.paper_runtime_memory import build_paper_runtime_memory_snapshot
@@ -64,6 +72,7 @@ from core.paper_blocked_entry_shadow import (
     advance_blocked_entry_watch,
     build_blocked_entry_watch,
 )
+from engine.entry_v2_capture import capture_summary as _entry_v2_capture_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
     build_paper_market_health_summary,
