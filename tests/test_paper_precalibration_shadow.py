@@ -3,6 +3,7 @@ from core.paper_precalibration_shadow import (
     build_precalibration_decision_record,
     build_precalibration_shadow_report,
     candidate_identity,
+    entry_risk_snapshot,
 )
 
 
@@ -258,3 +259,26 @@ def test_market_data_rebase_is_excluded_only_after_brain_and_fee_economics_pass(
     assert rebased["market_data_details"]["market_data_source"] == "BYBIT"
     assert brain_rejected["disposition"] == "BRAIN_REJECTED"
     assert economics_rejected["disposition"] == "ENTRY_ECONOMICS_REJECTED"
+
+
+def test_entry_risk_snapshot_extracts_captured_stop_and_target_before_preflight():
+    snapshot = entry_risk_snapshot({
+        "entry_scenario": {
+            "risk": {
+                "atr_stop_loss": 98.5,
+                "target_price": 104.0,
+                "target_status": "VALID",
+            }
+        }
+    })
+
+    assert snapshot["atr_stop_loss"] == 98.5
+    assert snapshot["target_price"] == 104.0
+    assert snapshot["target_status"] == "VALID"
+
+
+def test_entry_risk_snapshot_handles_missing_or_malformed_capture_context():
+    assert entry_risk_snapshot(None) == {}
+    assert entry_risk_snapshot({"entry_scenario": None}) == {}
+    assert entry_risk_snapshot({"entry_scenario": {"risk": None}}) == {}
+    assert entry_risk_snapshot({"entry_scenario": {"risk": "invalid"}}) == {}

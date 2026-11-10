@@ -32,6 +32,15 @@ def candidate_identity(symbol: str, candle_open_time_ms: Any) -> str | None:
     return f"{TRIAL_NAME}:{normalized}:SCALP:{open_time}"
 
 
+def entry_risk_snapshot(capture: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the captured Entry v2 risk fields before any preflight uses them."""
+    source = capture if isinstance(capture, Mapping) else {}
+    scenario = source.get("entry_scenario")
+    scenario = scenario if isinstance(scenario, Mapping) else {}
+    risk = scenario.get("risk")
+    return dict(risk) if isinstance(risk, Mapping) else {}
+
+
 def build_precalibration_decision_record(
     *,
     candidate_id: str,
