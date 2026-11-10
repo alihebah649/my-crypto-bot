@@ -129,7 +129,16 @@ def build_structural_stop_comparison_watch(
     # actual Paper fill price. This avoids treating small entry-price variance
     # as a stop-quality effect.
     entry_adjustment = entry - captured_entry
-    atr_stop = atr_stop_raw + entry_adjustment
+    captured_atr_stop = atr_stop_raw + entry_adjustment
+    # Prefer the position's initial execution stop as the actual ATR baseline.
+    # The exact capture remains the source for structural stop and target levels.
+    paper_initial_stop = _positive(_value(position, "stop_loss"))
+    if paper_initial_stop is not None and paper_initial_stop < entry:
+        atr_stop = paper_initial_stop
+        atr_stop_source = "PAPER_POSITION_INITIAL_STOP"
+    else:
+        atr_stop = captured_atr_stop
+        atr_stop_source = "ENTRY_V2_CAPTURE_ATR_STOP"
     structural_stop = structural_stop_raw + entry_adjustment
     target = target_raw + entry_adjustment
     if not (0 < atr_stop < entry and 0 < structural_stop < entry and target > entry):
@@ -170,6 +179,8 @@ def build_structural_stop_comparison_watch(
         "entry_price": entry,
         "entry_price_adjustment": round(entry_adjustment, 12),
         "target_price": target,
+        "captured_atr_stop_price": captured_atr_stop,
+        "atr_stop_source": atr_stop_source,
         "target_source": str(risk.get("target_source") or "ENTRY_V2_CAPTURE"),
         "target_status": str(risk.get("target_status") or "UNKNOWN").upper(),
         "expected_reward_risk_at_capture": _number(risk.get("reward_risk")),
