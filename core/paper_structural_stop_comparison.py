@@ -327,6 +327,7 @@ def advance_structural_stop_comparison(
         (row for row in candles if isinstance(row, Mapping)),
         key=lambda row: int(_number(row.get("open_time")) or 0),
     )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     for candle in ordered:
         if candle.get("is_closed") is False:
             continue
@@ -337,6 +338,15 @@ def advance_structural_stop_comparison(
         if open_time is None or high is None or low is None or close is None:
             continue
         open_time = int(open_time)
+        # Binance/Bybit/OKX WebSocket rows carry an explicit close flag.
+        # REST-seeded Bybit candles may omit it, so derive closure from
+        # close_time (or the known 5m interval) instead of assuming closed.
+        if candle.get("is_closed") is not True:
+            close_time = _number(candle.get("close_time"))
+            if close_time is None:
+                close_time = open_time + INTERVAL_MS - 1
+            if int(close_time) >= now_ms:
+                continue
         # The entire candle containing the entry is excluded. Its high/low
         # cannot establish whether the move happened before or after entry.
         if open_time <= captured_at_ms or open_time <= int(last_open):
