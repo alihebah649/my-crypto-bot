@@ -2028,6 +2028,7 @@ def _attach_hosted_paper_structural_stop_comparison(runner: Any) -> None:
             stream=lab.stream,
             runtime=lab.runtime,
             evidence_store=store,
+            entry_capture_store=lab.entry_captures,
             restore=True,
         )
 
@@ -2066,6 +2067,24 @@ def _attach_hosted_paper_structural_stop_comparison(runner: Any) -> None:
             "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted context attached venue=%s entries_enabled=True",
             venue_name,
         )
+
+
+def _seed_existing_hosted_paper_structural_stop_positions() -> None:
+    """Backfill only still-open hosted positions with exact capture and local 5m coverage."""
+    runner = globals().get("_hosted_paper_lab_runner")
+    if runner is None or not getattr(runner, "enabled", False) or getattr(runner, "monitor_only", True):
+        return
+    for venue, lab in getattr(runner, "labs", {}).items():
+        if not bool(getattr(lab, "universe_ready", False)):
+            continue
+        context_key = f"HOSTED_{str(venue or '').upper()}"
+        try:
+            _hosted_paper_structural_stop_coordinator.seed_existing_open_positions(context_key)
+        except Exception:
+            _legacy.logger.exception(
+                "[PAPER-STRUCTURAL-STOP-COMPARISON] existing hosted position seed failed venue=%s",
+                venue,
+            )
 
 
 def _structural_stop_comparison_stream(venue_mode: str | None = None):
@@ -2633,6 +2652,10 @@ def _process_market_cycle_with_overlays():
         _advance_structural_stop_comparison_watches()
     except Exception:
         _legacy.logger.exception("Structural-stop Paper comparison tracker failed")
+    try:
+        _seed_existing_hosted_paper_structural_stop_positions()
+    except Exception:
+        _legacy.logger.exception("Hosted venue structural-stop existing-position seed failed")
     try:
         _hosted_paper_structural_stop_coordinator.advance()
     except Exception:
