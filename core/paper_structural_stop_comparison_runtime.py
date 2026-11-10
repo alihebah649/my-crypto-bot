@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from core.paper_structural_stop_comparison import (
@@ -58,6 +59,7 @@ class PaperStructuralStopComparisonCoordinator:
         stream: Any,
         runtime: Any,
         evidence_store: Any,
+        entry_capture_store: Any = None,
         restore: bool = True,
     ) -> dict[str, Any]:
         """Register one venue's own Paper repository, stream and evidence."""
@@ -72,6 +74,8 @@ class PaperStructuralStopComparisonCoordinator:
             "stream": stream,
             "runtime": runtime,
             "store": evidence_store,
+            "entry_capture_store": entry_capture_store,
+            "existing_positions_seeded": False,
         }
         with self._lock:
             self._contexts[key] = context
@@ -122,11 +126,49 @@ class PaperStructuralStopComparisonCoordinator:
             "restored_active_positions": restored,
         }
 
+    def _record_decision(
+        self,
+        context: Mapping[str, Any],
+        position: Any,
+        *,
+        source_capture_id: str,
+        reason: str,
+    ) -> bool:
+        store = context.get("store")
+        position_id = str(_position_value(position, "position_id", "") or "").strip()
+        if store is None or not position_id:
+            return False
+        decision = build_structural_stop_comparison_decision(
+            position,
+            source_capture_id=source_capture_id,
+            venue=context["venue"],
+            venue_mode=context["venue_mode"],
+            reason=reason,
+        )
+        inserted = store.append(decision)
+        if not inserted and getattr(store, "last_error", None):
+            self._logger.error(
+                "[PAPER-STRUCTURAL-STOP-COMPARISON] DECISION persistence failed context=%s position=%s error=%s",
+                context["context_key"],
+                position_id,
+                store.last_error,
+            )
+            return False
+        if inserted:
+            self._logger.info(
+                "[PAPER-STRUCTURAL-STOP-COMPARISON] DECISION context=%s %s",
+                context["context_key"],
+                decision,
+            )
+        return True
+
     def register_start(
         self,
         context_key: str,
         position: Any,
         capture: Mapping[str, Any],
+        *,
+        use_captured_atr_stop: bool = False,
     ) -> bool:
         """Persist the exact entry-time capture for a successfully opened Paper position."""
         key = str(context_key or "").strip().upper()
@@ -151,6 +193,42 @@ class PaperStructuralStopComparisonCoordinator:
             or (capture.get("capture_id") if isinstance(capture, Mapping) else "")
             or ""
         ).strip()
+        captured_identity = (
+            str(capture.get("capture_id") or "").strip()
+            if isinstance(capture, Mapping) else ""
+        )
+        if not capture_id:
+            self._record_decision(
+                context,
+                position,
+                source_capture_id="",
+                reason="ENTRY_V2_CAPTURE_ID_UNAVAILABLE",
+            )
+            return False
+        if not captured_identity or captured_identity != capture_id:
+            self._record_decision(
+                context,
+                position,
+                source_capture_id=capture_id,
+                reason="EXACT_ENTRY_V2_CAPTURE_NOT_FOUND",
+            )
+            return False
+
+        watch_position = position
+        if use_captured_atr_stop:
+            # A pre-existing Paper position may already have had its live
+            # stop moved by the Trade Manager. For safe backfill, do not treat
+            # that later stop as the initial ATR stop; use the immutable ATR
+            # stop captured at entry instead.
+            watch_position = {
+                "position_id": position_id,
+                "symbol": _position_value(position, "symbol", ""),
+                "entry_price": _position_value(position, "entry_price"),
+                "stop_loss": None,
+                "trade_mode": metadata.get("trade_mode", "UNKNOWN"),
+                "status": _position_value(position, "status", ""),
+                "entry_metadata": dict(metadata),
+            }
 
         try:
             fee_rate = float(
@@ -163,33 +241,18 @@ class PaperStructuralStopComparisonCoordinator:
             )
             watch = build_structural_stop_comparison_watch(
                 capture,
-                position,
+                watch_position,
                 fee_rate=fee_rate,
                 venue=context["venue"],
                 venue_mode=context["venue_mode"],
             )
         except (TypeError, ValueError) as exc:
-            decision = build_structural_stop_comparison_decision(
+            self._record_decision(
+                context,
                 position,
                 source_capture_id=capture_id,
-                venue=context["venue"],
-                venue_mode=context["venue_mode"],
                 reason=str(exc) or type(exc).__name__,
             )
-            inserted = store.append(decision)
-            if not inserted and getattr(store, "last_error", None):
-                self._logger.error(
-                    "[PAPER-STRUCTURAL-STOP-COMPARISON] DECISION persistence failed context=%s position=%s error=%s",
-                    key,
-                    position_id,
-                    store.last_error,
-                )
-            else:
-                self._logger.info(
-                    "[PAPER-STRUCTURAL-STOP-COMPARISON] DECISION context=%s %s",
-                    key,
-                    decision,
-                )
             return False
 
         inserted = store.append(watch)
@@ -211,6 +274,184 @@ class PaperStructuralStopComparisonCoordinator:
             watch,
         )
         return True
+
+    @staticmethod
+    def _capture_time_ms(capture: Mapping[str, Any]) -> int | None:
+        value = capture.get("captured_at")
+        if isinstance(value, (int, float)):
+            timestamp = float(value)
+            return int(timestamp if timestamp > 10_000_000_000 else timestamp * 1000)
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp() * 1000)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def seed_existing_open_positions(self, context_key: str) -> dict[str, Any]:
+        """Seed only pre-existing open positions with exact captures and entry-bar coverage.
+
+        This is deliberately bounded by the selected venue stream's local 60-bar
+        5m buffer. Positions older than that buffer are recorded as unmeasurable
+        rather than assigned a fabricated stop-path result.
+        """
+        key = str(context_key or "").strip().upper()
+        with self._lock:
+            context = self._contexts.get(key)
+            if context is None:
+                return {"context_key": key, "available": False, "reason": "CONTEXT_NOT_FOUND"}
+            if context.get("existing_positions_seeded"):
+                return {
+                    "context_key": key,
+                    "available": True,
+                    "already_seeded": True,
+                    "started": 0,
+                    "skipped": 0,
+                    "skip_reasons": {},
+                }
+            # Set the one-shot guard before reading; a transient storage error
+            # is surfaced in the result and does not create repeated writes.
+            context["existing_positions_seeded"] = True
+
+        repository = context.get("repository")
+        capture_store = context.get("entry_capture_store")
+        stream = context.get("stream")
+        get_positions = getattr(repository, "get_open_positions", None)
+        if not callable(get_positions):
+            return {"context_key": key, "available": False, "reason": "OPEN_POSITION_LOOKUP_UNAVAILABLE"}
+        try:
+            positions = list(get_positions() or [])
+        except Exception:
+            self._logger.exception(
+                "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted open-position backfill read failed context=%s",
+                key,
+            )
+            return {"context_key": key, "available": False, "reason": "OPEN_POSITION_READ_FAILED"}
+
+        lookup = getattr(capture_store, "get_by_identity", None)
+        get_history = getattr(stream, "get_kline_history", None)
+        started = 0
+        skipped = 0
+        skip_reasons: dict[str, int] = {}
+        for position in positions:
+            position_id = str(_position_value(position, "position_id", "") or "").strip()
+            if not position_id:
+                skipped += 1
+                skip_reasons["POSITION_ID_UNAVAILABLE"] = skip_reasons.get("POSITION_ID_UNAVAILABLE", 0) + 1
+                continue
+
+            watch_key = self._watch_key(key, position_id)
+            with self._lock:
+                if watch_key in self._active:
+                    continue
+
+            metadata = _position_value(position, "entry_metadata", {})
+            metadata = metadata if isinstance(metadata, Mapping) else {}
+            capture_id = str(
+                metadata.get("entry_v2_shadow_capture_id")
+                or metadata.get("entry_v2_capture_id")
+                or ""
+            ).strip()
+            if not capture_id:
+                reason = "ENTRY_V2_CAPTURE_ID_UNAVAILABLE"
+                self._record_decision(context, position, source_capture_id="", reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+
+            if not callable(lookup):
+                reason = "ENTRY_V2_CAPTURE_LOOKUP_UNAVAILABLE"
+                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+            try:
+                capture = lookup(capture_id)
+            except Exception:
+                self._logger.exception(
+                    "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted entry capture lookup failed context=%s position=%s",
+                    key,
+                    position_id,
+                )
+                capture = None
+            if not isinstance(capture, Mapping) or str(capture.get("capture_id") or "").strip() != capture_id:
+                reason = "EXACT_ENTRY_V2_CAPTURE_NOT_FOUND"
+                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+
+            captured_at_ms = self._capture_time_ms(capture)
+            if captured_at_ms is None:
+                reason = "ENTRY_CAPTURE_TIMESTAMP_UNAVAILABLE"
+                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+
+            if not callable(get_history):
+                reason = "VENUE_5M_HISTORY_UNAVAILABLE"
+                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+            try:
+                candles = get_history(str(_position_value(position, "symbol", "") or ""), "5m", 60) or []
+            except Exception:
+                self._logger.exception(
+                    "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted 5m history read failed context=%s position=%s",
+                    key,
+                    position_id,
+                )
+                candles = []
+            open_times = [
+                int(float(row.get("open_time")))
+                for row in candles
+                if isinstance(row, Mapping) and row.get("open_time") is not None
+            ]
+            entry_bar_open = captured_at_ms // (5 * 60 * 1000) * (5 * 60 * 1000)
+            if not open_times:
+                reason = "VENUE_5M_HISTORY_NOT_READY"
+            elif min(open_times) > entry_bar_open:
+                reason = "HISTORICAL_5M_BUFFER_DOES_NOT_COVER_ENTRY"
+            else:
+                reason = ""
+            if reason:
+                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
+                skipped += 1
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+
+            if self.register_start(
+                key,
+                position,
+                capture,
+                use_captured_atr_stop=True,
+            ):
+                started += 1
+            else:
+                skipped += 1
+                reason = "ENTRY_CAPTURE_OR_STOP_CONTEXT_UNMEASURABLE"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+        result = {
+            "context_key": key,
+            "available": True,
+            "existing_open_positions_seen": len(positions),
+            "started": started,
+            "skipped": skipped,
+            "skip_reasons": skip_reasons,
+        }
+        self._logger.info(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] existing_positions_seeded context=%s summary=%s",
+            key,
+            result,
+        )
+        return result
 
     def _actual_paper_outcome(self, context: Mapping[str, Any], position_id: str) -> dict[str, Any] | None:
         repository = context.get("repository")
