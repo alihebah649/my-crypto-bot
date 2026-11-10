@@ -36,6 +36,11 @@ class FakeRepository:
             return None
         return self.position
 
+    def get_open_positions(self):
+        if self.position.get("status") in {"OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"}:
+            return [self.position]
+        return []
+
 
 class FakeStream:
     def __init__(self, candles):
@@ -45,6 +50,17 @@ class FakeStream:
     def get_kline_history(self, symbol, interval, limit):
         self.calls.append((symbol, interval, limit))
         return list(self.candles)
+
+
+class FakeCaptureStore:
+    def __init__(self, records=None):
+        self.records = dict(records or {})
+        self.last_error = None
+
+    def get_by_identity(self, identity):
+        self.last_error = None
+        row = self.records.get(identity)
+        return dict(row) if row is not None else None
 
 
 class FakeRuntime:
@@ -251,3 +267,92 @@ def test_unmeasurable_capture_creates_decision_and_no_active_watch():
     assert decision["record_type"] == "DECISION"
     assert decision["reason"] == "STRUCTURAL_STOP_CANDIDATE_UNAVAILABLE"
     assert coordinator.snapshot()["active_positions"] == 0
+
+
+def test_existing_open_position_is_seeded_only_with_exact_capture_and_entry_bar_coverage():
+    coordinator = PaperStructuralStopComparisonCoordinator()
+    opened = position("BYBIT-BACKFILL", "BYBIT")
+    capture_row = capture("capture-bybit", "BYBIT")
+    entry_bar_open = first_bar_open() - 300000
+    stream = FakeStream([
+        bar(entry_bar_open, high=101.0, low=99.0, close=100.0),
+        bar(first_bar_open(), high=101.2, low=99.2, close=100.5),
+    ])
+    store = FakeStore()
+    coordinator.add_context(
+        context_key="BYBIT",
+        venue="BYBIT",
+        venue_mode="BYBIT_HOSTED_PAPER_LAB",
+        repository=FakeRepository(opened),
+        stream=stream,
+        runtime=FakeRuntime(),
+        evidence_store=store,
+        entry_capture_store=FakeCaptureStore({capture_row["capture_id"]: capture_row}),
+    )
+
+    seeded = coordinator.seed_existing_open_positions("BYBIT")
+
+    assert seeded["existing_open_positions_seen"] == 1
+    assert seeded["started"] == 1
+    assert seeded["skipped"] == 0
+    start = store.rows["BYBIT-BACKFILL:START"]
+    assert start["source_capture_id"] == "capture-bybit"
+    assert start["atr_stop_source"] == "ENTRY_V2_CAPTURE_ATR_STOP"
+    assert start["venue"] == "BYBIT"
+
+    coordinator.advance()
+    assert store.rows["BYBIT-BACKFILL:START"]["bars_observed"] == 1
+
+
+def test_existing_open_position_is_skipped_when_5m_history_does_not_cover_entry():
+    coordinator = PaperStructuralStopComparisonCoordinator()
+    opened = position("BYBIT-OLD", "BYBIT")
+    capture_row = capture("capture-bybit", "BYBIT")
+    stream = FakeStream([
+        bar(first_bar_open() + 300000, high=101.0, low=99.0, close=100.0)
+    ])
+    store = FakeStore()
+    coordinator.add_context(
+        context_key="BYBIT",
+        venue="BYBIT",
+        venue_mode="BYBIT_HOSTED_PAPER_LAB",
+        repository=FakeRepository(opened),
+        stream=stream,
+        runtime=FakeRuntime(),
+        evidence_store=store,
+        entry_capture_store=FakeCaptureStore({capture_row["capture_id"]: capture_row}),
+    )
+
+    seeded = coordinator.seed_existing_open_positions("BYBIT")
+
+    assert seeded["started"] == 0
+    assert seeded["skipped"] == 1
+    assert seeded["skip_reasons"]["HISTORICAL_5M_BUFFER_DOES_NOT_COVER_ENTRY"] == 1
+    decision = store.rows["BYBIT-OLD:DECISION"]
+    assert decision["reason"] == "HISTORICAL_5M_BUFFER_DOES_NOT_COVER_ENTRY"
+    assert coordinator.snapshot()["active_positions"] == 0
+
+
+def test_existing_open_position_is_skipped_when_exact_entry_capture_is_missing():
+    coordinator = PaperStructuralStopComparisonCoordinator()
+    opened = position("OKX-NO-CAPTURE", "OKX")
+    store = FakeStore()
+    coordinator.add_context(
+        context_key="OKX",
+        venue="OKX",
+        venue_mode="OKX_HOSTED_PAPER_LAB",
+        repository=FakeRepository(opened),
+        stream=FakeStream([]),
+        runtime=FakeRuntime(),
+        evidence_store=store,
+        entry_capture_store=FakeCaptureStore(),
+    )
+
+    seeded = coordinator.seed_existing_open_positions("OKX")
+
+    assert seeded["started"] == 0
+    assert seeded["skipped"] == 1
+    assert seeded["skip_reasons"]["EXACT_ENTRY_V2_CAPTURE_NOT_FOUND"] == 1
+    decision = store.rows["OKX-NO-CAPTURE:DECISION"]
+    assert decision["source_capture_id"] == "capture-okx"
+    assert decision["reason"] == "EXACT_ENTRY_V2_CAPTURE_NOT_FOUND"
