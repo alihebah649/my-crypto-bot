@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from core.paper_structural_stop_comparison import (
     advance_structural_stop_comparison,
+    build_structural_stop_comparison_decision,
     build_structural_stop_comparison_report,
     build_structural_stop_comparison_watch,
 )
@@ -84,6 +85,37 @@ def test_watch_freezes_both_entry_time_stops_and_reanchors_to_paper_fill():
     assert watch["path_source"] == "BINANCE_CLOSED_5M_CANDLES"
     assert watch["mode"] == "PAPER_ONLY"
     assert watch["trading_logic_changed"] is False
+
+
+
+def test_uses_actual_initial_paper_stop_when_present():
+    position = _position()
+    position["stop_loss"] = 98.25
+
+    watch = build_structural_stop_comparison_watch(
+        _capture(), position, fee_rate=0.001, venue="BINANCE", venue_mode="MIXED"
+    )
+
+    assert watch["atr_path"]["stop_price"] == 98.25
+    assert watch["atr_stop_source"] == "PAPER_POSITION_INITIAL_STOP"
+    assert watch["captured_atr_stop_price"] == 98.0
+
+
+def test_unmeasurable_position_decision_is_explicit_and_paper_only():
+    decision = build_structural_stop_comparison_decision(
+        _position(),
+        source_capture_id="entry-capture-structural-1",
+        venue="BYBIT",
+        venue_mode="BYBIT_ONLY_LAB",
+        reason="STRUCTURAL_STOP_CANDIDATE_UNAVAILABLE",
+    )
+
+    assert decision["record_type"] == "DECISION"
+    assert decision["position_id"] == "POS-structural-1"
+    assert decision["reason"] == "STRUCTURAL_STOP_CANDIDATE_UNAVAILABLE"
+    assert decision["mode"] == "PAPER_ONLY"
+    assert decision["capture_id"] == "POS-structural-1:DECISION"
+
 
 
 def test_same_closed_candles_compare_atr_stop_hit_against_structural_target_hit():
