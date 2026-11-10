@@ -156,6 +156,7 @@ def build_structural_stop_comparison_watch(
         "trial_name": TRIAL_NAME,
         "record_type": "START",
         "record_id": f"{position_id}:START",
+        "capture_id": f"{position_id}:START",
         "position_id": position_id,
         "source_capture_id": capture_id,
         "symbol": symbol,
@@ -202,6 +203,39 @@ def build_structural_stop_comparison_watch(
             "No order fills, spread, slippage, queue position, or actual execution are simulated. "
             "The ATR path uses the entry-time 2x-ATR stop, not later Trade Manager stop changes."
         ),
+        "trading_logic_changed": False,
+    }
+
+
+
+def build_structural_stop_comparison_decision(
+    position: Any,
+    *,
+    source_capture_id: str,
+    venue: str,
+    venue_mode: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Persist a bounded reason when a real Paper position cannot be paired."""
+    position_id = str(_value(position, "position_id", "") or "").strip()
+    metadata = _value(position, "entry_metadata", {})
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    return {
+        "schema_version": 1,
+        "trial_name": TRIAL_NAME,
+        "record_type": "DECISION",
+        "record_id": f"{position_id}:DECISION",
+        "capture_id": f"{position_id}:DECISION",
+        "position_id": position_id,
+        "source_capture_id": str(source_capture_id or ""),
+        "symbol": str(_value(position, "symbol", "") or "").upper(),
+        "venue": str(venue or "UNKNOWN").upper(),
+        "venue_mode": str(venue_mode or "UNKNOWN").upper(),
+        "trade_mode": str(metadata.get("trade_mode") or _value(position, "trade_mode", "UNKNOWN")).upper(),
+        "mode": "PAPER_ONLY",
+        "status": "UNMEASURABLE_CONTEXT",
+        "reason": str(reason or "UNKNOWN"),
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
         "trading_logic_changed": False,
     }
 
@@ -429,12 +463,15 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
 
     starts: dict[str, dict[str, Any]] = {}
     finals: dict[str, dict[str, Any]] = {}
+    decisions: dict[str, dict[str, Any]] = {}
     for row in source:
         position_id = str(row.get("position_id") or "")
         if row.get("record_type") == "START":
             starts[position_id] = row
         elif row.get("record_type") == "FINAL":
             finals[position_id] = row
+        elif row.get("record_type") == "DECISION":
+            decisions[position_id] = row
 
     rows = list(finals.values())
     paired: list[float] = []
@@ -493,6 +530,8 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
             "positions_completed": len(finals),
             "positions_active": len(active),
             "positions_without_final_record": len(open_ids),
+            "positions_skipped_unmeasurable": len(decisions),
+            "skip_reasons": dict(Counter(str(row.get("reason") or "UNKNOWN") for row in decisions.values())),
         },
         "comparison": {
             "paired_decisive_positions": len(paired),
@@ -542,6 +581,7 @@ __all__ = [
     "INTERVAL_MS",
     "TRIAL_NAME",
     "advance_structural_stop_comparison",
+    "build_structural_stop_comparison_decision",
     "build_structural_stop_comparison_report",
     "build_structural_stop_comparison_watch",
 ]
