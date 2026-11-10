@@ -2032,7 +2032,7 @@ def _restore_structural_stop_comparison_watches() -> None:
             if (
                 not position_id
                 or position_id in final_ids
-                or str(row.get("status") or "").upper() != "OBSERVING"
+                or str(row.get("status") or "").upper() not in {"OBSERVING", "COMPLETE"}
             ):
                 continue
             restored[position_id] = dict(row)
@@ -2211,7 +2211,7 @@ def _structural_stop_actual_paper_outcome(position_id: str) -> dict[str, Any] | 
         return None
     status = str(getattr(getattr(position, "status", ""), "name", getattr(position, "status", ""))).upper()
     if status != "CLOSED":
-        return None
+        return {"status": status or "UNKNOWN"}
     exit_metadata = getattr(position, "exit_metadata", None)
     exit_metadata = exit_metadata if isinstance(exit_metadata, dict) else {}
     return {
@@ -2261,10 +2261,19 @@ def _advance_structural_stop_comparison_watches() -> None:
             updated["actual_paper_outcome"] = actual_outcome
             state_changed = True
 
-        if str(updated.get("status") or "").upper() == "OBSERVING":
-            # Checkpoint only when a new closed candle (or a newly closed real
-            # Paper position) changes the comparison. This updates the START
-            # snapshot in place; FINAL remains a separate append-only event.
+        # A path pair may finish before the real Paper position closes. Keep
+        # its completed counterfactual snapshot checkpointed until the actual
+        # position outcome is available, then include both in one FINAL event.
+        actual_status = (
+            str(actual_outcome.get("status") or "").upper()
+            if isinstance(actual_outcome, dict) else "NOT_FOUND"
+        )
+        actual_still_open = actual_status in {
+            "OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"
+        }
+        if str(updated.get("status") or "").upper() == "OBSERVING" or actual_still_open:
+            # Checkpoint only when a new closed candle (or a real Paper state
+            # transition) changes the comparison. START is upserted in-place.
             if state_changed:
                 try:
                     persisted = store.upsert(updated)
