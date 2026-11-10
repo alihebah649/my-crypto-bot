@@ -55,6 +55,7 @@ from core.paper_precalibration_shadow import (
     build_precalibration_decision_record,
     build_precalibration_shadow_report,
     candidate_identity as _precalibration_candidate_identity,
+    entry_risk_snapshot as _precalibration_entry_risk_snapshot,
 )
 from core.postgres_evidence_store import PostgresEvidenceStore, database_url_from_env
 from core.paper_engine_health import snapshot as _paper_engine_health_snapshot
@@ -401,6 +402,10 @@ def _record_precalibration_shadow_candidates() -> None:
                 raise RuntimeError("ENTRY_V2_COUNTERFACTUAL_CAPTURE_UNAVAILABLE")
 
             capture_dict = capture.to_dict()
+            # Extract the candidate's Entry v2 risk snapshot before preflight
+            # reads its stop; this path is diagnostic-only and cannot change
+            # the live execution risk or position lifecycle.
+            risk = _precalibration_entry_risk_snapshot(capture_dict)
             entry_v2_summary = _entry_v2_capture_summary(capture)
             active_modes = _active_trade_modes(normalized)
             existing_position = "SCALP" in active_modes
@@ -466,7 +471,6 @@ def _record_precalibration_shadow_candidates() -> None:
                     ),
                 ).to_dict()
 
-            risk = capture_dict.get("entry_scenario", {}).get("risk", {})
             target_price = risk.get("target_price")
             target_status = str(risk.get("target_status") or "UNKNOWN").upper()
             reward_risk = risk.get("reward_risk")
