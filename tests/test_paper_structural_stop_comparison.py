@@ -172,6 +172,30 @@ def test_entry_candle_and_open_candles_are_never_used():
     assert updated["status"] == "OBSERVING"
 
 
+
+def test_rest_seeded_candle_without_close_flag_is_skipped_until_close_time():
+    watch = build_structural_stop_comparison_watch(
+        _capture(), _position(), fee_rate=0.001, venue="BYBIT", venue_mode="BYBIT_ONLY_LAB"
+    )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    current_open = (now_ms // 300000 + 1) * 300000
+    unclosed = _bar(
+        current_open,
+        high=110.0,
+        low=90.0,
+        close=100.0,
+    )
+    unclosed.pop("is_closed")
+    unclosed["close_time"] = current_open + 299999
+
+    updated, changed = advance_structural_stop_comparison(watch, [unclosed])
+
+    assert changed is False
+    assert updated["bars_observed"] == 0
+    assert updated["status"] == "OBSERVING"
+
+
+
 def test_data_gap_is_incomplete_and_never_counted_as_a_loss():
     watch = build_structural_stop_comparison_watch(
         _capture(), _position(), fee_rate=0.001, venue="BINANCE", venue_mode="MIXED"
