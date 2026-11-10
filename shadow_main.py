@@ -2247,7 +2247,7 @@ def _advance_structural_stop_comparison_watches() -> None:
                 continue
             try:
                 candles = get_history(str(updated.get("symbol") or ""), "5m", 60) or []
-                updated, _changed = advance_structural_stop_comparison(previous, candles)
+                updated, state_changed = advance_structural_stop_comparison(previous, candles)
             except Exception:
                 _legacy.logger.exception(
                     "[PAPER-STRUCTURAL-STOP-COMPARISON] path update failed position_id=%s",
@@ -2256,10 +2256,26 @@ def _advance_structural_stop_comparison_watches() -> None:
                 continue
 
         actual_outcome = _structural_stop_actual_paper_outcome(position_id)
-        if actual_outcome is not None:
+        if actual_outcome is not None and updated.get("actual_paper_outcome") != actual_outcome:
             updated["actual_paper_outcome"] = actual_outcome
+            state_changed = True
+        else:
+            state_changed = bool(locals().get("state_changed", False))
 
         if str(updated.get("status") or "").upper() == "OBSERVING":
+            # Checkpoint only when a new closed candle (or a newly closed real
+            # Paper position) changes the comparison. This updates the START
+            # snapshot in place; FINAL remains a separate append-only event.
+            if state_changed:
+                try:
+                    persisted = store.upsert(updated)
+                    if not persisted and getattr(store, "last_error", None):
+                        raise RuntimeError("STRUCTURAL_STOP_COMPARISON_CHECKPOINT_FAILED")
+                except Exception:
+                    _legacy.logger.exception(
+                        "[PAPER-STRUCTURAL-STOP-COMPARISON] checkpoint failed position_id=%s",
+                        position_id,
+                    )
             with _paper_structural_stop_comparison_lock:
                 current = _paper_structural_stop_comparison_active.get(position_id)
                 if current is not None:
