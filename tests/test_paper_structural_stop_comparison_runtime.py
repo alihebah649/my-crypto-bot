@@ -53,11 +53,16 @@ class FakeStream:
 
 
 class FakeCaptureStore:
-    def __init__(self, records=None):
+    def __init__(self, records=None, *, fail_once=False):
         self.records = dict(records or {})
         self.last_error = None
+        self.fail_once = fail_once
 
     def get_by_identity(self, identity):
+        if self.fail_once:
+            self.fail_once = False
+            self.last_error = "ConnectionError: temporary database interruption"
+            return None
         self.last_error = None
         row = self.records.get(identity)
         return dict(row) if row is not None else None
@@ -356,3 +361,38 @@ def test_existing_open_position_is_skipped_when_exact_entry_capture_is_missing()
     decision = store.rows["OKX-NO-CAPTURE:DECISION"]
     assert decision["source_capture_id"] == "capture-okx"
     assert decision["reason"] == "EXACT_ENTRY_V2_CAPTURE_NOT_FOUND"
+
+
+def test_existing_position_backfill_retries_temporary_capture_store_failure():
+    coordinator = PaperStructuralStopComparisonCoordinator()
+    opened = position("BYBIT-RETRY", "BYBIT")
+    capture_row = capture("capture-bybit", "BYBIT")
+    store = FakeStore()
+    capture_store = FakeCaptureStore(
+        {capture_row["capture_id"]: capture_row},
+        fail_once=True,
+    )
+    stream = FakeStream([
+        bar(first_bar_open() - 300000, high=101.0, low=99.0, close=100.0),
+        bar(first_bar_open(), high=101.2, low=99.2, close=100.5),
+    ])
+    coordinator.add_context(
+        context_key="BYBIT",
+        venue="BYBIT",
+        venue_mode="BYBIT_HOSTED_PAPER_LAB",
+        repository=FakeRepository(opened),
+        stream=stream,
+        runtime=FakeRuntime(),
+        evidence_store=store,
+        entry_capture_store=capture_store,
+    )
+
+    first_attempt = coordinator.seed_existing_open_positions("BYBIT")
+    assert first_attempt["retry_required"] is True
+    assert first_attempt["skipped"] == 0
+    assert "BYBIT-RETRY:DECISION" not in store.rows
+
+    second_attempt = coordinator.seed_existing_open_positions("BYBIT")
+    assert second_attempt["retry_required"] is False
+    assert second_attempt["started"] == 1
+    assert "BYBIT-RETRY:START" in store.rows
