@@ -80,6 +80,9 @@ from core.paper_structural_stop_comparison import (
     build_structural_stop_comparison_report,
     build_structural_stop_comparison_watch,
 )
+from core.paper_structural_stop_comparison_runtime import (
+    PaperStructuralStopComparisonCoordinator,
+)
 from engine.entry_v2_capture import capture_summary as _entry_v2_capture_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -2000,6 +2003,69 @@ _paper_structural_stop_comparison_store = (
 _paper_structural_stop_comparison_lock = threading.RLock()
 _paper_structural_stop_comparison_active: dict[str, dict[str, Any]] = {}
 _paper_structural_stop_comparison_missing_stream_warned: set[str] = set()
+_hosted_paper_structural_stop_coordinator = PaperStructuralStopComparisonCoordinator(
+    logger=_legacy.logger
+)
+
+
+def _attach_hosted_paper_structural_stop_comparison(runner: Any) -> None:
+    """Attach separate stop monitors to each hosted venue's own Paper account."""
+    if runner is None or not getattr(runner, "enabled", False) or getattr(runner, "monitor_only", True):
+        return
+    for venue, lab in getattr(runner, "labs", {}).items():
+        venue_name = str(venue or "").upper()
+        context_key = f"HOSTED_{venue_name}"
+        store = PostgresEvidenceStore(
+            _evidence_database_url,
+            evidence_type=f"PAPER_STRUCTURAL_STOP_COMPARISON_{venue_name}_HOSTED_LAB",
+            max_records=20_000,
+        )
+        _hosted_paper_structural_stop_coordinator.add_context(
+            context_key=context_key,
+            venue=venue_name,
+            venue_mode=f"{venue_name}_HOSTED_PAPER_LAB",
+            repository=lab.repository,
+            stream=lab.stream,
+            runtime=lab.runtime,
+            evidence_store=store,
+            restore=True,
+        )
+
+        original_persist = lab._persist_candidate_capture
+
+        def _persist_candidate_capture_with_stop_shadow(
+            capture,
+            *,
+            _original=original_persist,
+            _lab=lab,
+            _context_key=context_key,
+            **kwargs,
+        ):
+            result = _original(capture, **kwargs)
+            if str(kwargs.get("decision") or "").upper() == "PAPER_POSITION_OPENED":
+                position_id = str(kwargs.get("position_id") or "").strip()
+                getter = getattr(_lab.repository, "get", None)
+                position = getter(position_id) if position_id and callable(getter) else None
+                if position is not None:
+                    try:
+                        _hosted_paper_structural_stop_coordinator.register_start(
+                            _context_key,
+                            position,
+                            capture.to_dict(),
+                        )
+                    except Exception:
+                        _legacy.logger.exception(
+                            "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted START observer failed venue=%s position_id=%s",
+                            _lab.venue,
+                            position_id,
+                        )
+            return result
+
+        lab._persist_candidate_capture = _persist_candidate_capture_with_stop_shadow
+        _legacy.logger.info(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted context attached venue=%s entries_enabled=True",
+            venue_name,
+        )
 
 
 def _structural_stop_comparison_stream(venue_mode: str | None = None):
@@ -2567,6 +2633,10 @@ def _process_market_cycle_with_overlays():
         _advance_structural_stop_comparison_watches()
     except Exception:
         _legacy.logger.exception("Structural-stop Paper comparison tracker failed")
+    try:
+        _hosted_paper_structural_stop_coordinator.advance()
+    except Exception:
+        _legacy.logger.exception("Hosted venue structural-stop comparison tracker failed")
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
@@ -2674,6 +2744,7 @@ if _hosted_labs_enabled:
                 telegram_notifier=_legacy.send_telegram_message,
             )
             if _hosted_paper_lab_runner is not None and _hosted_paper_lab_runner.enabled:
+                _attach_hosted_paper_structural_stop_comparison(_hosted_paper_lab_runner)
                 _hosted_paper_lab_runner.start()
         except Exception:
             _legacy.logger.exception(
@@ -2699,6 +2770,7 @@ def _hosted_paper_labs_health():
     payload = runner.snapshot()
     payload["mode"] = "MONITOR_ONLY" if runner.monitor_only else "PAPER_ONLY"
     payload["entries_enabled"] = not runner.monitor_only
+    payload["structural_stop_comparison"] = _hosted_paper_structural_stop_coordinator.snapshot()
     return jsonify(payload), 200
 
 
@@ -3100,9 +3172,11 @@ def _paper_structural_stop_comparison_report():
                 "venue_mode": venue_mode,
                 "reason": "STRUCTURAL_STOP_COMPARISON_READ_FAILED",
             }), 503
+        records.extend(_hosted_paper_structural_stop_coordinator.read_all_records())
         payload = build_structural_stop_comparison_report(records)
         payload["current_service_venue_mode"] = venue_mode
         payload["current_service_venue"] = _structural_stop_comparison_stream()[0]
+        payload["hosted_lab_monitor"] = _hosted_paper_structural_stop_coordinator.snapshot()
         return jsonify(payload), 200
     except Exception as exc:
         _legacy.logger.exception("Structural-stop comparison report failed")
