@@ -212,7 +212,7 @@ def build_structural_stop_comparison_watch(
             "Paired price-path counterfactual only. Both paths share the actual Paper entry, "
             "the same captured target, the same fee assumption, and the same closed 5m candles. "
             "No order fills, spread, slippage, queue position, or actual execution are simulated. "
-            "The ATR path uses the entry-time 2x-ATR stop, not later Trade Manager stop changes."
+            "The ATR path uses the actual initial Paper position stop when available (normally the 2x-ATR baseline), otherwise the captured ATR stop; later Trade Manager stop changes are not replayed."
         ),
         "trading_logic_changed": False,
     }
@@ -531,6 +531,19 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
         if str(starts[position_id].get("status") or "").upper() == "OBSERVING"
     ]
 
+    actual_closed = [
+        row["actual_paper_outcome"]
+        for row in rows
+        if isinstance(row.get("actual_paper_outcome"), Mapping)
+        and str(row["actual_paper_outcome"].get("status") or "").upper() == "CLOSED"
+    ]
+    actual_pnls = [
+        value for row in actual_closed
+        if (value := _number(row.get("realized_pnl"))) is not None
+    ]
+    actual_wins = sum(1 for value in actual_pnls if value > 0)
+    actual_losses = sum(1 for value in actual_pnls if value < 0)
+
     return {
         "available": True,
         "mode": "PAPER_ONLY",
@@ -558,6 +571,20 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
             "atr": _path_metrics(rows, "atr_path"),
             "structural": _path_metrics(rows, "structural_path"),
         },
+        "actual_paper_outcomes": {
+            "closed_positions_with_outcome_snapshot": len(actual_closed),
+            "wins": actual_wins,
+            "losses": actual_losses,
+            "sum_reported_realized_pnl": round(sum(actual_pnls), 8) if actual_pnls else None,
+            "sum_reported_fees": round(sum(
+                _number(row.get("total_fees")) or 0.0 for row in actual_closed
+            ), 8) if actual_closed else None,
+            "close_reasons": dict(Counter(
+                str(row.get("exit_reason") or "UNKNOWN")
+                for row in actual_closed
+            )),
+            "note": "Actual Paper realized PnL is reported as stored by the Paper repository; it is not recomputed or fee-adjusted again.",
+        },
         "by_venue_mode_trade_mode": by_venue_mode,
         "active_positions": [
             {
@@ -580,6 +607,7 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
             "ambiguity": "A stop and shared target touched in the same 5m candle is marked AMBIGUOUS_SAME_CANDLE and excluded from decisive comparisons.",
             "data_gaps": "Missing 5m candles are marked DATA_GAP and excluded; they are never counted as losses.",
             "fees": "Both paths deduct the same estimated round-trip entry and exit fee. Spread and slippage are not simulated.",
+            "aggregation": "Net return summaries and profit factor are equal-weighted percentage-return comparisons, not account-currency PnL. Actual Paper PnL is shown separately when a closed-position snapshot is available.",
             "authority": "The Paper position continues using its existing ATR/Trade Manager/Exit authority. Neither hypothetical path changes the position or submits orders.",
             "trading_logic_changed": False,
         },
