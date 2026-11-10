@@ -147,7 +147,7 @@ def test_same_bar_stop_and_target_is_ambiguous_for_that_path():
     )
     updated, _ = advance_structural_stop_comparison(
         watch,
-        [_bar(_next_bar_open(), high=104.5, low=97.5, close=100.0)],
+        [_bar(_next_bar_open(), high=104.5, low=96.5, close=100.0)],
     )
 
     assert updated["atr_path"]["status"] == "AMBIGUOUS_SAME_CANDLE"
