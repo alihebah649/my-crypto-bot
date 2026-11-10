@@ -2232,6 +2232,7 @@ def _advance_structural_stop_comparison_watches() -> None:
 
     for position_id, previous in watches:
         updated = dict(previous)
+        state_changed = False
         if str(updated.get("status") or "").upper() == "OBSERVING":
             venue_mode = str(updated.get("venue_mode") or PAPER_VENUE_MODE)
             venue, stream, _report_mode = _structural_stop_comparison_stream(venue_mode)
@@ -2259,8 +2260,6 @@ def _advance_structural_stop_comparison_watches() -> None:
         if actual_outcome is not None and updated.get("actual_paper_outcome") != actual_outcome:
             updated["actual_paper_outcome"] = actual_outcome
             state_changed = True
-        else:
-            state_changed = bool(locals().get("state_changed", False))
 
         if str(updated.get("status") or "").upper() == "OBSERVING":
             # Checkpoint only when a new closed candle (or a newly closed real
