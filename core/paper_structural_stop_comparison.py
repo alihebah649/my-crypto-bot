@@ -528,7 +528,15 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
     open_ids = set(starts) - set(finals)
     active = [
         starts[position_id] for position_id in sorted(open_ids)
-        if str(starts[position_id].get("status") or "").upper() == "OBSERVING"
+        if str(starts[position_id].get("status") or "").upper() in {"OBSERVING", "COMPLETE"}
+    ]
+    waiting_for_actual_close = [
+        row for row in active
+        if str(row.get("status") or "").upper() == "COMPLETE"
+        and not (
+            isinstance(row.get("actual_paper_outcome"), Mapping)
+            and str(row["actual_paper_outcome"].get("status") or "").upper() == "CLOSED"
+        )
     ]
 
     actual_closed = [
@@ -553,6 +561,7 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
             "unique_positions_started": len(starts),
             "positions_completed": len(finals),
             "positions_active": len(active),
+            "shadow_paths_complete_waiting_for_actual_close": len(waiting_for_actual_close),
             "positions_without_final_record": len(open_ids),
             "positions_skipped_unmeasurable": len(decisions),
             "skip_reasons": dict(Counter(str(row.get("reason") or "UNKNOWN") for row in decisions.values())),
@@ -598,6 +607,7 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
                 "structural_comparison": row.get("structural_comparison"),
                 "atr_status": (row.get("atr_path") or {}).get("status"),
                 "structural_status": (row.get("structural_path") or {}).get("status"),
+                "actual_paper_status": (row.get("actual_paper_outcome") or {}).get("status"),
             }
             for row in active[-100:]
         ],
