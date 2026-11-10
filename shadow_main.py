@@ -2292,9 +2292,6 @@ def _advance_structural_stop_comparison_watches() -> None:
             )
 
 
-def _paper_stop_fill_wrapper
-
-
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
     protected_reasons = {PositionExitReason.STOP_LOSS, PositionExitReason.BREAK_EVEN}
     if decision.reason not in protected_reasons:
