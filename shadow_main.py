@@ -73,6 +73,13 @@ from core.paper_blocked_entry_shadow import (
     advance_blocked_entry_watch,
     build_blocked_entry_watch,
 )
+from core.paper_structural_stop_comparison import (
+    TRIAL_NAME as _PAPER_STRUCTURAL_STOP_COMPARISON_TRIAL_NAME,
+    advance_structural_stop_comparison,
+    build_structural_stop_comparison_decision,
+    build_structural_stop_comparison_report,
+    build_structural_stop_comparison_watch,
+)
 from engine.entry_v2_capture import capture_summary as _entry_v2_capture_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -1969,6 +1976,346 @@ _entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
 )
 
 
+# Paired, non-authoritative comparison of the entry-time ATR and structural
+# stops. Each isolated Render Paper service uses only its own venue stream.
+_PAPER_STRUCTURAL_STOP_COMPARISON_VENUES = {
+    "MIXED": ("BINANCE", "_binance_market_stream", "MAIN"),
+    "BINANCE_ONLY_LAB": ("BINANCE", "_binance_market_stream", "BINANCE_ONLY_LAB"),
+    "BYBIT_ONLY_LAB": ("BYBIT", "_bybit_market_stream", "BYBIT_ONLY_LAB"),
+    "OKX_ONLY_LAB": ("OKX", "_okx_market_stream", "OKX_ONLY_LAB"),
+}
+_PAPER_STRUCTURAL_STOP_COMPARISON_ENABLED = bool(
+    _evidence_database_url
+    and PAPER_VENUE_MODE in _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES
+)
+_paper_structural_stop_comparison_store = (
+    PostgresEvidenceStore(
+        _evidence_database_url,
+        evidence_type=f"PAPER_STRUCTURAL_STOP_COMPARISON{_EVIDENCE_NAMESPACE}",
+        max_records=20_000,
+    )
+    if _PAPER_STRUCTURAL_STOP_COMPARISON_ENABLED
+    else None
+)
+_paper_structural_stop_comparison_lock = threading.RLock()
+_paper_structural_stop_comparison_active: dict[str, dict[str, Any]] = {}
+_paper_structural_stop_comparison_missing_stream_warned: set[str] = set()
+
+
+def _structural_stop_comparison_stream(venue_mode: str | None = None):
+    mode = str(venue_mode or PAPER_VENUE_MODE or "UNKNOWN").upper()
+    spec = _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES.get(mode)
+    if spec is None:
+        return "UNKNOWN", None, mode
+    venue, stream_name, report_mode = spec
+    return venue, globals().get(stream_name), report_mode
+
+
+def _restore_structural_stop_comparison_watches() -> None:
+    store = _paper_structural_stop_comparison_store
+    if store is None:
+        return
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            raise RuntimeError("STRUCTURAL_STOP_COMPARISON_RESTORE_READ_FAILED")
+        final_ids = {
+            str(row.get("position_id") or "").strip()
+            for row in records
+            if isinstance(row, dict) and row.get("record_type") == "FINAL"
+        }
+        restored: dict[str, dict[str, Any]] = {}
+        for row in records:
+            if not isinstance(row, dict) or row.get("record_type") != "START":
+                continue
+            position_id = str(row.get("position_id") or "").strip()
+            if (
+                not position_id
+                or position_id in final_ids
+                or str(row.get("status") or "").upper() not in {"OBSERVING", "COMPLETE"}
+            ):
+                continue
+            restored[position_id] = dict(row)
+        with _paper_structural_stop_comparison_lock:
+            _paper_structural_stop_comparison_active.update(restored)
+        _legacy.logger.info(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] RESTORED active_positions=%d venue_mode=%s",
+            len(restored),
+            PAPER_VENUE_MODE,
+        )
+    except Exception:
+        _legacy.logger.exception(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] restore failed; no missing price path will be inferred"
+        )
+
+
+_restore_structural_stop_comparison_watches()
+
+
+def _record_structural_stop_comparison_decision(
+    position: Any,
+    *,
+    source_capture_id: str,
+    venue: str,
+    venue_mode: str,
+    reason: str,
+) -> None:
+    store = _paper_structural_stop_comparison_store
+    if store is None:
+        return
+    position_id = str(getattr(position, "position_id", "") or "").strip()
+    if not position_id:
+        return
+    decision = build_structural_stop_comparison_decision(
+        position,
+        source_capture_id=source_capture_id,
+        venue=venue,
+        venue_mode=venue_mode,
+        reason=reason,
+    )
+    inserted = store.append(decision)
+    if not inserted and getattr(store, "last_error", None):
+        raise RuntimeError("STRUCTURAL_STOP_COMPARISON_DECISION_PERSIST_FAILED")
+    if inserted:
+        _legacy.logger.info(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] DECISION %s",
+            json.dumps(decision, ensure_ascii=False, separators=(",", ":")),
+        )
+
+
+def _record_structural_stop_comparison_start(position: Any) -> None:
+    store = _paper_structural_stop_comparison_store
+    if store is None:
+        return
+    position_id = str(getattr(position, "position_id", "") or "").strip()
+    if not position_id:
+        return
+    with _paper_structural_stop_comparison_lock:
+        if position_id in _paper_structural_stop_comparison_active:
+            return
+
+    metadata = getattr(position, "entry_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    capture_id = str(metadata.get("entry_v2_shadow_capture_id") or "").strip()
+    venue, _stream, report_mode = _structural_stop_comparison_stream()
+    if not capture_id:
+        _record_structural_stop_comparison_decision(
+            position,
+            source_capture_id="",
+            venue=venue,
+            venue_mode=report_mode,
+            reason="ENTRY_V2_CAPTURE_ID_UNAVAILABLE",
+        )
+        return
+
+    capture_store = getattr(_entry_v2_runtime_capture, "capture_store", None)
+    lookup = getattr(capture_store, "get_by_identity", None)
+    if not callable(lookup):
+        _record_structural_stop_comparison_decision(
+            position,
+            source_capture_id=capture_id,
+            venue=venue,
+            venue_mode=report_mode,
+            reason="ENTRY_V2_CAPTURE_LOOKUP_UNAVAILABLE",
+        )
+        return
+    try:
+        capture = lookup(capture_id)
+    except Exception as exc:
+        _legacy.logger.exception(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] capture lookup failed position_id=%s",
+            position_id,
+        )
+        _record_structural_stop_comparison_decision(
+            position,
+            source_capture_id=capture_id,
+            venue=venue,
+            venue_mode=report_mode,
+            reason=f"ENTRY_V2_CAPTURE_LOOKUP_{type(exc).__name__}",
+        )
+        return
+    if not isinstance(capture, dict) or str(capture.get("capture_id") or "") != capture_id:
+        _record_structural_stop_comparison_decision(
+            position,
+            source_capture_id=capture_id,
+            venue=venue,
+            venue_mode=report_mode,
+            reason="EXACT_ENTRY_V2_CAPTURE_NOT_FOUND",
+        )
+        return
+
+    fee_rate = float(
+        getattr(getattr(runtime, "execution_adapter", None), "fee_rate", 0.001) or 0.001
+    )
+    try:
+        watch = build_structural_stop_comparison_watch(
+            capture,
+            position,
+            fee_rate=fee_rate,
+            venue=venue,
+            venue_mode=report_mode,
+        )
+    except (TypeError, ValueError) as exc:
+        _record_structural_stop_comparison_decision(
+            position,
+            source_capture_id=capture_id,
+            venue=venue,
+            venue_mode=report_mode,
+            reason=str(exc) or type(exc).__name__,
+        )
+        return
+
+    inserted = store.append(watch)
+    if not inserted and getattr(store, "last_error", None):
+        raise RuntimeError("STRUCTURAL_STOP_COMPARISON_START_PERSIST_FAILED")
+    if str(watch.get("status") or "").upper() == "OBSERVING":
+        with _paper_structural_stop_comparison_lock:
+            _paper_structural_stop_comparison_active[position_id] = dict(watch)
+    if inserted:
+        _legacy.logger.info(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] START %s",
+            json.dumps(watch, ensure_ascii=False, separators=(",", ":")),
+        )
+
+
+# This wrapper is installed after EntryV2RuntimeCapture's repository wrapper.
+# Consequently it sees the exact capture identity copied onto the new Paper
+# position. It only observes successful repository inserts.
+_paper_structural_original_repository_add = runtime.repository.add
+
+
+def _paper_repository_add_with_structural_stop_watch(position: Any):
+    result = _paper_structural_original_repository_add(position)
+    try:
+        _record_structural_stop_comparison_start(position)
+    except Exception:
+        _legacy.logger.exception(
+            "[PAPER-STRUCTURAL-STOP-COMPARISON] START observer failed position_id=%s",
+            getattr(position, "position_id", "UNKNOWN"),
+        )
+    return result
+
+
+runtime.repository.add = _paper_repository_add_with_structural_stop_watch
+
+
+def _structural_stop_actual_paper_outcome(position_id: str) -> dict[str, Any] | None:
+    getter = getattr(runtime.repository, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        position = getter(position_id)
+    except Exception:
+        return None
+    if position is None:
+        return None
+    status = str(getattr(getattr(position, "status", ""), "name", getattr(position, "status", ""))).upper()
+    if status != "CLOSED":
+        return {"status": status or "UNKNOWN"}
+    exit_metadata = getattr(position, "exit_metadata", None)
+    exit_metadata = exit_metadata if isinstance(exit_metadata, dict) else {}
+    return {
+        "status": status,
+        "realized_pnl": float(getattr(position, "realized_pnl", 0.0) or 0.0),
+        "total_fees": float(getattr(position, "total_fees", 0.0) or 0.0),
+        "exit_price": exit_metadata.get("exit_price", getattr(position, "current_price", None)),
+        "exit_reason": exit_metadata.get("exit_reason") or exit_metadata.get("reason") or "",
+    }
+
+
+def _advance_structural_stop_comparison_watches() -> None:
+    store = _paper_structural_stop_comparison_store
+    if store is None:
+        return
+    with _paper_structural_stop_comparison_lock:
+        watches = list(_paper_structural_stop_comparison_active.items())
+
+    for position_id, previous in watches:
+        updated = dict(previous)
+        state_changed = False
+        if str(updated.get("status") or "").upper() == "OBSERVING":
+            venue_mode = str(updated.get("venue_mode") or PAPER_VENUE_MODE)
+            venue, stream, _report_mode = _structural_stop_comparison_stream(venue_mode)
+            get_history = getattr(stream, "get_kline_history", None)
+            if not callable(get_history):
+                if venue_mode not in _paper_structural_stop_comparison_missing_stream_warned:
+                    _paper_structural_stop_comparison_missing_stream_warned.add(venue_mode)
+                    _legacy.logger.warning(
+                        "[PAPER-STRUCTURAL-STOP-COMPARISON] selected venue stream unavailable venue_mode=%s venue=%s",
+                        venue_mode,
+                        venue,
+                    )
+                continue
+            try:
+                candles = get_history(str(updated.get("symbol") or ""), "5m", 60) or []
+                updated, state_changed = advance_structural_stop_comparison(previous, candles)
+            except Exception:
+                _legacy.logger.exception(
+                    "[PAPER-STRUCTURAL-STOP-COMPARISON] path update failed position_id=%s",
+                    position_id,
+                )
+                continue
+
+        actual_outcome = _structural_stop_actual_paper_outcome(position_id)
+        if actual_outcome is not None and updated.get("actual_paper_outcome") != actual_outcome:
+            updated["actual_paper_outcome"] = actual_outcome
+            state_changed = True
+
+        # A path pair may finish before the real Paper position closes. Keep
+        # its completed counterfactual snapshot checkpointed until the actual
+        # position outcome is available, then include both in one FINAL event.
+        actual_status = (
+            str(actual_outcome.get("status") or "").upper()
+            if isinstance(actual_outcome, dict) else "NOT_FOUND"
+        )
+        actual_still_open = actual_status in {
+            "OPEN", "HOLD", "REVIEW_REQUIRED", "PARTIALLY_CLOSED"
+        }
+        if str(updated.get("status") or "").upper() == "OBSERVING" or actual_still_open:
+            # Checkpoint only when a new closed candle (or a real Paper state
+            # transition) changes the comparison. START is upserted in-place.
+            if state_changed:
+                try:
+                    persisted = store.upsert(updated)
+                    if not persisted and getattr(store, "last_error", None):
+                        raise RuntimeError("STRUCTURAL_STOP_COMPARISON_CHECKPOINT_FAILED")
+                except Exception:
+                    _legacy.logger.exception(
+                        "[PAPER-STRUCTURAL-STOP-COMPARISON] checkpoint failed position_id=%s",
+                        position_id,
+                    )
+            with _paper_structural_stop_comparison_lock:
+                current = _paper_structural_stop_comparison_active.get(position_id)
+                if current is not None:
+                    _paper_structural_stop_comparison_active[position_id] = updated
+            continue
+
+        final_event = dict(updated)
+        final_event["record_type"] = "FINAL"
+        final_event["record_id"] = f"{position_id}:FINAL"
+        final_event["capture_id"] = f"{position_id}:FINAL"
+        try:
+            inserted = store.append(final_event)
+            if not inserted and getattr(store, "last_error", None):
+                raise RuntimeError("STRUCTURAL_STOP_COMPARISON_FINAL_PERSIST_FAILED")
+            with _paper_structural_stop_comparison_lock:
+                _paper_structural_stop_comparison_active.pop(position_id, None)
+            if inserted:
+                _legacy.logger.info(
+                    "[PAPER-STRUCTURAL-STOP-COMPARISON] FINAL %s",
+                    json.dumps(final_event, ensure_ascii=False, separators=(",", ":")),
+                )
+        except Exception:
+            # Keep completed in-memory evidence and retry the idempotent FINAL
+            # insert on a later market cycle; the Paper position is untouched.
+            with _paper_structural_stop_comparison_lock:
+                _paper_structural_stop_comparison_active[position_id] = final_event
+            _legacy.logger.exception(
+                "[PAPER-STRUCTURAL-STOP-COMPARISON] final persistence failed position_id=%s",
+                position_id,
+            )
+
+
 def _paper_stop_fill_wrapper(position_id: str, decision: PositionExitDecision):
     protected_reasons = {PositionExitReason.STOP_LOSS, PositionExitReason.BREAK_EVEN}
     if decision.reason not in protected_reasons:
@@ -2216,6 +2563,10 @@ def _process_market_cycle_with_overlays():
         _advance_blocked_entry_shadow_watches()
     except Exception:
         _legacy.logger.exception("Blocked-entry Paper shadow tracker failed")
+    try:
+        _advance_structural_stop_comparison_watches()
+    except Exception:
+        _legacy.logger.exception("Structural-stop Paper comparison tracker failed")
     if _last_btc_guard["crashing"]:
         for symbol, score in sorted((_legacy.latest_scores or {}).items(), key=lambda item: float(item[1].get("swing_score", 0.0) or 0.0), reverse=True):
             if not strong_bullish_btc_exception(score):
@@ -2726,6 +3077,41 @@ def _paper_entry_gate_summary():
     )
     payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     return jsonify(payload), 200
+
+
+@app.get("/paper/structural-stop-comparison")
+def _paper_structural_stop_comparison_report():
+    """Read-only paired ATR/structural stop evidence for Paper positions."""
+    store = _paper_structural_stop_comparison_store
+    venue_mode = str(PAPER_VENUE_MODE or "UNKNOWN").upper()
+    if store is None:
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "venue_mode": venue_mode,
+            "reason": "STRUCTURAL_STOP_COMPARISON_STORE_UNAVAILABLE",
+        }), 503
+    try:
+        records = store.read_all()
+        if getattr(store, "last_error", None):
+            return jsonify({
+                "available": False,
+                "mode": "PAPER_ONLY",
+                "venue_mode": venue_mode,
+                "reason": "STRUCTURAL_STOP_COMPARISON_READ_FAILED",
+            }), 503
+        payload = build_structural_stop_comparison_report(records)
+        payload["current_service_venue_mode"] = venue_mode
+        payload["current_service_venue"] = _structural_stop_comparison_stream()[0]
+        return jsonify(payload), 200
+    except Exception as exc:
+        _legacy.logger.exception("Structural-stop comparison report failed")
+        return jsonify({
+            "available": False,
+            "mode": "PAPER_ONLY",
+            "venue_mode": venue_mode,
+            "reason": type(exc).__name__,
+        }), 503
 
 
 @app.get("/paper/shadow-evidence-report")
