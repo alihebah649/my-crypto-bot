@@ -238,6 +238,28 @@ def test_report_compares_only_paired_decisive_positions():
     assert report["mode"] == "PAPER_ONLY"
 
 
+
+def test_report_counts_completed_shadow_paths_waiting_for_real_paper_close():
+    watch = build_structural_stop_comparison_watch(
+        _capture(), _position(), fee_rate=0.001, venue="BINANCE", venue_mode="MIXED"
+    )
+    final_paths, _ = advance_structural_stop_comparison(
+        watch,
+        [_bar(_next_bar_open(), high=104.5, low=99.0, close=104.0)],
+    )
+    assert final_paths["status"] == "COMPLETE"
+    final_paths["record_type"] = "START"
+    final_paths["actual_paper_outcome"] = {"status": "OPEN"}
+
+    report = build_structural_stop_comparison_report([final_paths])
+
+    assert report["coverage"]["positions_active"] == 1
+    assert report["coverage"]["shadow_paths_complete_waiting_for_actual_close"] == 1
+    assert report["coverage"]["positions_completed"] == 0
+    assert report["active_positions"][0]["actual_paper_status"] == "OPEN"
+
+
+
 def test_missing_structural_candidate_fails_closed():
     capture = _capture()
     capture["entry_scenario"]["risk"]["structural_stop_candidate"] = None
