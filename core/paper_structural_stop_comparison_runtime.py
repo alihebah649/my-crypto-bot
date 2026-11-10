@@ -326,16 +326,19 @@ class PaperStructuralStopComparisonCoordinator:
         try:
             positions = list(get_positions() or [])
         except Exception:
+            with self._lock:
+                context["existing_positions_seeded"] = False
             self._logger.exception(
                 "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted open-position backfill read failed context=%s",
                 key,
             )
-            return {"context_key": key, "available": False, "reason": "OPEN_POSITION_READ_FAILED"}
+            return {"context_key": key, "available": False, "retry_required": True, "reason": "OPEN_POSITION_READ_FAILED"}
 
         lookup = getattr(capture_store, "get_by_identity", None)
         get_history = getattr(stream, "get_kline_history", None)
         started = 0
         skipped = 0
+        retry_required = False
         skip_reasons: dict[str, int] = {}
         for position in positions:
             position_id = str(_position_value(position, "position_id", "") or "").strip()
@@ -378,6 +381,11 @@ class PaperStructuralStopComparisonCoordinator:
                     position_id,
                 )
                 capture = None
+            if getattr(capture_store, "last_error", None):
+                # A database/connection failure is not proof that the capture
+                # is absent. Retry this bounded bootstrap on the next cycle.
+                retry_required = True
+                continue
             if not isinstance(capture, Mapping) or str(capture.get("capture_id") or "").strip() != capture_id:
                 reason = "EXACT_ENTRY_V2_CAPTURE_NOT_FOUND"
                 self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
@@ -394,10 +402,7 @@ class PaperStructuralStopComparisonCoordinator:
                 continue
 
             if not callable(get_history):
-                reason = "VENUE_5M_HISTORY_UNAVAILABLE"
-                self._record_decision(context, position, source_capture_id=capture_id, reason=reason)
-                skipped += 1
-                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                retry_required = True
                 continue
             try:
                 candles = get_history(str(_position_value(position, "symbol", "") or ""), "5m", 60) or []
@@ -407,7 +412,11 @@ class PaperStructuralStopComparisonCoordinator:
                     key,
                     position_id,
                 )
-                candles = []
+                retry_required = True
+                continue
+            if not candles:
+                retry_required = True
+                continue
             open_times = [
                 int(float(row.get("open_time")))
                 for row in candles
@@ -438,12 +447,16 @@ class PaperStructuralStopComparisonCoordinator:
                 reason = "ENTRY_CAPTURE_OR_STOP_CONTEXT_UNMEASURABLE"
                 skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
 
+        if retry_required:
+            with self._lock:
+                context["existing_positions_seeded"] = False
         result = {
             "context_key": key,
             "available": True,
             "existing_open_positions_seen": len(positions),
             "started": started,
             "skipped": skipped,
+            "retry_required": retry_required,
             "skip_reasons": skip_reasons,
         }
         self._logger.info(
