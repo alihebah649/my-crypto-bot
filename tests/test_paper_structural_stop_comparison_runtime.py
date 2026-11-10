@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from core.paper_structural_stop_comparison import build_structural_stop_comparison_watch
 from core.paper_structural_stop_comparison_runtime import (
     PaperStructuralStopComparisonCoordinator,
 )
@@ -196,8 +197,7 @@ def test_restore_resumes_each_context_only_from_its_own_start_record():
     opened = position("OKX-RESTORED", "OKX")
     store = FakeStore()
     start = {
-        **__import__("core.paper_structural_stop_comparison").paper_structural_stop_comparison
-        .build_structural_stop_comparison_watch(
+        **build_structural_stop_comparison_watch(
             capture("capture-okx", "OKX"),
             opened,
             fee_rate=0.001,
