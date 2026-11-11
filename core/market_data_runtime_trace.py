@@ -30,6 +30,10 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         "market_data_manager_kline_calls": 0,
     }
     freshness_by_state: Counter[str] = Counter()
+    # Cumulative counts are useful for lifetime diagnostics, but they must not
+    # be mistaken for the current strategy cycle. The last completed cycle is
+    # calculated as a delta around fetch_strategy_data().
+    last_strategy_call_freshness: dict[str, int] = {}
     source_counts: Counter[str] = Counter()
     last_events: list[dict[str, Any]] = []
     manager_provenance: dict[tuple[str, str, int], dict[str, Any]] = {}
@@ -45,6 +49,7 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         with lock:
             data = dict(stats)
             data["entry_freshness_by_state"] = dict(freshness_by_state)
+            data["entry_freshness_last_strategy_call_by_state"] = dict(last_strategy_call_freshness)
             data["source_counts"] = dict(source_counts)
             data["last_events"] = list(last_events)
         data["captured_at"] = now
@@ -179,6 +184,7 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
         with lock:
             stats["fetch_strategy_calls"] += 1
             stats["fetch_strategy_last_started_at"] = started
+            freshness_before = dict(freshness_by_state)
         try:
             return original_fetch_strategy_data()
         finally:
@@ -186,13 +192,20 @@ def install(*, legacy: Any, kline_cache: dict, kline_cache_lock: threading.RLock
             with lock:
                 stats["fetch_strategy_last_finished_at"] = finished
                 stats["fetch_strategy_last_elapsed_seconds"] = round(finished - started, 3)
+                freshness_after = dict(freshness_by_state)
+                last_strategy_call_freshness.clear()
+                for state in set(freshness_before) | set(freshness_after):
+                    added = freshness_after.get(state, 0) - freshness_before.get(state, 0)
+                    if added > 0:
+                        last_strategy_call_freshness[state] = added
                 summary = snapshot()
                 legacy.logger.info(
-                    "[MARKET-DATA-TRACE] strategy_call=%d elapsed=%.3fs manager_calls=%d freshness=%s source_counts=%s",
+                    "[MARKET-DATA-TRACE] strategy_call=%d elapsed=%.3fs manager_calls=%d freshness_total_since_start=%s freshness_last_strategy_call=%s source_counts_total_since_start=%s",
                     summary["fetch_strategy_calls"],
                     summary["fetch_strategy_last_elapsed_seconds"] or 0.0,
                     summary["market_data_manager_kline_calls"],
                     summary["entry_freshness_by_state"],
+                    summary["entry_freshness_last_strategy_call_by_state"],
                     summary["source_counts"],
                 )
 
