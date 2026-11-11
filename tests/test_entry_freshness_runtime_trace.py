@@ -155,8 +155,11 @@ def test_runtime_trace_distinguishes_lifetime_freshness_from_last_strategy_call(
         def __init__(self):
             super().__init__()
             self.cycle_candles = stale_candles
+            # LegacyStub attaches its own fetch_strategy_data function to the
+            # instance, so replace that instance attribute explicitly.
+            self.fetch_strategy_data = self._fetch_cycle
 
-        def fetch_strategy_data(self):
+        def _fetch_cycle(self):
             self.score_symbol(
                 "BTCUSDT",
                 {"lastPrice": 100.5},
