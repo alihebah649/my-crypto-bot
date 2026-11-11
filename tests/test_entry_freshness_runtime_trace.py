@@ -140,3 +140,48 @@ def test_manager_kline_trace_uses_explicit_relay_and_websocket_provenance():
     assert event["source"] == "BINANCE_RELAY_AND_WEBSOCKET"
     assert event["manager_cache_fetched_at"] is None
 
+def test_runtime_trace_distinguishes_lifetime_freshness_from_last_strategy_call():
+    now = time.time()
+    stale_candles = [
+        _candle(int((now - 700.0) * 1000), int((now - 400.0) * 1000))
+    ]
+    fresh_candles = [
+        _candle(int((now - 330.0) * 1000), int((now - 30.0) * 1000))
+    ]
+    cache_key = ("BTCUSDT", "5m", 60)
+    cache = {cache_key: (now - 700.0, stale_candles)}
+
+    class CyclingLegacy(LegacyStub):
+        def __init__(self):
+            super().__init__()
+            self.cycle_candles = stale_candles
+
+        def fetch_strategy_data(self):
+            self.score_symbol(
+                "BTCUSDT",
+                {"lastPrice": 100.5},
+                self.cycle_candles,
+                self.cycle_candles,
+            )
+            return {}, {}, {}
+
+    legacy = CyclingLegacy()
+    install(
+        legacy=legacy,
+        kline_cache=cache,
+        kline_cache_lock=threading.RLock(),
+        kline_cache_ttl={"5m": 310.0},
+    )
+
+    legacy.fetch_strategy_data()
+    after_stale_cycle = legacy._market_data_runtime_trace_snapshot()
+    assert after_stale_cycle["entry_freshness_by_state"] == {"STALE": 1}
+    assert after_stale_cycle["entry_freshness_last_strategy_call_by_state"] == {"STALE": 1}
+
+    legacy.cycle_candles = fresh_candles
+    cache[cache_key] = (time.time() - 20.0, fresh_candles)
+    legacy.fetch_strategy_data()
+    after_fresh_cycle = legacy._market_data_runtime_trace_snapshot()
+
+    assert after_fresh_cycle["entry_freshness_by_state"] == {"STALE": 1, "FRESH": 1}
+    assert after_fresh_cycle["entry_freshness_last_strategy_call_by_state"] == {"FRESH": 1}
