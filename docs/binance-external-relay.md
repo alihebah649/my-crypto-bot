@@ -9,8 +9,12 @@ not in the live market-data path. The relay never submits orders.
 
 The service supports the existing 22-symbol universe and 5m/15m/1h/4h candles.
 REST is used to seed or repair historical continuity; normal live data comes
-from WebSocket. If Binance REST replies HTTP 418, the relay does not rapidly
-retry that response.
+from WebSocket. Downstream fan-out coalesces repeated ticker updates to at most
+one every 5 seconds, open 5m/15m kline updates to every 5 seconds, and open
+1h/4h context updates to every 15 seconds. Closed kline events always pass
+immediately. The full upstream subscription remains intact, and the consumer's
+30-second stale-data guard remains the safety boundary. If Binance REST replies
+HTTP 418, the relay does not rapidly retry that response.
 
 ## Requirements
 

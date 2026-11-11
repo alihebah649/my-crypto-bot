@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -181,3 +182,95 @@ def test_persisted_rest_refresh_clock_is_not_advanced_by_live_candles(tmp_path):
     restored = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
     assert restored.load_persisted_snapshot()
     assert int(restored.last_rest_refresh_at * 1000) == persisted_rest_refresh_ms
+
+
+
+def test_downstream_ticker_updates_are_coalesced_per_symbol(monkeypatch):
+    state = RelayState(token="s" * 64, snapshot_path="/tmp/nonexistent-relay-cache.json")
+    state.snapshot = _snapshot(rows_per_interval=5)
+    sent = []
+    state._broadcast = sent.append
+    clock = [100.0]
+    monkeypatch.setattr("market_data_relay.app.time.monotonic", lambda: clock[0])
+
+    def deliver(symbol):
+        event = {
+            "stream": f"{symbol.lower()}@ticker",
+            "data": {
+                "e": "24hrTicker",
+                "E": int(clock[0] * 1000),
+                "s": symbol,
+                "c": "100.5",
+                "b": "100.4",
+                "a": "100.6",
+                "q": "1000000",
+                "P": "1.0",
+            },
+        }
+        asyncio.run(state.handle_upstream_message(json.dumps(event)))
+
+    deliver("BTCUSDT")
+    clock[0] += 1.0
+    deliver("BTCUSDT")
+    deliver("ETHUSDT")  # A different symbol has its own independent cadence.
+    clock[0] += 4.1
+    deliver("BTCUSDT")
+
+    assert len(sent) == 3
+    assert state._downstream_market_events_sent == 3
+    assert state._downstream_market_events_coalesced == 1
+
+
+def test_downstream_open_kline_cadence_and_immediate_close_delivery(monkeypatch):
+    state = RelayState(token="k" * 64, snapshot_path="/tmp/nonexistent-relay-cache.json")
+    state.snapshot = _snapshot(rows_per_interval=5)
+    sent = []
+    state._broadcast = sent.append
+    clock = [200.0]
+    monkeypatch.setattr("market_data_relay.app.time.monotonic", lambda: clock[0])
+
+    def deliver(interval, *, closed=False):
+        now_ms = int(time.time() * 1000)
+        event = {
+            "stream": f"btcusdt@kline_{interval}",
+            "data": {
+                "e": "kline",
+                "E": now_ms,
+                "s": "BTCUSDT",
+                "k": {
+                    "t": now_ms - 300_000,
+                    "T": now_ms - 1 if closed else now_ms + 299_999,
+                    "i": interval,
+                    "o": "100",
+                    "h": "102",
+                    "l": "99",
+                    "c": "101",
+                    "v": "25",
+                    "q": "2525",
+                    "n": 12,
+                    "V": "12",
+                    "Q": "1212",
+                    "x": closed,
+                },
+            },
+        }
+        asyncio.run(state.handle_upstream_message(json.dumps(event)))
+
+    deliver("5m")
+    clock[0] += 2.0
+    deliver("5m")  # Coalesced inside the 5-second fast interval.
+    clock[0] += 3.1
+    deliver("5m")  # Sent after the fast interval.
+    deliver("1h")  # Separate 15-second context cadence.
+    clock[0] += 10.0
+    deliver("1h")  # Still coalesced.
+    clock[0] += 5.1
+    deliver("1h")
+    clock[0] += 0.1
+    deliver("1h", closed=True)  # Closed bar bypasses the throttle.
+    clock[0] += 0.1
+    deliver("1h")  # The close reset the cadence window.
+
+    assert len(sent) == 5
+    assert state._downstream_market_events_sent == 5
+    assert state._downstream_market_events_coalesced == 3

@@ -38,6 +38,12 @@ PERSIST_INTERVAL_SECONDS = max(1.0, float(os.getenv("RELAY_PERSIST_INTERVAL_SECO
 CLIENT_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
 BOOTSTRAP_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60
 
+# Downstream cadence is intentionally slower than Binance's raw event rate.
+# Closed candles always bypass these limits so no completed bar is delayed.
+DOWNSTREAM_TICKER_INTERVAL_SECONDS = 5.0
+DOWNSTREAM_FAST_KLINE_INTERVAL_SECONDS = 5.0  # 5m / 15m strategy inputs
+DOWNSTREAM_SLOW_KLINE_INTERVAL_SECONDS = 15.0  # 1h / 4h context inputs
+
 
 def _utc_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
@@ -172,6 +178,9 @@ class RelayState:
         self._rest_backoff = 30.0
         self._message_count = 0
         self._closed_candle_count = 0
+        self._last_downstream_broadcast_at: dict[str, float] = {}
+        self._downstream_market_events_sent = 0
+        self._downstream_market_events_coalesced = 0
         self.last_rest_refresh_at = 0.0
 
     @property
@@ -265,7 +274,8 @@ class RelayState:
             self._early_messages.append(text)
             return
         self._apply_market_event(text)
-        self._broadcast(text)
+        if self._should_broadcast_market_event(text):
+            self._broadcast(text)
 
     def _apply_market_event(self, message: str) -> None:
         if self.snapshot is None:
@@ -374,6 +384,58 @@ class RelayState:
         self._apply_early_messages()
         self._snapshot_dirty = True
 
+    def _should_broadcast_market_event(self, message: str) -> bool:
+        """Rate-limit redundant live updates while always forwarding closed bars."""
+        try:
+            raw = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return True
+        if not isinstance(raw, Mapping):
+            return True
+        payload = raw.get("data", raw)
+        if not isinstance(payload, Mapping):
+            return True
+
+        event_type = str(payload.get("e") or "")
+        symbol = str(payload.get("s") or "").upper()
+        if not symbol:
+            return True
+
+        if event_type == "24hrTicker":
+            key = f"ticker:{symbol}"
+            minimum_interval = DOWNSTREAM_TICKER_INTERVAL_SECONDS
+        elif event_type == "kline":
+            kline = payload.get("k")
+            if not isinstance(kline, Mapping):
+                return True
+            interval = str(kline.get("i") or "")
+            if interval not in INTERVALS:
+                return True
+            key = f"kline:{symbol}:{interval}"
+            if bool(kline.get("x")):
+                # A just-closed candle is authoritative; never coalesce it.
+                self._last_downstream_broadcast_at[key] = time.monotonic()
+                self._downstream_market_events_sent += 1
+                return True
+            minimum_interval = (
+                DOWNSTREAM_FAST_KLINE_INTERVAL_SECONDS
+                if interval in ("5m", "15m")
+                else DOWNSTREAM_SLOW_KLINE_INTERVAL_SECONDS
+            )
+        else:
+            # Preserve non-market/control frames unchanged for forward compatibility.
+            return True
+
+        now = time.monotonic()
+        last_sent = self._last_downstream_broadcast_at.get(key)
+        if last_sent is not None and now - last_sent < minimum_interval:
+            self._downstream_market_events_coalesced += 1
+            return False
+
+        self._last_downstream_broadcast_at[key] = now
+        self._downstream_market_events_sent += 1
+        return True
+
     def _broadcast(self, message: str) -> None:
         for websocket, queue in list(self.subscribers.items()):
             try:
@@ -466,6 +528,19 @@ class RelayState:
             "subscriber_count": len(self.subscribers),
             "events_total": self._message_count,
             "closed_candles_total": self._closed_candle_count,
+            "downstream_market_events_sent": self._downstream_market_events_sent,
+            "downstream_market_events_coalesced": self._downstream_market_events_coalesced,
+            "downstream_market_coalesce_ratio": round(
+                self._downstream_market_events_coalesced
+                / max(1, self._downstream_market_events_sent + self._downstream_market_events_coalesced),
+                4,
+            ),
+            "downstream_broadcast_intervals_seconds": {
+                "ticker": DOWNSTREAM_TICKER_INTERVAL_SECONDS,
+                "kline_5m_15m": DOWNSTREAM_FAST_KLINE_INTERVAL_SECONDS,
+                "kline_1h_4h": DOWNSTREAM_SLOW_KLINE_INTERVAL_SECONDS,
+                "closed_kline": "immediate",
+            },
             "last_error": self.last_error,
             "last_refresh_error": self.last_refresh_error,
         }
