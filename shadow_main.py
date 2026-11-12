@@ -3704,10 +3704,58 @@ def _paper_blocked_entry_shadow_report():
             row for key, row in starts.items()
             if key and key not in final_ids and str(row.get("status") or "") == "OBSERVING"
         ]
+        final_by_id = {
+            str(row.get("source_capture_id") or ""): row
+            for row in finals
+            if str(row.get("source_capture_id") or "")
+        }
+        unique_finals = list(final_by_id.values())
         counts = {}
-        for row in finals:
-            status = str(row.get("status") or "UNKNOWN")
+        exclusions = {}
+        decisive_statuses = {"TARGET_HIT", "STOP_HIT", "TIME_LIMIT_EXIT"}
+        valid_finals = []
+        for row in unique_finals:
+            status = str(row.get("status") or "UNKNOWN").upper()
             counts[status] = counts.get(status, 0) + 1
+            net_value = row.get("net_return_percent_after_estimated_fees")
+            try:
+                net_value = float(net_value) if net_value is not None else None
+            except (TypeError, ValueError, OverflowError):
+                net_value = None
+            if status not in decisive_statuses:
+                reason = status or "UNKNOWN"
+                exclusions[reason] = exclusions.get(reason, 0) + 1
+            elif net_value is None:
+                exclusions["NET_RETURN_UNAVAILABLE"] = exclusions.get("NET_RETURN_UNAVAILABLE", 0) + 1
+            else:
+                valid_finals.append((row, net_value))
+        sample_progress = {
+            "venue": "MAIN",
+            "market_data_source": "BINANCE",
+            "trade_mode": "SCALP",
+            "sample_target": 50,
+            "completed": min(len(valid_finals), 50),
+            "remaining": max(0, 50 - len(valid_finals)),
+            "valid_unique_completed_watches": len(valid_finals),
+            "additional_valid_watches_beyond_target": max(0, len(valid_finals) - 50),
+            "pending_incomplete_watches": len(active),
+            "excluded_final_records": sum(exclusions.values()),
+            "exclusion_reasons": dict(sorted(exclusions.items())),
+            "samples": [
+                {
+                    "source_capture_id": row.get("source_capture_id"),
+                    "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+                    "status": str(row.get("status") or "UNKNOWN").upper(),
+                    "net_return_percent_after_estimated_fees": net_value,
+                    "completed_at_utc": row.get("completed_at_utc"),
+                    "blocked_reason": row.get("blocked_reason"),
+                }
+                for row, net_value in sorted(
+                    valid_finals,
+                    key=lambda item: str(item[0].get("completed_at_utc") or ""),
+                )[:50]
+            ],
+        }
         payload = {
             "available": True,
             "mode": "PAPER_ONLY",
@@ -3716,6 +3764,7 @@ def _paper_blocked_entry_shadow_report():
             "completed_records": len(finals),
             "active_records": len(active),
             "completed_by_status": counts,
+            "sample_progress": sample_progress,
             "active": active,
             "recent_completed": finals[-50:],
             "model": {
@@ -3735,6 +3784,10 @@ def _paper_blocked_entry_shadow_report():
                 "completed_records": payload["completed_records"],
                 "active_records": payload["active_records"],
                 "completed_by_status": counts,
+                "sample_progress": {
+                    key: value for key, value in sample_progress.items()
+                    if key != "samples"
+                },
             }, ensure_ascii=False, separators=(",", ":")),
         )
         return jsonify(payload), 200
