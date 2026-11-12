@@ -200,7 +200,38 @@ def build_precalibration_shadow_report(records: Any) -> dict[str, Any]:
         if (value := _finite(row.get("net_r_multiple_after_estimated_fees"))) is not None
     ]
 
+    decisive_statuses = {"TARGET_HIT", "STOP_HIT", "TIME_LIMIT_EXIT"}
+    exclusion_reasons: Counter[str] = Counter()
+    for row in final_by_id.values():
+        status = str(row.get("status") or row.get("outcome_class") or "UNKNOWN").upper()
+        net = _finite(row.get("net_return_percent_after_estimated_fees"))
+        if status not in decisive_statuses:
+            exclusion_reasons[status or "UNKNOWN"] += 1
+        elif net is None:
+            exclusion_reasons["NET_RETURN_UNAVAILABLE"] += 1
+
     active_ids = set(start_by_id) - set(final_by_id)
+    valid_samples = [
+        {
+            "candidate_id": str(row.get("candidate_id") or row.get("source_capture_id") or ""),
+            "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+            "venue": "MAIN",
+            "trade_mode": "SCALP",
+            "status": str(row.get("status") or row.get("outcome_class") or "UNKNOWN").upper(),
+            "net_return_percent_after_estimated_fees": _finite(row.get("net_return_percent_after_estimated_fees")),
+            "net_r_multiple_after_estimated_fees": _finite(row.get("net_r_multiple_after_estimated_fees")),
+            "completed_at_utc": row.get("completed_at_utc"),
+        }
+        for row, _ in sorted(
+            decisive,
+            key=lambda item: str(item[0].get("completed_at_utc") or ""),
+        )
+    ]
+    non_eligible_dispositions = Counter(
+        str(row.get("disposition") or "UNKNOWN").upper()
+        for row in decision_by_id.values()
+        if str(row.get("disposition") or "").upper() != "BRAIN_ECONOMICS_QUALIFIED_WATCH"
+    )
     recent = sorted(
         source,
         key=lambda row: str(
@@ -224,6 +255,21 @@ def build_precalibration_shadow_report(records: Any) -> dict[str, Any]:
         "dispositions": dict(sorted(disposition_counts.items())),
         "outcomes": dict(sorted(outcome_counts.items())),
         "decisive_outcomes": len(decisive),
+        "sample_progress": {
+            "venue": "MAIN",
+            "market_data_source": "BINANCE",
+            "trade_mode": "SCALP",
+            "sample_target": 50,
+            "completed": min(len(decisive), 50),
+            "remaining": max(0, 50 - len(decisive)),
+            "valid_unique_completed_watches": len(decisive),
+            "additional_valid_watches_beyond_target": max(0, len(decisive) - 50),
+            "pending_incomplete_watches": len(active_ids),
+            "excluded_final_records": sum(exclusion_reasons.values()),
+            "exclusion_reasons": dict(sorted(exclusion_reasons.items())),
+            "non_eligible_candidate_dispositions": dict(sorted(non_eligible_dispositions.items())),
+            "samples": valid_samples[:50],
+        },
         "wins": wins,
         "losses": losses,
         "flats": flats,
