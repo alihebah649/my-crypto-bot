@@ -1394,13 +1394,16 @@ def _send_telegram_with_trade_type(message: str) -> bool:
             if mode not in {"SCALP", "SWING"}:
                 mode = _current_trade_mode["value"]
         lines = message.splitlines()
-        try:
-            symbol_index = next(i for i, line in enumerate(lines) if line.startswith("Symbol:"))
-            lines.insert(symbol_index + 1, f"Trade Type: {mode}")
-
-            message = "\n".join(lines)
-        except StopIteration:
-            pass
+        # Hosted venue labs already render the authoritative trade mode from
+        # their isolated venue score. Do not inject MAIN's latest mode into
+        # those messages (or duplicate an existing Trade Type line).
+        if not any(line.startswith("Trade Type:") for line in lines):
+            try:
+                symbol_index = next(i for i, line in enumerate(lines) if line.startswith("Symbol:"))
+                lines.insert(symbol_index + 1, f"Trade Type: {mode}")
+                message = "\n".join(lines)
+            except StopIteration:
+                pass
     return _original_send_telegram_message(message)
 
 
