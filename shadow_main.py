@@ -3554,6 +3554,40 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                     ),
                 )
 
+        classifier_rules = report.get("classification_shadow_rules") or {}
+        for rule_name, rule_report in sorted(classifier_rules.items()):
+            for mode, stats in sorted((rule_report.get("by_trade_mode") or {}).items()):
+                progress = {
+                    "venue": venue,
+                    "rule": rule_name,
+                    "trade_mode": mode,
+                    "target": stats.get("target_samples", 50),
+                    "completed": stats.get("completed", 0),
+                    "remaining_to_50": stats.get("remaining_to_50", 50),
+                    "exclusions": stats.get("exclusions", {}),
+                    "controls_not_counted": (stats.get("controls_not_counted") or {}).get("completed", 0),
+                }
+                _legacy.logger.warning(
+                    "[PAPER-CLASSIFIER-SHADOW-PROGRESS] %s",
+                    json.dumps(progress, ensure_ascii=False, separators=(",", ":")),
+                )
+                for sample in (stats.get("samples") or [])[:10]:
+                    _legacy.logger.info(
+                        "[PAPER-CLASSIFIER-SHADOW-SAMPLE] %s",
+                        json.dumps(sample, ensure_ascii=False, separators=(",", ":")),
+                    )
+
+        for mode, stats in sorted((report.get("net_floor_shadow_progress") or {}).get("by_trade_mode", {}).items()):
+            _legacy.logger.warning(
+                "[PAPER-NET-FLOOR-SHADOW-PROGRESS] %s %s",
+                venue,
+                json.dumps(
+                    {"venue": venue, "trade_mode": mode, "completed": stats.get("completed", 0), "remaining_to_50": stats.get("remaining_to_50", 50), "exclusions": stats.get("exclusions", {})},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+
         for sample_name in ("worst_trades", "best_trades", "losers_with_positive_net_favorable_excursion"):
             samples = report.get(sample_name) or []
             for index, sample in enumerate(samples, start=1):
@@ -3807,7 +3841,7 @@ def _legacy_build_daily_report_with_shadow_progress(*args: Any, **kwargs: Any) -
         return report + _format_shadow_sample_progress(progress)
     except Exception:
         _legacy.logger.exception("Daily Paper shadow sample progress appendix failed")
-        return report + "\\n\\n🧪 SHADOW SAMPLE PROGRESS: تعذر قراءة بعض متاجر الأدلة؛ لم تُحتسب أي عينات غير متحققة."
+        return report + "\n\n🧪 SHADOW SAMPLE PROGRESS: تعذر قراءة بعض متاجر الأدلة؛ لم تُحتسب أي عينات غير متحققة."
 
 
 # The existing daily Paper report loop will now include the same read-only
