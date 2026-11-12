@@ -971,6 +971,11 @@ def test_hosted_lab_preflight_limits_scoring_to_supported_spot_symbols():
         assert bybit.symbols == ("BTCUSDT", "ETHUSDT", "LINKUSDT")
         assert bybit.unsupported_symbols == ("SOLUSDT",)
         assert len(client.fetch_kline_calls) == 3 * 4
+        assert all(
+            limit == 300
+            for _symbol, interval, limit in client.fetch_kline_calls
+            if interval == "5m"
+        )
         assert bybit.snapshot()["supported_symbol_count"] == 3
         assert bybit.snapshot()["unsupported_symbols"] == ["SOLUSDT"]
     finally:

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.paper_structural_stop_comparison import (
+    DEFAULT_HISTORY_BUFFER_BARS,
     advance_structural_stop_comparison,
     build_structural_stop_comparison_decision,
     build_structural_stop_comparison_watch,
@@ -405,7 +406,11 @@ class PaperStructuralStopComparisonCoordinator:
                 retry_required = True
                 continue
             try:
-                candles = get_history(str(_position_value(position, "symbol", "") or ""), "5m", 60) or []
+                candles = get_history(
+                    str(_position_value(position, "symbol", "") or ""),
+                    "5m",
+                    DEFAULT_HISTORY_BUFFER_BARS,
+                ) or []
             except Exception:
                 self._logger.exception(
                     "[PAPER-STRUCTURAL-STOP-COMPARISON] hosted 5m history read failed context=%s position=%s",
@@ -518,7 +523,11 @@ class PaperStructuralStopComparisonCoordinator:
                 if not callable(get_history):
                     continue
                 try:
-                    candles = get_history(str(updated.get("symbol") or ""), "5m", 60) or []
+                    candles = get_history(
+                        str(updated.get("symbol") or ""),
+                        "5m",
+                        DEFAULT_HISTORY_BUFFER_BARS,
+                    ) or []
                     updated, state_changed = advance_structural_stop_comparison(previous, candles)
                 except Exception:
                     self._logger.exception(

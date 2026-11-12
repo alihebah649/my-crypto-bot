@@ -27,7 +27,8 @@ _INTERVAL_MS = {
     "1h": 3_600_000,
     "4h": 14_400_000,
 }
-_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+# Keep enough closed 5m bars for the 24-hour structural-stop shadow horizon.
+_HISTORY_LIMITS = {"5m": 300, "15m": 150, "1h": 60, "4h": 60}
 
 
 def _float(value: Any, default: float = 0.0) -> float:

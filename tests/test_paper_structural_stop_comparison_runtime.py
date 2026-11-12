@@ -163,8 +163,8 @@ def test_hosts_independent_venue_contexts_and_never_cross_uses_candles():
 
     coordinator.advance()
 
-    assert bybit_stream.calls == [("OPUSDT", "5m", 60)]
-    assert okx_stream.calls == [("OPUSDT", "5m", 60)]
+    assert bybit_stream.calls == [("OPUSDT", "5m", 300)]
+    assert okx_stream.calls == [("OPUSDT", "5m", 300)]
     assert bybit_store.rows["BYBIT-1:START"]["venue"] == "BYBIT"
     assert okx_store.rows["OKX-1:START"]["venue"] == "OKX"
     assert bybit_store.rows["BYBIT-1:START"]["bars_observed"] == 1
@@ -297,6 +297,7 @@ def test_existing_open_position_is_seeded_only_with_exact_capture_and_entry_bar_
 
     seeded = coordinator.seed_existing_open_positions("BYBIT")
 
+    assert stream.calls == [("OPUSDT", "5m", 300)]
     assert seeded["existing_open_positions_seen"] == 1
     assert seeded["started"] == 1
     assert seeded["skipped"] == 0

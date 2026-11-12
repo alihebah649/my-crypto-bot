@@ -88,13 +88,14 @@ def test_bybit_stream_seeded_rest_history_is_exposed_to_runtime():
                 "market_data_source": "BYBIT",
                 "market_data_transport": "REST_COLD_START",
             }
-            for i in range(1, 61)
+            for i in range(1, 351)
         ],
     )
 
-    assert seeded == 60
-    rows = stream.get_kline_history("FETUSDT", "5m", 60)
-    assert len(rows) == 60
+    assert seeded == 350
+    rows = stream.get_kline_history("FETUSDT", "5m", 300)
+    assert len(rows) == 300
+    assert rows[0]["open_time"] == 51 * 300000
     assert rows[-1]["market_data_transport"] == "REST_COLD_START"
 
 

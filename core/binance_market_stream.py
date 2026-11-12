@@ -18,7 +18,8 @@ import websockets
 
 DEFAULT_BASE_URL = "wss://stream.binance.com:9443/stream"
 DEFAULT_INTERVALS = ("5m", "15m", "1h", "4h")
-_RUNTIME_KLINE_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+# 300 closed 5m bars cover the 24-hour shadow horizon plus restart buffer.
+_RUNTIME_KLINE_HISTORY_LIMITS = {"5m": 300, "15m": 150, "1h": 60, "4h": 60}
 
 
 class BinanceMarketStream:

@@ -15,6 +15,7 @@ from typing import Any
 
 INTERVAL_MS = 5 * 60 * 1000
 DEFAULT_MAX_BARS = 288  # 24 hours of closed 5m candles
+DEFAULT_HISTORY_BUFFER_BARS = 300  # 24 hours plus 1-hour restart/backfill buffer
 TRIAL_NAME = "PAPER_STRUCTURAL_STOP_COMPARISON"
 _DECISIVE = {"STOP_HIT", "TARGET_HIT", "TIME_LIMIT_EXIT"}
 _TERMINAL = _DECISIVE | {"AMBIGUOUS_SAME_CANDLE", "DATA_GAP", "UNMEASURABLE_CONTEXT"}
@@ -725,6 +726,7 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "DEFAULT_HISTORY_BUFFER_BARS",
     "DEFAULT_MAX_BARS",
     "INTERVAL_MS",
     "TRIAL_NAME",

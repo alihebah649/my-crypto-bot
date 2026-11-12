@@ -22,7 +22,8 @@ _INTERVAL_TO_BYBIT = {
     "1h": "60",
     "4h": "240",
 }
-_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+# Keep enough closed 5m bars for the 24-hour structural-stop shadow horizon.
+_HISTORY_LIMITS = {"5m": 300, "15m": 150, "1h": 60, "4h": 60}
 
 
 class BybitMarketStream:
