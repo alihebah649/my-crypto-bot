@@ -177,6 +177,9 @@ def test_paper_outcome_contains_scalp_forensics():
     assert record["entry_forensics"]["pattern_family"] == "BREAKOUT"
     assert record["entry_forensics"]["combined_signature"] == "LATE_RECOVERY__BREAKOUT"
     assert record["entry_forensics"]["recovery_trigger_count"] == 3
+    assert record["entry_forensics"]["adaptive_scalp_shadow"]["trade_mode"] == "SCALP"
+    assert record["entry_forensics"]["maturity_experiment"]["would_be_action"] == "WOULD_ALLOW"
+    assert record["entry_forensics"]["adaptive_scalp_shadow"]["neutral_low_score_experiment"]["would_be_action"] == "WOULD_ALLOW"
     assert record["entry_forensics"]["stop_distance_percent"] == 1.5
 
 
