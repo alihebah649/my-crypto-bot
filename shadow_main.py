@@ -3405,6 +3405,19 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
                 "reason": str(exc).split(":", 1)[0],
             }
 
+    classifier_rules_by_venue: dict[str, Any] = {}
+    for rule_name in ("adaptive_scalp", "neutral_low_score", "maturity", "recovery_follow_through"):
+        classifier_rules_by_venue[rule_name] = {
+            "target_samples_per_venue_and_mode": 50,
+            "by_venue": {
+                venue: report.get("classification_shadow_rules", {}).get(rule_name)
+                for venue, report in venues.items()
+                if isinstance(report, dict)
+                and isinstance(report.get("classification_shadow_rules"), dict)
+                and rule_name in report["classification_shadow_rules"]
+            },
+        }
+
     return {
         "available": all(
             isinstance(venues.get(venue), dict)
@@ -3421,7 +3434,9 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
             "BYBIT": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
             "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
         },
+        "classification_shadow_rules": classifier_rules_by_venue,
         "venues": venues,
+        "pnl_basis": "PAPER_OUTCOME.realized_pnl is already net of entry and exit fees; do not subtract fees again",
         "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
         "capture_read_policy": "ONLY_ENTRY_CAPTURES_REFERENCED_BY_WINDOWED_CLOSED_OUTCOMES",
     }
@@ -3558,12 +3573,246 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                 )
 
 
+def _sample_reason_add(counter: dict[str, int], reason: str) -> None:
+    key = str(reason or "UNKNOWN").upper()
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _finite_sample_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
+
+
+def _structural_stop_sample_progress(records: list[dict[str, Any]]) -> dict[str, Any]:
+    decisive = {"STOP_HIT", "TARGET_HIT", "TIME_LIMIT_EXIT"}
+    starts: dict[str, dict[str, Any]] = {}
+    finals: dict[str, dict[str, Any]] = {}
+    decisions: dict[str, dict[str, Any]] = {}
+    for row in records:
+        position_id = str(row.get("position_id") or "").strip()
+        if not position_id:
+            continue
+        if row.get("record_type") == "START":
+            starts[position_id] = row
+        elif row.get("record_type") == "FINAL":
+            finals[position_id] = row
+        elif row.get("record_type") == "DECISION":
+            decisions[position_id] = row
+
+    cohorts: dict[str, dict[str, Any]] = {}
+    def bucket(row: Mapping[str, Any]) -> dict[str, Any]:
+        venue = str(row.get("venue") or "UNKNOWN").upper()
+        mode = str(row.get("trade_mode") or "UNKNOWN").upper()
+        key = f"{venue}|{mode}"
+        return cohorts.setdefault(key, {
+            "venue": venue, "trade_mode": mode, "target_samples": 50,
+            "completed": 0, "remaining_to_50": 50, "active_not_counted": 0, "exclusions": {},
+        })
+
+    for row in finals.values():
+        group = bucket(row)
+        atr = row.get("atr_path") if isinstance(row.get("atr_path"), Mapping) else {}
+        structural = row.get("structural_path") if isinstance(row.get("structural_path"), Mapping) else {}
+        atr_status = str(atr.get("status") or "UNKNOWN").upper()
+        structural_status = str(structural.get("status") or "UNKNOWN").upper()
+        atr_net = _finite_sample_number(atr.get("net_return_percent_after_estimated_fees"))
+        structural_net = _finite_sample_number(structural.get("net_return_percent_after_estimated_fees"))
+        if atr_status in decisive and structural_status in decisive and atr_net is not None and structural_net is not None:
+            group["completed"] += 1
+        elif "DATA_GAP" in {atr_status, structural_status}:
+            _sample_reason_add(group["exclusions"], "DATA_GAP")
+        elif "AMBIGUOUS_SAME_CANDLE" in {atr_status, structural_status}:
+            _sample_reason_add(group["exclusions"], "AMBIGUOUS_SAME_CANDLE")
+        elif atr_net is None or structural_net is None:
+            _sample_reason_add(group["exclusions"], "PATH_NET_RETURN_UNAVAILABLE")
+        else:
+            _sample_reason_add(group["exclusions"], f"NON_DECISIVE_PAIR_ATR_{atr_status}_STRUCTURAL_{structural_status}")
+
+    for position_id, row in starts.items():
+        if position_id in finals:
+            continue
+        group = bucket(row)
+        group["active_not_counted"] += 1
+
+    for row in decisions.values():
+        group = bucket(row)
+        _sample_reason_add(group["exclusions"], f"NOT_STARTED_{row.get('reason') or 'UNMEASURABLE'}")
+
+    for group in cohorts.values():
+        group["remaining_to_50"] = max(0, 50 - group["completed"])
+        group["exclusions"] = dict(sorted(group["exclusions"].items()))
+    return {
+        "target_samples_per_venue_and_mode": 50,
+        "by_venue_and_trade_mode": {key: cohorts[key] for key in sorted(cohorts)},
+    }
+
+
+def _precalibration_sample_progress(records: list[dict[str, Any]]) -> dict[str, Any]:
+    decisive = {"TARGET_HIT", "STOP_HIT", "TIME_LIMIT_EXIT"}
+    starts = {str(row.get("candidate_id") or row.get("source_capture_id") or ""): row for row in records if row.get("record_type") == "START" and (row.get("candidate_id") or row.get("source_capture_id"))}
+    finals = {str(row.get("candidate_id") or row.get("source_capture_id") or ""): row for row in records if row.get("record_type") == "FINAL" and (row.get("candidate_id") or row.get("source_capture_id"))}
+    decisions = {str(row.get("candidate_id") or ""): row for row in records if row.get("record_type") == "DECISION" and row.get("candidate_id")}
+    exclusions: dict[str, int] = {}
+    completed = 0
+    for row in finals.values():
+        status = str(row.get("status") or row.get("outcome_class") or "UNKNOWN").upper()
+        net = _finite_sample_number(row.get("net_return_percent_after_estimated_fees"))
+        if status in decisive and net is not None:
+            completed += 1
+        else:
+            reason = status if status not in decisive else "NET_RETURN_UNAVAILABLE"
+            _sample_reason_add(exclusions, reason)
+    not_started: dict[str, int] = {}
+    for candidate_id, row in decisions.items():
+        if candidate_id in starts or candidate_id in finals:
+            continue
+        _sample_reason_add(not_started, f"NOT_STARTED_{row.get('disposition') or 'UNKNOWN'}")
+    return {
+        "venue": "MAIN/BINANCE", "trade_mode": "SCALP", "target_samples": 50,
+        "completed": completed, "remaining_to_50": max(0, 50 - completed),
+        "active_not_counted": len(set(starts) - set(finals)),
+        "exclusions": dict(sorted(exclusions.items())),
+        "not_started_dispositions": dict(sorted(not_started.items())),
+    }
+
+
+def _seller_pressure_sample_progress(records: list[dict[str, Any]]) -> dict[str, Any]:
+    decisive = {"TARGET_HIT", "STOP_HIT", "TIME_LIMIT_EXIT"}
+    starts = {str(row.get("source_capture_id") or row.get("candidate_id") or ""): row for row in records if row.get("record_type") == "START" and (row.get("source_capture_id") or row.get("candidate_id"))}
+    finals = {str(row.get("source_capture_id") or row.get("candidate_id") or ""): row for row in records if row.get("record_type") == "FINAL" and (row.get("source_capture_id") or row.get("candidate_id"))}
+    exclusions: dict[str, int] = {}
+    completed = 0
+    for row in finals.values():
+        status = str(row.get("status") or row.get("outcome_class") or "UNKNOWN").upper()
+        net = _finite_sample_number(row.get("net_return_percent_after_estimated_fees"))
+        if status in decisive and net is not None:
+            completed += 1
+        else:
+            reason = status if status not in decisive else "NET_RETURN_UNAVAILABLE"
+            _sample_reason_add(exclusions, reason)
+    return {
+        "venue": "MAIN/BINANCE", "trade_mode": "SCALP", "target_samples": 50,
+        "completed": completed, "remaining_to_50": max(0, 50 - completed),
+        "active_not_counted": len(set(starts) - set(finals)),
+        "exclusions": dict(sorted(exclusions.items())),
+    }
+
+
+def _build_shadow_sample_progress_payload() -> dict[str, Any]:
+    """Read-only consolidated progress for all active Paper evidence trials."""
+    linked = _build_linked_entry_outcome_forensics()
+    structural_records: list[dict[str, Any]] = []
+    structural_store = globals().get("_paper_structural_stop_comparison_store")
+    if structural_store is not None:
+        structural_records = structural_store.read_all()
+        if getattr(structural_store, "last_error", None):
+            raise RuntimeError("STRUCTURAL_STOP_PROGRESS_READ_FAILED")
+        structural_records.extend(_hosted_paper_structural_stop_coordinator.read_all_records())
+    precal_store = globals().get("_paper_precalibration_shadow_store")
+    precal_records = precal_store.read_all() if precal_store is not None else []
+    if precal_store is not None and getattr(precal_store, "last_error", None):
+        raise RuntimeError("PRECALIBRATION_PROGRESS_READ_FAILED")
+    seller_store = globals().get("_paper_blocked_entry_shadow_store")
+    seller_records = seller_store.read_all() if seller_store is not None else []
+    if seller_store is not None and getattr(seller_store, "last_error", None):
+        raise RuntimeError("SELLER_PRESSURE_PROGRESS_READ_FAILED")
+
+    return {
+        "available": bool(linked.get("available")),
+        "mode": "PAPER_ONLY",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "target_samples_per_rule_venue_mode": 50,
+        "classification_shadow_rules": linked.get("classification_shadow_rules", {}),
+        "net_floor_by_venue": {
+            venue: report.get("net_floor_shadow_progress")
+            for venue, report in (linked.get("venues") or {}).items()
+            if isinstance(report, dict) and report.get("net_floor_shadow_progress") is not None
+        },
+        "structural_stop_comparison": _structural_stop_sample_progress(structural_records),
+        "scalp_precalibration": _precalibration_sample_progress(precal_records),
+        "seller_pressure": _seller_pressure_sample_progress(seller_records),
+        "venues": linked.get("venues", {}),
+        "limitations": [
+            "Only unique closed Paper outcomes with complete captured classification and known realized_pnl/fees are counted for classifier rules.",
+            "Neutral Low-Score WOULD_ALLOW observations are shown as controls and do not advance its 50-sample target.",
+            "Structural-stop samples require decisive net outcomes for both hypothetical paths; DATA_GAP and AMBIGUOUS_SAME_CANDLE are excluded.",
+            "Pre-calibration and Seller Pressure are price-path counterfactuals, not executed Paper positions; incomplete watches are not counted.",
+            "All reported Paper realized_pnl values are already fee-net; fees are not deducted twice.",
+        ],
+    }
+
+
+def _format_shadow_sample_progress(payload: Mapping[str, Any]) -> str:
+    lines = ["", "🧪 SHADOW SAMPLE PROGRESS — PAPER ONLY", "المعيار: 50 عينة مكتملة لكل قاعدة / منصة / نمط تداول"]
+    arabic_names = {
+        "adaptive_scalp": "Adaptive Scalp",
+        "neutral_low_score": "Neutral Low-Score",
+        "maturity": "Maturity",
+        "recovery_follow_through": "Recovery Follow-Through",
+    }
+    rules = payload.get("classification_shadow_rules") or {}
+    for rule in ("adaptive_scalp", "neutral_low_score", "maturity", "recovery_follow_through"):
+        by_venue = (rules.get(rule) or {}).get("by_venue") or {}
+        for venue in ("MAIN", "BYBIT", "OKX"):
+            venue_report = by_venue.get(venue) or {}
+            modes = venue_report.get("by_trade_mode") or {}
+            cohort = modes.get("SCALP") or {"completed": 0, "remaining_to_50": 50, "exclusions": {"REPORT_UNAVAILABLE": 1}}
+            exclusions = cohort.get("exclusions") or {}
+            excluded_text = ",".join(f"{key}:{value}" for key, value in sorted(exclusions.items())) or "لا يوجد"
+            controls = (cohort.get("controls_not_counted") or {}).get("completed", 0)
+            suffix = f" | controls={controls}" if controls else ""
+            lines.append(f"• {arabic_names[rule]} — {venue}/SCALP: {cohort.get('completed', 0)}/50، متبقي {cohort.get('remaining_to_50', 50)}{suffix} | استبعادات: {excluded_text}")
+
+    net_floor = payload.get("net_floor_by_venue") or {}
+    for venue in ("MAIN", "BYBIT", "OKX"):
+        modes = (net_floor.get(venue) or {}).get("by_trade_mode") or {}
+        for mode in ("SCALP", "SWING"):
+            cohort = modes.get(mode) or {"completed": 0, "remaining_to_50": 50, "exclusions": {"REPORT_UNAVAILABLE": 1}}
+            excluded_text = ",".join(f"{key}:{value}" for key, value in sorted((cohort.get("exclusions") or {}).items())) or "لا يوجد"
+            lines.append(f"• Net-Floor — {venue}/{mode}: {cohort.get('completed', 0)}/50، متبقي {cohort.get('remaining_to_50', 50)} | استبعادات: {excluded_text}")
+
+    structural = (payload.get("structural_stop_comparison") or {}).get("by_venue_and_trade_mode") or {}
+    for key, cohort in sorted(structural.items()):
+        excluded_text = ",".join(f"{name}:{count}" for name, count in sorted((cohort.get("exclusions") or {}).items())) or "لا يوجد"
+        lines.append(f"• ATR مقابل Structural — {key}: {cohort.get('completed', 0)}/50، متبقي {cohort.get('remaining_to_50', 50)}، نشطة {cohort.get('active_not_counted', 0)} | استبعادات: {excluded_text}")
+
+    for key, title in (("scalp_precalibration", "Pre-calibration"), ("seller_pressure", "Seller Pressure")):
+        cohort = payload.get(key) or {}
+        exclusions = dict(cohort.get("exclusions") or {})
+        if cohort.get("not_started_dispositions"):
+            exclusions.update({f"NOT_STARTED/{name}": value for name, value in cohort["not_started_dispositions"].items()})
+        excluded_text = ",".join(f"{name}:{count}" for name, count in sorted(exclusions.items())) or "لا يوجد"
+        lines.append(f"• {title} — MAIN/BINANCE/SCALP: {cohort.get('completed', 0)}/50، متبقي {cohort.get('remaining_to_50', 50)}، نشطة {cohort.get('active_not_counted', 0)} | استبعادات: {excluded_text}")
+    return "\n".join(lines)
+
+
 def _emit_linked_entry_outcome_forensics() -> None:
     try:
         payload = _build_linked_entry_outcome_forensics()
         _emit_linked_entry_outcome_forensics_logs(payload)
     except Exception:
         _legacy.logger.exception("Paper linked entry/outcome forensics emission failed")
+
+
+_original_legacy_build_daily_report = _legacy.build_daily_report
+
+
+def _legacy_build_daily_report_with_shadow_progress(*args: Any, **kwargs: Any) -> str:
+    report = _original_legacy_build_daily_report(*args, **kwargs)
+    try:
+        progress = _build_shadow_sample_progress_payload()
+        return report + _format_shadow_sample_progress(progress)
+    except Exception:
+        _legacy.logger.exception("Daily Paper shadow sample progress appendix failed")
+        return report + "\\n\\n🧪 SHADOW SAMPLE PROGRESS: تعذر قراءة بعض متاجر الأدلة؛ لم تُحتسب أي عينات غير متحققة."
+
+
+# The existing daily Paper report loop will now include the same read-only
+# progress appendix; no additional scheduler or automation is created.
+_legacy.build_daily_report = _legacy_build_daily_report_with_shadow_progress
 
 
 def _start_linked_entry_outcome_forensics() -> None:
@@ -3578,6 +3827,17 @@ def _start_linked_entry_outcome_forensics() -> None:
         daemon=True,
         name="paper-linked-entry-outcome-forensics",
     ).start()
+
+
+@app.get("/paper/shadow-sample-progress")
+def _paper_shadow_sample_progress():
+    """Read-only consolidated sample counts, exclusions and linked Paper outcomes."""
+    try:
+        payload = _build_shadow_sample_progress_payload()
+        return jsonify(payload), 200 if payload.get("available") else 503
+    except Exception as exc:
+        _legacy.logger.exception("Consolidated shadow sample progress failed")
+        return jsonify({"available": False, "mode": "PAPER_ONLY", "reason": type(exc).__name__}), 503
 
 
 @app.get("/paper/forensic-entry-outcomes")
