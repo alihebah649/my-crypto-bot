@@ -10,6 +10,23 @@ from collections.abc import Iterable, Mapping
 from math import isfinite
 from typing import Any
 
+from engine.adaptive_scalp_shadow import classify_adaptive_scalp
+
+
+_ADAPTIVE_SCALP_CLASSIFICATIONS = frozenset({
+    "NORMAL_SCALP",
+    "BEAR_RECOVERY_STRONG",
+    "BEAR_RECOVERY_CAUTION",
+    "BEAR_HIGH_RISK",
+    "BEAR_RECOVERY",
+    "BEAR_WEAK_RECOVERY",
+})
+_VALID_SHADOW_ACTIONS = frozenset({"WOULD_ALLOW", "WOULD_BLOCK"})
+_KNOWN_MTF_BIASES = frozenset({
+    "BULL", "BULLISH", "BEAR", "BEARISH", "NEUTRAL",
+    "UPTREND", "DOWNTREND", "SIDEWAYS", "TRANSITION",
+})
+
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
@@ -96,6 +113,301 @@ def _peak_gain_band(value: Any) -> str:
     if peak < 2.00:
         return "1_00_TO_2_00"
     return "2_PLUS"
+
+
+def _classification_snapshots(
+    capture: Mapping[str, Any],
+    outcome: Mapping[str, Any],
+    *,
+    legacy: Mapping[str, Any],
+    strategy: Mapping[str, Any],
+    scenario: Mapping[str, Any],
+    trade_mode: str,
+) -> dict[str, Any]:
+    """Resolve frozen rule labels from an entry capture or embedded Paper evidence."""
+    outcome_forensics = _mapping(outcome.get("entry_forensics"))
+    outcome_v2 = _mapping(outcome.get("entry_v2"))
+    candidate = _mapping(capture.get("candidate"))
+
+    classification_input = dict(legacy or strategy)
+    for key, value in candidate.items():
+        classification_input.setdefault(key, value)
+    classification_input["trade_mode"] = trade_mode
+
+    adaptive = _mapping(capture.get("adaptive_scalp_shadow"))
+    adaptive_source = "ENTRY_CAPTURE" if adaptive else ""
+    if not adaptive:
+        adaptive = _mapping(outcome_forensics.get("adaptive_scalp_shadow"))
+        adaptive_source = "OUTCOME_EMBEDDED" if adaptive else ""
+    if not adaptive and trade_mode == "SCALP":
+        adaptive = classify_adaptive_scalp(classification_input, scenario)
+        adaptive_source = "RECOMPUTED_FROM_CAPTURED_ENTRY_CONTEXT"
+
+    neutral = _mapping(adaptive.get("neutral_low_score_experiment"))
+    if not neutral:
+        neutral = _mapping(outcome_forensics.get("neutral_low_score_shadow"))
+    neutral = dict(neutral)
+    neutral.setdefault(
+        "scalp_score",
+        classification_input.get("scalp_score", classification_input.get("score")),
+    )
+    neutral.setdefault("mtf_bias", classification_input.get("mtf_bias"))
+
+    maturity = _mapping(adaptive.get("maturity_experiment"))
+    if not maturity:
+        maturity = _mapping(outcome_forensics.get("maturity_experiment"))
+    maturity = dict(maturity)
+
+    trigger_reasons = classification_input.get("scalp_recovery_trigger_reasons")
+    if not isinstance(trigger_reasons, (list, tuple)):
+        trigger_reasons = strategy.get("scalp_recovery_trigger_reasons")
+    trigger_count = _number(
+        classification_input.get(
+            "scalp_recovery_trigger_count",
+            strategy.get("scalp_recovery_trigger_count"),
+        )
+    )
+    if trigger_count is None and isinstance(trigger_reasons, (list, tuple)):
+        trigger_count = float(len(trigger_reasons))
+    if trigger_count is not None:
+        maturity.setdefault("recovery_trigger_count", trigger_count)
+
+    trigger = _mapping(scenario.get("trigger"))
+    recovery = _mapping(trigger.get("recovery_follow_through_shadow"))
+    if not recovery:
+        recovery = _mapping(outcome_v2.get("recovery_follow_through_shadow"))
+
+    return {
+        "adaptive_scalp": dict(adaptive),
+        "neutral_low_score": neutral,
+        "maturity": maturity,
+        "recovery_follow_through": dict(recovery),
+        "adaptive_evidence_source": adaptive_source or "UNAVAILABLE",
+    }
+
+
+def _classification_label(
+    row: Mapping[str, Any],
+    rule_name: str,
+) -> tuple[str | None, str | None]:
+    evidence = _mapping(row.get("classification_evidence"))
+    if rule_name == "adaptive_scalp":
+        observation = _mapping(evidence.get("adaptive_scalp"))
+        label = str(observation.get("classification") or "").upper()
+        return (label, None) if label in _ADAPTIVE_SCALP_CLASSIFICATIONS else (None, "CLASSIFICATION_UNAVAILABLE")
+
+    if rule_name == "neutral_low_score":
+        observation = _mapping(evidence.get("neutral_low_score"))
+        action = str(observation.get("would_be_action") or "").upper()
+        if action not in _VALID_SHADOW_ACTIONS:
+            return None, "ACTION_UNAVAILABLE"
+        if _number(observation.get("scalp_score")) is None:
+            return None, "SCORE_UNAVAILABLE"
+        bias = str(observation.get("mtf_bias") or "").upper()
+        if bias not in _KNOWN_MTF_BIASES:
+            return None, "MTF_BIAS_UNAVAILABLE"
+        return action, None
+
+    if rule_name == "maturity":
+        observation = _mapping(evidence.get("maturity"))
+        action = str(observation.get("would_be_action") or "").upper()
+        if action not in _VALID_SHADOW_ACTIONS:
+            return None, "ACTION_UNAVAILABLE"
+        if _number(observation.get("recovery_trigger_count")) is None:
+            return None, "RECOVERY_TRIGGER_COUNT_UNAVAILABLE"
+        return action, None
+
+    if rule_name == "recovery_follow_through":
+        observation = _mapping(evidence.get("recovery_follow_through"))
+        if not observation:
+            return None, "OBSERVATION_UNAVAILABLE"
+        if observation.get("applicable") is not True:
+            return None, "NOT_APPLICABLE"
+        if observation.get("available") is not True:
+            return None, "INSUFFICIENT_DATA"
+        action = str(observation.get("would_be_action") or "").upper()
+        if action not in _VALID_SHADOW_ACTIONS:
+            return None, "ACTION_UNAVAILABLE"
+        return action, None
+
+    return None, "UNKNOWN_RULE"
+
+
+def _empty_classification_bucket() -> dict[str, Any]:
+    return {
+        "positions": 0,
+        "wins": 0,
+        "losses": 0,
+        "flat": 0,
+        "net_pnl_after_fees": 0.0,
+        "fees": 0.0,
+    }
+
+
+def _build_classification_cohort(
+    rows: list[Mapping[str, Any]],
+    *,
+    rule_name: str,
+    trade_mode: str,
+    sample_target: int,
+) -> dict[str, Any]:
+    if trade_mode != "SCALP":
+        return {
+            "applicable": False,
+            "sample_target": None,
+            "completed": 0,
+            "remaining": None,
+            "valid_unique_closed_positions": 0,
+            "not_applicable_positions": len(rows),
+            "excluded_positions": len(rows),
+            "exclusion_reasons": {"MODE_NOT_APPLICABLE": len(rows)} if rows else {},
+            "by_classification": {},
+            "samples": [],
+        }
+
+    exclusions: dict[str, int] = {}
+    seen_position_ids: set[str] = set()
+    valid_rows: list[dict[str, Any]] = []
+
+    def exclude(reason: str) -> None:
+        exclusions[reason] = exclusions.get(reason, 0) + 1
+
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("closed_at_utc") or ""),
+            str(row.get("position_id") or ""),
+        ),
+    )
+    for row in ordered_rows:
+        position_id = str(row.get("position_id") or "").strip()
+        if not position_id:
+            exclude("MISSING_POSITION_ID")
+            continue
+        if position_id in seen_position_ids:
+            exclude("DUPLICATE_POSITION_ID")
+            continue
+        seen_position_ids.add(position_id)
+
+        status = str(row.get("status") or "CLOSED").upper()
+        if status != "CLOSED":
+            exclude("POSITION_NOT_CLOSED")
+            continue
+
+        label, reason = _classification_label(row, rule_name)
+        if reason:
+            exclude(reason)
+            continue
+
+        net_pnl = _number(row.get("net_pnl"))
+        if net_pnl is None:
+            exclude("NET_PNL_UNAVAILABLE")
+            continue
+        fees = _number(row.get("fees"))
+        if fees is None:
+            exclude("FEES_UNAVAILABLE")
+            continue
+
+        valid_rows.append({
+            "venue": str(row.get("venue") or "UNKNOWN").upper(),
+            "trade_mode": trade_mode,
+            "position_id": position_id,
+            "capture_id": row.get("capture_id"),
+            "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+            "classification": label,
+            "net_pnl_after_fees": round(net_pnl, 8),
+            "fees": round(fees, 8),
+            "closed_at_utc": row.get("closed_at_utc"),
+            "close_reason": str(row.get("close_reason") or "UNKNOWN").upper(),
+            "evidence_source": _mapping(row.get("classification_evidence")).get(
+                "adaptive_evidence_source", "OUTCOME_EMBEDDED_OR_ENTRY_CAPTURE"
+            ),
+        })
+
+    counted_rows = valid_rows[:sample_target]
+    by_classification: dict[str, dict[str, Any]] = {}
+    for sample in counted_rows:
+        label = str(sample["classification"])
+        bucket = by_classification.setdefault(label, _empty_classification_bucket())
+        bucket["positions"] += 1
+        bucket["net_pnl_after_fees"] += sample["net_pnl_after_fees"]
+        bucket["fees"] += sample["fees"]
+        if sample["net_pnl_after_fees"] > 0:
+            bucket["wins"] += 1
+        elif sample["net_pnl_after_fees"] < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+
+    for bucket in by_classification.values():
+        bucket["net_pnl_after_fees"] = round(bucket["net_pnl_after_fees"], 8)
+        bucket["fees"] = round(bucket["fees"], 8)
+
+    valid_count = len(valid_rows)
+    return {
+        "applicable": True,
+        "sample_target": sample_target,
+        "completed": min(valid_count, sample_target),
+        "remaining": max(0, sample_target - valid_count),
+        "valid_unique_closed_positions": valid_count,
+        "additional_valid_positions_beyond_target": max(0, valid_count - sample_target),
+        "excluded_positions": sum(exclusions.values()),
+        "exclusion_reasons": dict(sorted(exclusions.items())),
+        "by_classification": by_classification,
+        "samples": counted_rows,
+    }
+
+
+def build_classification_shadow_report(
+    venue: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    sample_target: int = 50,
+) -> dict[str, Any]:
+    """Join four Scalp-only shadow classifications to unique closed Paper outcomes."""
+    if sample_target < 1:
+        raise ValueError("CLASSIFICATION_SHADOW_SAMPLE_TARGET_MUST_BE_POSITIVE")
+    row_list = [dict(row) for row in rows if isinstance(row, Mapping)]
+    modes = {"SCALP", "SWING"}
+    modes.update(str(row.get("trade_mode") or "UNKNOWN").upper() for row in row_list)
+    rules = {
+        "adaptive_scalp": "Adaptive Scalp regime/confirmation class",
+        "neutral_low_score": "SCALP score 65–69 with neutral MTF bias versus the other observed Scalp scores",
+        "maturity": "Recovery trigger count >= 3 versus fewer than 3",
+        "recovery_follow_through": "Two-closed-candle recovery follow-through label",
+    }
+    report_rules: dict[str, Any] = {}
+    for rule_name, description in rules.items():
+        cohorts = {
+            mode: _build_classification_cohort(
+                [row for row in row_list if str(row.get("trade_mode") or "UNKNOWN").upper() == mode],
+                rule_name=rule_name,
+                trade_mode=mode,
+                sample_target=sample_target,
+            )
+            for mode in sorted(modes)
+        }
+        report_rules[rule_name] = {
+            "description": description,
+            "scope": "SCALP_ONLY",
+            "by_trade_mode": cohorts,
+        }
+
+    return {
+        "schema_version": 1,
+        "venue": str(venue or "UNKNOWN").upper(),
+        "sample_target_per_rule_and_trade_mode": sample_target,
+        "accounting": (
+            "PAPER_OUTCOME.realized_pnl is already net of recorded fees; "
+            "net_pnl_after_fees uses that value without subtracting fees a second time."
+        ),
+        "rules": report_rules,
+        "interpretation": (
+            "These are descriptive labels attached to positions opened by the existing Paper authority. "
+            "A WOULD_BLOCK outcome is the actual Paper P&L for that executed position, not proof of "
+            "the counterfactual result had the entry been blocked."
+        ),
+    }
 
 
 def _joined_row(
@@ -405,11 +717,21 @@ def _joined_row(
         "90_PLUS"
     )
     peak_gain_band = _peak_gain_band(max_profit_percent)
+    classification_evidence = _classification_snapshots(
+        capture,
+        outcome,
+        legacy=legacy,
+        strategy=strategy,
+        scenario=scenario,
+        trade_mode=mode,
+    )
 
     return {
         "venue": str(venue).upper(),
         "position_id": str(outcome.get("position_id") or "").strip(),
         "capture_id": str(capture.get("capture_id") or _capture_id_from_outcome(outcome) or "").strip() or None,
+        "status": str(outcome.get("status") or "CLOSED").upper(),
+        "closed_at_utc": outcome.get("closed_at_utc"),
         "capture_matched": capture_matched,
         "decision_evidence_source": decision_evidence_source,
         "entry_context_available": bool(capture_matched or outcome_has_entry_context),
@@ -425,6 +747,7 @@ def _joined_row(
         "gross_pnl": gross_pnl,
         "net_pnl": net_pnl,
         "fees": fees,
+        "classification_evidence": classification_evidence,
         "fee_percent_of_entry_notional": fee_percent,
         "expected_rr": expected_rr,
         "expected_net_rr_after_fees": expected_net_rr,
@@ -797,6 +1120,7 @@ def build_linked_entry_outcome_analysis(
             ),
         },
         "overall": _aggregate(joined),
+        "classification_shadow": build_classification_shadow_report(venue_name, joined),
         "by_trade_mode": _group(joined, "trade_mode"),
         "by_trade_mode_and_failed_gate": _group_by_two_keys(
             joined, "trade_mode", "entry_v2_failed_gate_shadow"
@@ -861,4 +1185,4 @@ def build_linked_entry_outcome_analysis(
     }
 
 
-__all__ = ["build_linked_entry_outcome_analysis"]
+__all__ = ["build_classification_shadow_report", "build_linked_entry_outcome_analysis"]
