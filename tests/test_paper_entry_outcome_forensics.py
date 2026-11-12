@@ -148,6 +148,119 @@ def test_unmatched_outcome_is_reported_and_never_filled_from_unrelated_capture()
     assert result["worst_trades"][0]["decision_evidence_source"] == "OUTCOME_ONLY"
 
 
+def test_classification_shadow_links_all_four_rules_to_unique_closed_paper_outcomes():
+    capture = {
+        "capture_id": "CAP-CLASS-1",
+        "captured_at": "2026-11-11T08:00:00+00:00",
+        "symbol": "BTCUSDT",
+        "legacy_result": {
+            "trade_mode": "SCALP",
+            "scalp_score": 68,
+            "score": 68,
+            "scalp_signal": "BUY",
+            "mtf_bias": "NEUTRAL",
+            "mtf_timeframe_bias": {
+                "5m": "BULLISH", "15m": "BEARISH", "1h": "BEARISH", "4h": "BEARISH"
+            },
+            "scalp_recovery_confirmation": True,
+            "scalp_confirmed_reversal": True,
+            "scalp_recovery_trigger_count": 3,
+            "scalp_recovery_trigger_reasons": [
+                "5M_RSI_RISING", "5M_PRICE_RECOVERY", "5M_BULLISH_BODY"
+            ],
+            "volume_ratio_5m": 1.2,
+            "pattern_confirmed": True,
+            "pattern": "BULLISH_ENGULFING",
+        },
+        "entry_scenario": {
+            "trade_mode": "SCALP",
+            "trigger": {
+                "recovery_follow_through_shadow": {
+                    "shadow_only": True,
+                    "applicable": True,
+                    "available": True,
+                    "would_be_action": "WOULD_ALLOW",
+                }
+            },
+        },
+        "adaptive_scalp_shadow": {
+            "classification": "BEAR_RECOVERY_STRONG",
+            "recovery_trigger_count": 3,
+            "maturity_experiment": {
+                "would_be_action": "WOULD_ALLOW",
+                "shadow_only": True,
+            },
+            "neutral_low_score_experiment": {
+                "would_be_action": "WOULD_BLOCK",
+                "scalp_score": 68,
+                "mtf_bias": "NEUTRAL",
+                "shadow_only": True,
+            },
+        },
+        "v2_decision": {"trade_mode": "SCALP"},
+    }
+    outcome = {
+        "position_id": "POS-CLASS-1",
+        "symbol": "BTCUSDT",
+        "status": "CLOSED",
+        "closed_at_utc": "2026-11-11T08:20:00+00:00",
+        "trade_mode": "SCALP",
+        "entry_v2": {"capture_id": "CAP-CLASS-1"},
+        "gross_pnl": 0.35,
+        "realized_pnl": 0.25,
+        "fees": 0.10,
+        "close_reason": "TRAILING_STOP",
+    }
+
+    result = build_linked_entry_outcome_analysis("MAIN", [outcome], [capture])
+    report = result["classification_shadow"]
+
+    expected = {
+        "adaptive_scalp": "BEAR_RECOVERY_STRONG",
+        "neutral_low_score": "WOULD_BLOCK",
+        "maturity": "WOULD_ALLOW",
+        "recovery_follow_through": "WOULD_ALLOW",
+    }
+    for rule, label in expected.items():
+        cohort = report["rules"][rule]["by_trade_mode"]["SCALP"]
+        assert cohort["completed"] == 1
+        assert cohort["remaining"] == 49
+        assert cohort["excluded_positions"] == 0
+        assert cohort["samples"][0]["position_id"] == "POS-CLASS-1"
+        assert cohort["samples"][0]["classification"] == label
+        # realized_pnl is already net of the recorded 0.10 fee.
+        assert cohort["samples"][0]["net_pnl_after_fees"] == 0.25
+        assert cohort["samples"][0]["fees"] == 0.10
+        assert cohort["by_classification"][label]["net_pnl_after_fees"] == 0.25
+
+    assert report["rules"]["adaptive_scalp"]["by_trade_mode"]["SWING"]["applicable"] is False
+    assert report["accounting"].find("without subtracting fees a second time") >= 0
+
+
+def test_classification_shadow_excludes_unavailable_recovery_observations():
+    outcome = {
+        "position_id": "POS-RECOVERY-NA",
+        "symbol": "ADAUSDT",
+        "status": "CLOSED",
+        "trade_mode": "SCALP",
+        "realized_pnl": -0.2,
+        "fees": 0.05,
+        "entry_v2": {"recovery_follow_through_shadow": {
+            "applicable": True,
+            "available": False,
+            "would_be_action": "INSUFFICIENT_DATA",
+        }},
+    }
+    report = build_linked_entry_outcome_analysis("OKX", [outcome], [])["classification_shadow"]
+    cohort = report["rules"]["recovery_follow_through"]["by_trade_mode"]["SCALP"]
+
+    assert cohort["completed"] == 0
+    assert cohort["remaining"] == 50
+    assert cohort["excluded_positions"] == 1
+    assert cohort["exclusion_reasons"] == {"INSUFFICIENT_DATA": 1}
+    assert cohort["samples"] == []
+
+
 def test_forensics_rejects_unsupported_venue():
     try:
         build_linked_entry_outcome_analysis("BINANCE", [], [])
