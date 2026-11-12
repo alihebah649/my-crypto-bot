@@ -241,6 +241,11 @@ def test_classification_shadow_links_all_four_rules_to_unique_closed_paper_outco
 
     assert report["rules"]["adaptive_scalp"]["by_trade_mode"]["SWING"]["applicable"] is False
     assert report["accounting"].find("without subtracting fees a second time") >= 0
+    net_floor = result["net_floor_sample_progress"]["cohorts"]["SCALP"]
+    assert net_floor["completed"] == 1
+    assert net_floor["remaining"] == 49
+    assert net_floor["by_status"] == {"TRIGGERED": 1}
+    assert net_floor["samples"][0]["position_id"] == "POS-CLASS-1"
 
 
 def test_classification_shadow_excludes_unavailable_recovery_observations():
