@@ -3427,6 +3427,18 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
             "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
         },
         "venues": venues,
+        "classification_shadow": {
+            "sample_target_per_rule_venue_trade_mode": 50,
+            "accounting": (
+                "PAPER_OUTCOME.realized_pnl is already net of recorded fees; "
+                "do not subtract fees again."
+            ),
+            "by_venue": {
+                venue: report.get("classification_shadow", {})
+                for venue, report in venues.items()
+                if isinstance(report, dict) and report.get("classification_shadow")
+            },
+        },
         "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
         "capture_read_policy": "ONLY_ENTRY_CAPTURES_REFERENCED_BY_WINDOWED_CLOSED_OUTCOMES",
     }
@@ -3487,6 +3499,32 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                     separators=(",", ":"),
                 ),
             )
+
+        classification_shadow = report.get("classification_shadow") or {}
+        for rule_name, rule in sorted((classification_shadow.get("rules") or {}).items()):
+            for mode, cohort in sorted((rule.get("by_trade_mode") or {}).items()):
+                _legacy.logger.warning(
+                    "[PAPER-CLASSIFICATION-SHADOW-PROGRESS] %s %s",
+                    venue,
+                    json.dumps(
+                        {
+                            "venue": venue,
+                            "rule": rule_name,
+                            "trade_mode": mode,
+                            "applicable": cohort.get("applicable"),
+                            "sample_target": cohort.get("sample_target"),
+                            "completed": cohort.get("completed"),
+                            "remaining": cohort.get("remaining"),
+                            "valid_unique_closed_positions": cohort.get("valid_unique_closed_positions"),
+                            "excluded_positions": cohort.get("excluded_positions"),
+                            "exclusion_reasons": cohort.get("exclusion_reasons"),
+                            "by_classification": cohort.get("by_classification"),
+                            "samples": cohort.get("samples"),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
 
         for dimension in (
             "by_trade_mode_and_failed_gate",
