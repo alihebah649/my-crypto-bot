@@ -3203,6 +3203,26 @@ def _paper_structural_stop_comparison_report():
         payload["current_service_venue_mode"] = venue_mode
         payload["current_service_venue"] = _structural_stop_comparison_stream()[0]
         payload["hosted_lab_monitor"] = _hosted_paper_structural_stop_coordinator.snapshot()
+        _legacy.logger.warning(
+            "[PAPER-STRUCTURAL-STOP-SAMPLE-PROGRESS] %s",
+            json.dumps(
+                {
+                    "sample_progress_by_venue_and_trade_mode": {
+                        key: {
+                            field: value for field, value in cohort.items()
+                            if field != "samples"
+                        }
+                        for key, cohort in (
+                            payload.get("sample_progress_by_venue_and_trade_mode") or {}
+                        ).items()
+                    },
+                    "coverage": payload.get("coverage"),
+                    "comparison": payload.get("comparison"),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         return jsonify(payload), 200
     except Exception as exc:
         _legacy.logger.exception("Structural-stop comparison report failed")
@@ -3689,6 +3709,10 @@ def _paper_precalibration_shadow_report():
                 "dispositions": payload["dispositions"],
                 "outcomes": payload["outcomes"],
                 "decisive_outcomes": payload["decisive_outcomes"],
+                "sample_progress": {
+                    key: value for key, value in payload["sample_progress"].items()
+                    if key != "samples"
+                },
                 "net_profit_factor_after_estimated_fees": payload["net_profit_factor_after_estimated_fees"],
             }, ensure_ascii=False, separators=(",", ":")),
         )
