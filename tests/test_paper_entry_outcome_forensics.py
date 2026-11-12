@@ -210,6 +210,12 @@ def test_classification_shadow_links_all_four_rules_to_unique_closed_paper_outco
         "realized_pnl": 0.25,
         "fees": 0.10,
         "close_reason": "TRAILING_STOP",
+        "exit_protection": {
+            "net_floor_shadow_trial": {
+                "status": "TRIGGERED",
+                "triggered": True,
+            }
+        },
     }
 
     result = build_linked_entry_outcome_analysis("MAIN", [outcome], [capture])
