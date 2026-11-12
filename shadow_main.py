@@ -83,6 +83,10 @@ from core.paper_structural_stop_comparison import (
 from core.paper_structural_stop_comparison_runtime import (
     PaperStructuralStopComparisonCoordinator,
 )
+from core.paper_structural_stop_routing import (
+    STRUCTURAL_STOP_COMPARISON_VENUES,
+    resolve_structural_stop_stream,
+)
 from engine.entry_v2_capture import capture_summary as _entry_v2_capture_summary
 from core.market_health_notifications import should_notify_market_health as _should_notify_market_health
 from core.market_health_summary import (
@@ -1981,12 +1985,7 @@ _entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
 
 # Paired, non-authoritative comparison of the entry-time ATR and structural
 # stops. Each isolated Render Paper service uses only its own venue stream.
-_PAPER_STRUCTURAL_STOP_COMPARISON_VENUES = {
-    "MIXED": ("BINANCE", "_binance_market_stream", "MAIN"),
-    "BINANCE_ONLY_LAB": ("BINANCE", "_binance_market_stream", "BINANCE_ONLY_LAB"),
-    "BYBIT_ONLY_LAB": ("BYBIT", "_bybit_market_stream", "BYBIT_ONLY_LAB"),
-    "OKX_ONLY_LAB": ("OKX", "_okx_market_stream", "OKX_ONLY_LAB"),
-}
+_PAPER_STRUCTURAL_STOP_COMPARISON_VENUES = STRUCTURAL_STOP_COMPARISON_VENUES
 _PAPER_STRUCTURAL_STOP_COMPARISON_ENABLED = bool(
     _evidence_database_url
     and PAPER_VENUE_MODE in _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES
@@ -2088,12 +2087,11 @@ def _seed_existing_hosted_paper_structural_stop_positions() -> None:
 
 
 def _structural_stop_comparison_stream(venue_mode: str | None = None):
-    mode = str(venue_mode or PAPER_VENUE_MODE or "UNKNOWN").upper()
-    spec = _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES.get(mode)
-    if spec is None:
-        return "UNKNOWN", None, mode
-    venue, stream_name, report_mode = spec
-    return venue, globals().get(stream_name), report_mode
+    return resolve_structural_stop_stream(
+        venue_mode,
+        PAPER_VENUE_MODE,
+        globals(),
+    )
 
 
 def _restore_structural_stop_comparison_watches() -> None:
