@@ -3519,7 +3519,7 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                             "excluded_positions": cohort.get("excluded_positions"),
                             "exclusion_reasons": cohort.get("exclusion_reasons"),
                             "by_classification": cohort.get("by_classification"),
-                            "samples": cohort.get("samples"),
+                            "sample_rows_returned": len(cohort.get("samples") or []),
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
