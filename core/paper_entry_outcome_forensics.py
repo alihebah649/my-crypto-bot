@@ -5,7 +5,7 @@ It computes empirical execution economics; it never changes a trade decision.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from math import isfinite
 from typing import Any
@@ -184,6 +184,17 @@ def _joined_row(
         exit_protection.get("paper_profit_protection_detail")
     )
     shadow_trial = _mapping(exit_protection.get("net_floor_shadow_trial"))
+    adaptive_shadow = _mapping(capture.get("adaptive_scalp_shadow"))
+    neutral_low_score_shadow = _mapping(
+        adaptive_shadow.get("neutral_low_score_experiment")
+        or outcome_forensics.get("neutral_low_score_shadow")
+    )
+    maturity_shadow = _mapping(adaptive_shadow.get("maturity_experiment"))
+    recovery_trigger = _mapping(scenario.get("trigger"))
+    recovery_follow_through_shadow = _mapping(
+        recovery_trigger.get("recovery_follow_through_shadow")
+        or outcome_v2.get("recovery_follow_through_shadow")
+    )
     shadow_status = str(shadow_trial.get("status") or "UNKNOWN").upper()
     shadow_triggered_value = shadow_trial.get("triggered")
     shadow_triggered = (
@@ -467,6 +478,32 @@ def _joined_row(
             }
             if shadow_trial else None
         ),
+        "classifier_shadow": {
+            "adaptive_scalp": {
+                "classification": str(adaptive_shadow.get("classification") or "UNAVAILABLE").upper(),
+                "advisory_action": str(adaptive_shadow.get("advisory_action") or "NO_ACTION").upper(),
+                "reasons": list(adaptive_shadow.get("reasons", []) or []),
+            },
+            "neutral_low_score": {
+                "would_be_action": str(neutral_low_score_shadow.get("would_be_action") or "UNAVAILABLE").upper(),
+                "gate_pass": neutral_low_score_shadow.get("gate_pass"),
+                "mtf_bias": str(neutral_low_score_shadow.get("mtf_bias") or strategy.get("mtf_bias") or "UNKNOWN").upper(),
+                "scalp_score": _number(neutral_low_score_shadow.get("scalp_score") or strategy.get("scalp_score")),
+                "reasons": list(neutral_low_score_shadow.get("reasons", []) or []),
+                "evidence_source": "ENTRY_CAPTURE" if adaptive_shadow.get("neutral_low_score_experiment") else ("OUTCOME_EMBEDDED_ENTRY_CONTEXT" if outcome_forensics.get("neutral_low_score_shadow") else "UNAVAILABLE"),
+            },
+            "maturity": {
+                "would_be_action": str(maturity_shadow.get("would_be_action") or "UNAVAILABLE").upper(),
+                "gate_pass": maturity_shadow.get("gate_pass"),
+                "reasons": list(maturity_shadow.get("reasons", []) or []),
+            },
+            "recovery_follow_through": {
+                "would_be_action": str(recovery_follow_through_shadow.get("would_be_action") or "UNAVAILABLE").upper(),
+                "reasons": list(recovery_follow_through_shadow.get("reasons", []) or []),
+                "evidence_source": "ENTRY_CAPTURE" if recovery_trigger.get("recovery_follow_through_shadow") else ("OUTCOME_EMBEDDED_ENTRY_CONTEXT" if outcome_v2.get("recovery_follow_through_shadow") else "UNAVAILABLE"),
+                "observation": dict(recovery_follow_through_shadow),
+            },
+        },
         "target_reached": target_reached,
         "entry_v2_approved_shadow": entry_v2_approved,
         "entry_v2_decision_shadow": str(
@@ -673,6 +710,171 @@ def _group_by_two_keys(
     }
 
 
+def _rule_metrics(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
+    values = [_number(row.get("net_pnl_after_fees")) for row in samples]
+    clean = [value for value in values if value is not None]
+    wins = sum(1 for value in clean if value > 0)
+    losses = sum(1 for value in clean if value < 0)
+    fees = [_number(row.get("fees")) for row in samples]
+    known_fees = [value for value in fees if value is not None]
+    return {
+        "completed": len(samples), "wins": wins, "losses": losses,
+        "flat": len(clean) - wins - losses,
+        "net_pnl_after_fees": round(sum(clean), 6) if clean else 0.0,
+        "fees_recorded": round(sum(known_fees), 6) if known_fees else 0.0,
+        "average_net_pnl_after_fees": round(sum(clean) / len(clean), 6) if clean else None,
+    }
+
+
+def _classification_sample(row: Mapping[str, Any], rule: str, label: str, action: str) -> dict[str, Any]:
+    observation = _mapping(_mapping(row.get("classifier_shadow")).get(rule))
+    return {
+        "venue": row.get("venue"), "trade_mode": row.get("trade_mode"),
+        "position_id": row.get("position_id"), "capture_id": row.get("capture_id"),
+        "capture_matched": bool(row.get("capture_matched")),
+        "evidence_source": observation.get("evidence_source") or ("ENTRY_CAPTURE" if row.get("capture_matched") else row.get("decision_evidence_source")),
+        "symbol": row.get("symbol"), "classification": label,
+        "would_be_action": action, "reasons": list(observation.get("reasons", []) or []),
+        "close_reason": row.get("close_reason"),
+        # realized_pnl has already had the recorded fees deducted by Paper execution.
+        "net_pnl_after_fees": row.get("net_pnl"), "fees": row.get("fees"),
+    }
+
+
+def _classification_shadow_rule_progress(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Link each captured classification to one unique closed Paper outcome."""
+    definitions = {
+        "adaptive_scalp": {"field": "adaptive_scalp", "label_field": "classification", "action_field": "advisory_action", "requires_capture": True,
+            "description": "Adaptive Scalp classification on captured SCALP entries"},
+        "neutral_low_score": {"field": "neutral_low_score", "label_field": "would_be_action", "action_field": "would_be_action", "requires_capture": False,
+            "description": "Only WOULD_BLOCK rows satisfying score 65-69 and neutral MTF count; WOULD_ALLOW rows are controls"},
+        "maturity": {"field": "maturity", "label_field": "would_be_action", "action_field": "would_be_action", "requires_capture": True,
+            "description": "Maturity experiment based on the captured recovery-trigger count"},
+        "recovery_follow_through": {"field": "recovery_follow_through", "label_field": "would_be_action", "action_field": "would_be_action", "requires_capture": False,
+            "description": "Recovery Follow-Through result from the two closed 5m candles"},
+    }
+    result: dict[str, Any] = {}
+    for rule, definition in definitions.items():
+        by_mode: dict[str, Any] = {}
+        for mode in ("SCALP", "SWING", "UNKNOWN"):
+            cohort = [row for row in rows if str(row.get("trade_mode") or "UNKNOWN").upper() == mode]
+            exclusions: Counter[str] = Counter()
+            seen_positions: set[str] = set()
+            samples: list[dict[str, Any]] = []
+            controls: list[dict[str, Any]] = []
+            grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for row in cohort:
+                position_id = str(row.get("position_id") or "").strip()
+                if not position_id:
+                    exclusions["MISSING_POSITION_ID"] += 1
+                    continue
+                if position_id in seen_positions:
+                    exclusions["DUPLICATE_POSITION_ID"] += 1
+                    continue
+                seen_positions.add(position_id)
+                if mode != "SCALP":
+                    exclusions["MODE_NOT_APPLICABLE_SCALP_ONLY_RULE"] += 1
+                    continue
+                if definition["requires_capture"] and not row.get("capture_matched"):
+                    exclusions["ENTRY_CAPTURE_NOT_MATCHED"] += 1
+                    continue
+                observation = _mapping(_mapping(row.get("classifier_shadow")).get(definition["field"]))
+                if not observation:
+                    exclusions["CLASSIFIER_OBSERVATION_UNAVAILABLE"] += 1
+                    continue
+                action = str(observation.get(definition["action_field"]) or "UNAVAILABLE").upper()
+                if rule == "neutral_low_score" and action == "WOULD_ALLOW":
+                    if _number(row.get("net_pnl")) is None or _number(row.get("fees")) is None:
+                        exclusions["CONTROL_OUTCOME_OR_FEES_UNAVAILABLE"] += 1
+                        continue
+                    controls.append(_classification_sample(row, rule, "WOULD_ALLOW_CONTROL", action))
+                    exclusions["CONTROL_WOULD_ALLOW_NOT_RULE_APPLICABLE"] += 1
+                    continue
+                if action not in {"WOULD_ALLOW", "WOULD_BLOCK"} and rule != "adaptive_scalp":
+                    exclusions[f"INVALID_ACTION_{action}"] += 1
+                    continue
+                if rule == "adaptive_scalp":
+                    label = str(observation.get(definition["label_field"]) or "UNAVAILABLE").upper()
+                    if label in {"", "UNKNOWN", "UNAVAILABLE", "NOT_APPLICABLE"}:
+                        exclusions["ADAPTIVE_CLASSIFICATION_UNAVAILABLE"] += 1
+                        continue
+                    action = str(observation.get("advisory_action") or "NO_ACTION").upper()
+                else:
+                    label = action
+                if _number(row.get("net_pnl")) is None:
+                    exclusions["NET_PNL_UNAVAILABLE"] += 1
+                    continue
+                if _number(row.get("fees")) is None:
+                    exclusions["FEES_UNAVAILABLE"] += 1
+                    continue
+                sample = _classification_sample(row, rule, label, action)
+                samples.append(sample)
+                grouped[label].append(sample)
+            by_mode[mode] = {
+                "target_samples": 50, "completed": len(samples),
+                "remaining_to_50": max(0, 50 - len(samples)),
+                "exclusions": dict(sorted(exclusions.items())),
+                "by_classification": {label: _rule_metrics(group) for label, group in sorted(grouped.items())},
+                "controls_not_counted": {
+                    "completed": len(controls),
+                    "by_action": {"WOULD_ALLOW": _rule_metrics(controls)} if controls else {},
+                    "samples": controls[:100],
+                },
+                "samples": samples[:250],
+                "sample_records_truncated": max(0, len(samples) - 250),
+                "pnl_basis": "PAPER_OUTCOME.realized_pnl is already net of recorded fees; fees are shown separately and not deducted again",
+            }
+        result[rule] = {"description": definition["description"], "target_samples_per_venue_and_mode": 50, "by_trade_mode": by_mode}
+    return result
+
+
+def _net_floor_sample_progress(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Count closed Paper positions with a valid persisted Net-Floor observation."""
+    by_mode: dict[str, Any] = {}
+    for mode in ("SCALP", "SWING", "UNKNOWN"):
+        cohort = [row for row in rows if str(row.get("trade_mode") or "UNKNOWN").upper() == mode]
+        exclusions: Counter[str] = Counter()
+        seen: set[str] = set()
+        samples: list[dict[str, Any]] = []
+        for row in cohort:
+            position_id = str(row.get("position_id") or "").strip()
+            if not position_id:
+                exclusions["MISSING_POSITION_ID"] += 1
+                continue
+            if position_id in seen:
+                exclusions["DUPLICATE_POSITION_ID"] += 1
+                continue
+            seen.add(position_id)
+            status = str(row.get("profit_protection_shadow_status") or "UNKNOWN").upper()
+            if status == "SKIPPED_PARTIAL_EXIT":
+                exclusions["SKIPPED_PARTIAL_EXIT"] += 1
+                continue
+            if status not in {"OBSERVING", "TRIGGERED"}:
+                exclusions[f"NO_VALID_NET_FLOOR_OBSERVATION_{status}"] += 1
+                continue
+            if _number(row.get("net_pnl")) is None:
+                exclusions["ACTUAL_NET_PNL_UNAVAILABLE"] += 1
+                continue
+            if _number(row.get("fees")) is None:
+                exclusions["RECORDED_FEES_UNAVAILABLE"] += 1
+                continue
+            samples.append({
+                "position_id": position_id, "symbol": row.get("symbol"), "trade_mode": mode,
+                "status": status, "net_pnl_after_fees": row.get("net_pnl"), "fees": row.get("fees"),
+                "shadow_net_pnl_after_fees": row.get("profit_protection_shadow_net_pnl_after_fees"),
+            })
+        metrics = _rule_metrics(samples)
+        by_mode[mode] = {
+            "target_samples": 50, "completed": metrics["completed"],
+            "remaining_to_50": max(0, 50 - metrics["completed"]),
+            "wins": metrics["wins"], "losses": metrics["losses"],
+            "net_pnl_after_fees": metrics["net_pnl_after_fees"], "fees_recorded": metrics["fees_recorded"],
+            "exclusions": dict(sorted(exclusions.items())),
+            "status_counts": dict(Counter(sample["status"] for sample in samples)),
+        }
+    return {"target_samples_per_venue_and_mode": 50, "by_trade_mode": by_mode}
+
+
 def build_linked_entry_outcome_analysis(
     venue: str,
     outcomes: Iterable[Mapping[str, Any]],
@@ -797,6 +999,8 @@ def build_linked_entry_outcome_analysis(
             ),
         },
         "overall": _aggregate(joined),
+        "classification_shadow_rules": _classification_shadow_rule_progress(joined),
+        "net_floor_shadow_progress": _net_floor_sample_progress(joined),
         "by_trade_mode": _group(joined, "trade_mode"),
         "by_trade_mode_and_failed_gate": _group_by_two_keys(
             joined, "trade_mode", "entry_v2_failed_gate_shadow"
