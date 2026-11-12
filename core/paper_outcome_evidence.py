@@ -128,9 +128,9 @@ def build_paper_outcome_evidence(
         "trade_mode",
         str(entry_metadata.get("trade_mode", getattr(position, "trade_mode", "UNKNOWN"))).upper(),
     )
-    neutral_low_score_experiment = classify_adaptive_scalp(
-        experiment_input
-    ).get("neutral_low_score_experiment")
+    adaptive_scalp_shadow = classify_adaptive_scalp(experiment_input)
+    neutral_low_score_experiment = adaptive_scalp_shadow.get("neutral_low_score_experiment")
+    maturity_experiment = adaptive_scalp_shadow.get("maturity_experiment")
     v2 = entry_metadata.get("entry_v2_shadow_decision", {}) or {}
     entry_decision_chain = entry_metadata.get("entry_decision_chain")
 
@@ -281,6 +281,8 @@ def build_paper_outcome_evidence(
             "recovery_confirmation": strategy.get("scalp_recovery_confirmation"),
             "recovery_trigger_count": strategy.get("scalp_recovery_trigger_count"),
             "recovery_trigger_reasons": list(strategy.get("scalp_recovery_trigger_reasons", []) or []),
+            "adaptive_scalp_shadow": _safe(adaptive_scalp_shadow),
+            "maturity_experiment": _safe(maturity_experiment),
             "volume_ratio_5m": strategy.get("volume_ratio_5m"),
             "source_parity_shadow": _safe(strategy.get("source_parity_shadow")),
             "mtf_bias": strategy.get("mtf_bias"),
