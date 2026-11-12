@@ -186,6 +186,15 @@ def test_report_excludes_ambiguous_and_data_gap_from_decisive_results():
     assert report["sum_net_return_percent_after_estimated_fees"] == 0.4
     assert report["outcomes"]["AMBIGUOUS_SAME_CANDLE"] == 1
     assert report["outcomes"]["DATA_GAP"] == 1
+    assert report["sample_progress"]["venue"] == "MAIN"
+    assert report["sample_progress"]["trade_mode"] == "SCALP"
+    assert report["sample_progress"]["completed"] == 2
+    assert report["sample_progress"]["remaining"] == 48
+    assert report["sample_progress"]["excluded_final_records"] == 2
+    assert report["sample_progress"]["exclusion_reasons"] == {
+        "AMBIGUOUS_SAME_CANDLE": 1,
+        "DATA_GAP": 1,
+    }
     assert report["interpretation"]["trading_logic_changed"] is False
 
 

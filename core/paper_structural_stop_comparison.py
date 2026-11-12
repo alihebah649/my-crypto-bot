@@ -549,6 +549,94 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
         )
     ]
 
+    cohort_keys = {
+        (
+            str(row.get("venue") or "UNKNOWN").upper(),
+            str(row.get("trade_mode") or "UNKNOWN").upper(),
+        )
+        for row in list(starts.values()) + rows + list(decisions.values())
+    }
+    sample_progress_by_venue_mode: dict[str, Any] = {}
+    for venue_name, trade_mode in sorted(cohort_keys):
+        cohort_starts = [
+            row for row in starts.values()
+            if str(row.get("venue") or "UNKNOWN").upper() == venue_name
+            and str(row.get("trade_mode") or "UNKNOWN").upper() == trade_mode
+        ]
+        cohort_finals = [
+            row for row in rows
+            if str(row.get("venue") or "UNKNOWN").upper() == venue_name
+            and str(row.get("trade_mode") or "UNKNOWN").upper() == trade_mode
+        ]
+        cohort_decisions = [
+            row for row in decisions.values()
+            if str(row.get("venue") or "UNKNOWN").upper() == venue_name
+            and str(row.get("trade_mode") or "UNKNOWN").upper() == trade_mode
+        ]
+        valid_samples: list[dict[str, Any]] = []
+        exclusion_reasons: Counter[str] = Counter()
+        for final in cohort_finals:
+            atr_path = final.get("atr_path") if isinstance(final.get("atr_path"), Mapping) else {}
+            structural_path = final.get("structural_path") if isinstance(final.get("structural_path"), Mapping) else {}
+            atr_status = str(atr_path.get("status") or "UNKNOWN").upper()
+            structural_status = str(structural_path.get("status") or "UNKNOWN").upper()
+            if atr_status not in _DECISIVE or structural_status not in _DECISIVE:
+                statuses = {atr_status, structural_status}
+                if "DATA_GAP" in statuses:
+                    reason = "DATA_GAP"
+                elif "AMBIGUOUS_SAME_CANDLE" in statuses:
+                    reason = "AMBIGUOUS_SAME_CANDLE"
+                else:
+                    reason = "NON_DECISIVE_PAIRED_PATH"
+                exclusion_reasons[reason] += 1
+                continue
+            atr_net = _number(atr_path.get("net_return_percent_after_estimated_fees"))
+            structural_net = _number(structural_path.get("net_return_percent_after_estimated_fees"))
+            if atr_net is None or structural_net is None:
+                exclusion_reasons["COUNTERFACTUAL_NET_RETURN_UNAVAILABLE"] += 1
+                continue
+            actual = final.get("actual_paper_outcome")
+            actual = actual if isinstance(actual, Mapping) else {}
+            valid_samples.append({
+                "position_id": final.get("position_id"),
+                "symbol": str(final.get("symbol") or "UNKNOWN").upper(),
+                "venue": venue_name,
+                "trade_mode": trade_mode,
+                "classification": final.get("structural_comparison"),
+                "atr_status": atr_status,
+                "structural_status": structural_status,
+                "atr_net_return_percent_after_estimated_fees": atr_net,
+                "structural_net_return_percent_after_estimated_fees": structural_net,
+                "structural_minus_atr_net_return_percent": round(structural_net - atr_net, 8),
+                "actual_paper_net_pnl_after_fees": _number(actual.get("realized_pnl")),
+                "actual_paper_fees": _number(actual.get("total_fees")),
+            })
+        for decision in cohort_decisions:
+            exclusion_reasons[str(decision.get("reason") or decision.get("status") or "UNMEASURABLE_CONTEXT").upper()] += 1
+
+        cohort_active_ids = {
+            str(row.get("position_id") or "")
+            for row in active
+            if str(row.get("venue") or "UNKNOWN").upper() == venue_name
+            and str(row.get("trade_mode") or "UNKNOWN").upper() == trade_mode
+        }
+        cohort_key = f"{venue_name}|{trade_mode}"
+        valid_count = len(valid_samples)
+        sample_progress_by_venue_mode[cohort_key] = {
+            "venue": venue_name,
+            "trade_mode": trade_mode,
+            "sample_target": 50,
+            "completed": min(valid_count, 50),
+            "remaining": max(0, 50 - valid_count),
+            "valid_unique_decisive_pairs": valid_count,
+            "additional_valid_pairs_beyond_target": max(0, valid_count - 50),
+            "pending_incomplete_positions": len(cohort_active_ids),
+            "started_positions": len(cohort_starts),
+            "excluded_positions": sum(exclusion_reasons.values()),
+            "exclusion_reasons": dict(sorted(exclusion_reasons.items())),
+            "samples": valid_samples[:50],
+        }
+
     actual_closed = [
         row["actual_paper_outcome"]
         for row in rows
@@ -605,6 +693,7 @@ def build_structural_stop_comparison_report(records: Any) -> dict[str, Any]:
             "note": "Actual Paper realized PnL is reported as stored by the Paper repository; it is not recomputed or fee-adjusted again.",
         },
         "by_venue_mode_trade_mode": by_venue_mode,
+        "sample_progress_by_venue_and_trade_mode": sample_progress_by_venue_mode,
         "active_positions": [
             {
                 "position_id": row.get("position_id"),

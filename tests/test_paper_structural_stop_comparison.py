@@ -259,6 +259,10 @@ def test_report_compares_only_paired_decisive_positions():
     assert report["comparison"]["average_structural_minus_atr_net_return_percent"] == 6.0
     assert report["overall"]["atr"]["decisive_positions"] == 1
     assert report["overall"]["structural"]["decisive_positions"] == 1
+    progress = report["sample_progress_by_venue_and_trade_mode"]["BINANCE|SCALP"]
+    assert progress["completed"] == 1
+    assert progress["remaining"] == 49
+    assert progress["valid_unique_decisive_pairs"] == 1
     assert report["mode"] == "PAPER_ONLY"
 
 

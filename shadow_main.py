@@ -1982,6 +1982,9 @@ _entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
 # Paired, non-authoritative comparison of the entry-time ATR and structural
 # stops. Each isolated Render Paper service uses only its own venue stream.
 _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES = {
+    # MAIN is the persisted venue_mode on restored watches. Keep it as an
+    # explicit alias so the coordinator resumes against Binance after restart.
+    "MAIN": ("BINANCE", "_binance_market_stream", "MAIN"),
     "MIXED": ("BINANCE", "_binance_market_stream", "MAIN"),
     "BINANCE_ONLY_LAB": ("BINANCE", "_binance_market_stream", "BINANCE_ONLY_LAB"),
     "BYBIT_ONLY_LAB": ("BYBIT", "_bybit_market_stream", "BYBIT_ONLY_LAB"),
@@ -3200,6 +3203,26 @@ def _paper_structural_stop_comparison_report():
         payload["current_service_venue_mode"] = venue_mode
         payload["current_service_venue"] = _structural_stop_comparison_stream()[0]
         payload["hosted_lab_monitor"] = _hosted_paper_structural_stop_coordinator.snapshot()
+        _legacy.logger.warning(
+            "[PAPER-STRUCTURAL-STOP-SAMPLE-PROGRESS] %s",
+            json.dumps(
+                {
+                    "sample_progress_by_venue_and_trade_mode": {
+                        key: {
+                            field: value for field, value in cohort.items()
+                            if field != "samples"
+                        }
+                        for key, cohort in (
+                            payload.get("sample_progress_by_venue_and_trade_mode") or {}
+                        ).items()
+                    },
+                    "coverage": payload.get("coverage"),
+                    "comparison": payload.get("comparison"),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         return jsonify(payload), 200
     except Exception as exc:
         _legacy.logger.exception("Structural-stop comparison report failed")
@@ -3424,6 +3447,26 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
             "OKX": "PAPER_OUTCOME.position_id -> ENTRY_V2_CAPTURE.position_id (selective JSON payload lookup)",
         },
         "venues": venues,
+        "classification_shadow": {
+            "sample_target_per_rule_venue_trade_mode": 50,
+            "accounting": (
+                "PAPER_OUTCOME.realized_pnl is already net of recorded fees; "
+                "do not subtract fees again."
+            ),
+            "by_venue": {
+                venue: report.get("classification_shadow", {})
+                for venue, report in venues.items()
+                if isinstance(report, dict) and report.get("classification_shadow")
+            },
+        },
+        "net_floor_sample_progress": {
+            "sample_target_per_venue_and_trade_mode": 50,
+            "by_venue": {
+                venue: report.get("net_floor_sample_progress", {})
+                for venue, report in venues.items()
+                if isinstance(report, dict) and report.get("net_floor_sample_progress")
+            },
+        },
         "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
         "capture_read_policy": "ONLY_ENTRY_CAPTURES_REFERENCED_BY_WINDOWED_CLOSED_OUTCOMES",
     }
@@ -3484,6 +3527,54 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                     separators=(",", ":"),
                 ),
             )
+
+        net_floor_progress = report.get("net_floor_sample_progress") or {}
+        for mode, cohort in sorted((net_floor_progress.get("cohorts") or {}).items()):
+            _legacy.logger.warning(
+                "[PAPER-NET-FLOOR-SAMPLE-PROGRESS] %s %s",
+                venue,
+                json.dumps(
+                    {
+                        "venue": venue,
+                        "trade_mode": mode,
+                        "sample_target": cohort.get("sample_target"),
+                        "completed": cohort.get("completed"),
+                        "remaining": cohort.get("remaining"),
+                        "valid_unique_closed_positions": cohort.get("valid_unique_closed_positions"),
+                        "excluded_positions": cohort.get("excluded_positions"),
+                        "exclusion_reasons": cohort.get("exclusion_reasons"),
+                        "by_status": cohort.get("by_status"),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+
+        classification_shadow = report.get("classification_shadow") or {}
+        for rule_name, rule in sorted((classification_shadow.get("rules") or {}).items()):
+            for mode, cohort in sorted((rule.get("by_trade_mode") or {}).items()):
+                _legacy.logger.warning(
+                    "[PAPER-CLASSIFICATION-SHADOW-PROGRESS] %s %s",
+                    venue,
+                    json.dumps(
+                        {
+                            "venue": venue,
+                            "rule": rule_name,
+                            "trade_mode": mode,
+                            "applicable": cohort.get("applicable"),
+                            "sample_target": cohort.get("sample_target"),
+                            "completed": cohort.get("completed"),
+                            "remaining": cohort.get("remaining"),
+                            "valid_unique_closed_positions": cohort.get("valid_unique_closed_positions"),
+                            "excluded_positions": cohort.get("excluded_positions"),
+                            "exclusion_reasons": cohort.get("exclusion_reasons"),
+                            "by_classification": cohort.get("by_classification"),
+                            "sample_rows_returned": len(cohort.get("samples") or []),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
 
         for dimension in (
             "by_trade_mode_and_failed_gate",
@@ -3618,6 +3709,10 @@ def _paper_precalibration_shadow_report():
                 "dispositions": payload["dispositions"],
                 "outcomes": payload["outcomes"],
                 "decisive_outcomes": payload["decisive_outcomes"],
+                "sample_progress": {
+                    key: value for key, value in payload["sample_progress"].items()
+                    if key != "samples"
+                },
                 "net_profit_factor_after_estimated_fees": payload["net_profit_factor_after_estimated_fees"],
             }, ensure_ascii=False, separators=(",", ":")),
         )
@@ -3663,10 +3758,58 @@ def _paper_blocked_entry_shadow_report():
             row for key, row in starts.items()
             if key and key not in final_ids and str(row.get("status") or "") == "OBSERVING"
         ]
+        final_by_id = {
+            str(row.get("source_capture_id") or ""): row
+            for row in finals
+            if str(row.get("source_capture_id") or "")
+        }
+        unique_finals = list(final_by_id.values())
         counts = {}
-        for row in finals:
-            status = str(row.get("status") or "UNKNOWN")
+        exclusions = {}
+        decisive_statuses = {"TARGET_HIT", "STOP_HIT", "TIME_LIMIT_EXIT"}
+        valid_finals = []
+        for row in unique_finals:
+            status = str(row.get("status") or "UNKNOWN").upper()
             counts[status] = counts.get(status, 0) + 1
+            net_value = row.get("net_return_percent_after_estimated_fees")
+            try:
+                net_value = float(net_value) if net_value is not None else None
+            except (TypeError, ValueError, OverflowError):
+                net_value = None
+            if status not in decisive_statuses:
+                reason = status or "UNKNOWN"
+                exclusions[reason] = exclusions.get(reason, 0) + 1
+            elif net_value is None:
+                exclusions["NET_RETURN_UNAVAILABLE"] = exclusions.get("NET_RETURN_UNAVAILABLE", 0) + 1
+            else:
+                valid_finals.append((row, net_value))
+        sample_progress = {
+            "venue": "MAIN",
+            "market_data_source": "BINANCE",
+            "trade_mode": "SCALP",
+            "sample_target": 50,
+            "completed": min(len(valid_finals), 50),
+            "remaining": max(0, 50 - len(valid_finals)),
+            "valid_unique_completed_watches": len(valid_finals),
+            "additional_valid_watches_beyond_target": max(0, len(valid_finals) - 50),
+            "pending_incomplete_watches": len(active),
+            "excluded_final_records": sum(exclusions.values()),
+            "exclusion_reasons": dict(sorted(exclusions.items())),
+            "samples": [
+                {
+                    "source_capture_id": row.get("source_capture_id"),
+                    "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+                    "status": str(row.get("status") or "UNKNOWN").upper(),
+                    "net_return_percent_after_estimated_fees": net_value,
+                    "completed_at_utc": row.get("completed_at_utc"),
+                    "blocked_reason": row.get("blocked_reason"),
+                }
+                for row, net_value in sorted(
+                    valid_finals,
+                    key=lambda item: str(item[0].get("completed_at_utc") or ""),
+                )[:50]
+            ],
+        }
         payload = {
             "available": True,
             "mode": "PAPER_ONLY",
@@ -3675,6 +3818,7 @@ def _paper_blocked_entry_shadow_report():
             "completed_records": len(finals),
             "active_records": len(active),
             "completed_by_status": counts,
+            "sample_progress": sample_progress,
             "active": active,
             "recent_completed": finals[-50:],
             "model": {
@@ -3694,6 +3838,10 @@ def _paper_blocked_entry_shadow_report():
                 "completed_records": payload["completed_records"],
                 "active_records": payload["active_records"],
                 "completed_by_status": counts,
+                "sample_progress": {
+                    key: value for key, value in sample_progress.items()
+                    if key != "samples"
+                },
             }, ensure_ascii=False, separators=(",", ":")),
         )
         return jsonify(payload), 200
