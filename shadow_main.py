@@ -3439,6 +3439,14 @@ def _build_linked_entry_outcome_forensics() -> dict[str, Any]:
                 if isinstance(report, dict) and report.get("classification_shadow")
             },
         },
+        "net_floor_sample_progress": {
+            "sample_target_per_venue_and_trade_mode": 50,
+            "by_venue": {
+                venue: report.get("net_floor_sample_progress", {})
+                for venue, report in venues.items()
+                if isinstance(report, dict) and report.get("net_floor_sample_progress")
+            },
+        },
         "safety": "READ_ONLY_DIAGNOSTICS_NO_STRATEGY_OR_EXECUTION_CHANGES",
         "capture_read_policy": "ONLY_ENTRY_CAPTURES_REFERENCED_BY_WINDOWED_CLOSED_OUTCOMES",
     }
@@ -3495,6 +3503,28 @@ def _emit_linked_entry_outcome_forensics_logs(payload: Mapping[str, Any]) -> Non
                 venue,
                 json.dumps(
                     {"venue": venue, "trade_mode": mode, "stats": stats},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+
+        net_floor_progress = report.get("net_floor_sample_progress") or {}
+        for mode, cohort in sorted((net_floor_progress.get("cohorts") or {}).items()):
+            _legacy.logger.warning(
+                "[PAPER-NET-FLOOR-SAMPLE-PROGRESS] %s %s",
+                venue,
+                json.dumps(
+                    {
+                        "venue": venue,
+                        "trade_mode": mode,
+                        "sample_target": cohort.get("sample_target"),
+                        "completed": cohort.get("completed"),
+                        "remaining": cohort.get("remaining"),
+                        "valid_unique_closed_positions": cohort.get("valid_unique_closed_positions"),
+                        "excluded_positions": cohort.get("excluded_positions"),
+                        "exclusion_reasons": cohort.get("exclusion_reasons"),
+                        "by_status": cohort.get("by_status"),
+                    },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
