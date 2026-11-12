@@ -1982,6 +1982,9 @@ _entry_v2_runtime_capture = _install_entry_v2_runtime_capture(
 # Paired, non-authoritative comparison of the entry-time ATR and structural
 # stops. Each isolated Render Paper service uses only its own venue stream.
 _PAPER_STRUCTURAL_STOP_COMPARISON_VENUES = {
+    # MAIN is the persisted venue_mode on restored watches. Keep it as an
+    # explicit alias so the coordinator resumes against Binance after restart.
+    "MAIN": ("BINANCE", "_binance_market_stream", "MAIN"),
     "MIXED": ("BINANCE", "_binance_market_stream", "MAIN"),
     "BINANCE_ONLY_LAB": ("BINANCE", "_binance_market_stream", "BINANCE_ONLY_LAB"),
     "BYBIT_ONLY_LAB": ("BYBIT", "_bybit_market_stream", "BYBIT_ONLY_LAB"),
