@@ -129,7 +129,8 @@ def _classification_snapshots(
     outcome_v2 = _mapping(outcome.get("entry_v2"))
     candidate = _mapping(capture.get("candidate"))
 
-    classification_input = dict(legacy or strategy)
+    classification_input = dict(strategy)
+    classification_input.update(legacy)
     for key, value in candidate.items():
         classification_input.setdefault(key, value)
     classification_input["trade_mode"] = trade_mode
@@ -147,11 +148,34 @@ def _classification_snapshots(
     if not neutral:
         neutral = _mapping(outcome_forensics.get("neutral_low_score_shadow"))
     neutral = dict(neutral)
-    neutral.setdefault(
-        "scalp_score",
-        classification_input.get("scalp_score", classification_input.get("score")),
+    neutral["scalp_score"] = _first_number(
+        legacy.get("scalp_score"), legacy.get("score"),
+        candidate.get("scalp_score"), candidate.get("score"),
+        strategy.get("scalp_score"), strategy.get("score"),
     )
-    neutral.setdefault("mtf_bias", classification_input.get("mtf_bias"))
+    mtf_bias = next(
+        (
+            str(value).upper()
+            for value in (
+                legacy.get("mtf_bias"),
+                candidate.get("mtf_bias"),
+                strategy.get("mtf_bias"),
+            )
+            if str(value or "").upper() in _KNOWN_MTF_BIASES
+        ),
+        None,
+    )
+    neutral["mtf_bias"] = mtf_bias
+
+    frame_bias = _mapping(classification_input.get("mtf_timeframe_bias"))
+    adaptive_context_available = bool(
+        mtf_bias
+        or _number(classification_input.get("mtf_net")) is not None
+        or any(
+            str(frame_bias.get(frame) or "").upper() in _KNOWN_MTF_BIASES
+            for frame in ("15m", "1h", "4h")
+        )
+    )
 
     maturity = _mapping(adaptive.get("maturity_experiment"))
     if not maturity:
@@ -179,6 +203,7 @@ def _classification_snapshots(
 
     return {
         "adaptive_scalp": dict(adaptive),
+        "adaptive_context_available": adaptive_context_available,
         "neutral_low_score": neutral,
         "maturity": maturity,
         "recovery_follow_through": dict(recovery),
@@ -194,7 +219,11 @@ def _classification_label(
     if rule_name == "adaptive_scalp":
         observation = _mapping(evidence.get("adaptive_scalp"))
         label = str(observation.get("classification") or "").upper()
-        return (label, None) if label in _ADAPTIVE_SCALP_CLASSIFICATIONS else (None, "CLASSIFICATION_UNAVAILABLE")
+        if label not in _ADAPTIVE_SCALP_CLASSIFICATIONS:
+            return None, "CLASSIFICATION_UNAVAILABLE"
+        if evidence.get("adaptive_context_available") is not True:
+            return None, "CLASSIFICATION_CONTEXT_UNAVAILABLE"
+        return label, None
 
     if rule_name == "neutral_low_score":
         observation = _mapping(evidence.get("neutral_low_score"))
@@ -996,6 +1025,111 @@ def _group_by_two_keys(
     }
 
 
+def build_net_floor_sample_progress(
+    venue: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    sample_target: int = 50,
+) -> dict[str, Any]:
+    """Count unique closed Paper positions with a measurable Net-Floor observation."""
+    if sample_target < 1:
+        raise ValueError("NET_FLOOR_SAMPLE_TARGET_MUST_BE_POSITIVE")
+    row_list = [dict(row) for row in rows if isinstance(row, Mapping)]
+    modes = {"SCALP", "SWING"}
+    modes.update(str(row.get("trade_mode") or "UNKNOWN").upper() for row in row_list)
+    cohorts: dict[str, Any] = {}
+    for mode in sorted(modes):
+        cohort_rows = [
+            row for row in row_list
+            if str(row.get("trade_mode") or "UNKNOWN").upper() == mode
+        ]
+        if mode not in {"SCALP", "SWING"}:
+            cohorts[mode] = {
+                "applicable": False,
+                "sample_target": None,
+                "completed": 0,
+                "remaining": None,
+                "excluded_positions": len(cohort_rows),
+                "exclusion_reasons": {"UNSUPPORTED_TRADE_MODE": len(cohort_rows)} if cohort_rows else {},
+                "by_status": {},
+                "samples": [],
+            }
+            continue
+
+        seen: set[str] = set()
+        exclusions: dict[str, int] = {}
+        valid: list[dict[str, Any]] = []
+        status_counts: dict[str, int] = {}
+
+        def exclude(reason: str) -> None:
+            exclusions[reason] = exclusions.get(reason, 0) + 1
+
+        for row in sorted(cohort_rows, key=lambda item: str(item.get("closed_at_utc") or "")):
+            position_id = str(row.get("position_id") or "").strip()
+            if not position_id:
+                exclude("MISSING_POSITION_ID")
+                continue
+            if position_id in seen:
+                exclude("DUPLICATE_POSITION_ID")
+                continue
+            seen.add(position_id)
+            status = str(row.get("profit_protection_shadow_status") or "UNKNOWN").upper()
+            if status == "SKIPPED_PARTIAL_EXIT":
+                exclude("PARTIAL_EXIT_EXCLUDED")
+                continue
+            if status not in {"OBSERVING", "TRIGGERED"}:
+                exclude("SHADOW_OBSERVATION_UNAVAILABLE")
+                continue
+            if str(row.get("status") or "CLOSED").upper() != "CLOSED":
+                exclude("POSITION_NOT_CLOSED")
+                continue
+            net_pnl = _number(row.get("net_pnl"))
+            fees = _number(row.get("fees"))
+            if net_pnl is None:
+                exclude("NET_PNL_UNAVAILABLE")
+                continue
+            if fees is None:
+                exclude("FEES_UNAVAILABLE")
+                continue
+            status_counts[status] = status_counts.get(status, 0) + 1
+            valid.append({
+                "venue": str(venue or "UNKNOWN").upper(),
+                "trade_mode": mode,
+                "position_id": position_id,
+                "capture_id": row.get("capture_id"),
+                "symbol": str(row.get("symbol") or "UNKNOWN").upper(),
+                "status": status,
+                "triggered": status == "TRIGGERED",
+                "net_pnl_after_fees": round(net_pnl, 8),
+                "fees": round(fees, 8),
+                "closed_at_utc": row.get("closed_at_utc"),
+                "close_reason": str(row.get("close_reason") or "UNKNOWN").upper(),
+            })
+        cohorts[mode] = {
+            "applicable": True,
+            "sample_target": sample_target,
+            "completed": min(len(valid), sample_target),
+            "remaining": max(0, sample_target - len(valid)),
+            "valid_unique_closed_positions": len(valid),
+            "additional_valid_positions_beyond_target": max(0, len(valid) - sample_target),
+            "excluded_positions": sum(exclusions.values()),
+            "exclusion_reasons": dict(sorted(exclusions.items())),
+            "by_status": status_counts,
+            "samples": valid[:sample_target],
+        }
+    return {
+        "schema_version": 1,
+        "venue": str(venue or "UNKNOWN").upper(),
+        "sample_target_per_trade_mode": sample_target,
+        "cohorts": cohorts,
+        "interpretation": (
+            "OBSERVING and TRIGGERED are measurable Net-Floor observations on closed actual Paper positions. "
+            "Partial-exit positions, missing observations and duplicate position IDs are excluded. "
+            "PAPER_OUTCOME.realized_pnl is already net of recorded fees."
+        ),
+    }
+
+
 def build_linked_entry_outcome_analysis(
     venue: str,
     outcomes: Iterable[Mapping[str, Any]],
@@ -1121,6 +1255,7 @@ def build_linked_entry_outcome_analysis(
         },
         "overall": _aggregate(joined),
         "classification_shadow": build_classification_shadow_report(venue_name, joined),
+        "net_floor_sample_progress": build_net_floor_sample_progress(venue_name, joined),
         "by_trade_mode": _group(joined, "trade_mode"),
         "by_trade_mode_and_failed_gate": _group_by_two_keys(
             joined, "trade_mode", "entry_v2_failed_gate_shadow"
@@ -1185,4 +1320,8 @@ def build_linked_entry_outcome_analysis(
     }
 
 
-__all__ = ["build_classification_shadow_report", "build_linked_entry_outcome_analysis"]
+__all__ = [
+    "build_classification_shadow_report",
+    "build_linked_entry_outcome_analysis",
+    "build_net_floor_sample_progress",
+]
