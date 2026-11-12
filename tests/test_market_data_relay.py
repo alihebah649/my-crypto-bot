@@ -180,7 +180,7 @@ def test_live_candle_update_does_not_reset_rest_refresh_clock():
 
 def test_persisted_rest_refresh_clock_is_not_advanced_by_live_candles(tmp_path):
     source = RelayState(token="p" * 64, snapshot_path=tmp_path / "source.json")
-    source._merge_rest_snapshot(_snapshot(rows_per_interval=165))
+    source._merge_rest_snapshot(_snapshot(rows_per_interval=320))
     rest_refresh_ms = source.snapshot["_relay_meta"]["last_rest_refresh_at_ms"]
 
     # The market timestamp may be newer than the last successful REST repair.

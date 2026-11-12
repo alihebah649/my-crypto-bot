@@ -2336,7 +2336,11 @@ def _advance_structural_stop_comparison_watches() -> None:
                     )
                 continue
             try:
-                candles = get_history(str(updated.get("symbol") or ""), "5m", DEFAULT_HISTORY_BUFFER_BARS) or []
+                candles = get_history(
+                    str(updated.get("symbol") or ""),
+                    "5m",
+                    DEFAULT_HISTORY_BUFFER_BARS,
+                ) or []
                 updated, state_changed = advance_structural_stop_comparison(previous, candles)
             except Exception:
                 _legacy.logger.exception(
