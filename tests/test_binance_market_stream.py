@@ -346,14 +346,14 @@ def test_runtime_kline_cache_writes_are_coalesced(tmp_path):
             sys.modules["shadow_main_legacy"] = previous_legacy
 
 
-def test_runtime_kline_history_uses_strategy_required_depth():
+def test_runtime_kline_history_keeps_full_structural_stop_buffer():
     feed = BinanceMarketStream(["BTCUSDT"])
 
     feed._seed_runtime_kline_history(
         "BTCUSDT",
         "5m",
-        [{"open_time": index, "close": 100.0} for index in range(100)],
-        required_limit=60,
+        [{"open_time": index, "close": 100.0} for index in range(400)],
+        required_limit=300,
     )
     feed._seed_runtime_kline_history(
         "BTCUSDT",
@@ -362,7 +362,9 @@ def test_runtime_kline_history_uses_strategy_required_depth():
         required_limit=150,
     )
 
-    assert len(feed._runtime_kline_history[("BTCUSDT", "5m")]) == 60
+    five_minute = feed._runtime_kline_history[("BTCUSDT", "5m")]
+    assert len(five_minute) == 300
+    assert five_minute[0]["open_time"] == 100
     assert len(feed._runtime_kline_history[("BTCUSDT", "15m")]) == 150
 
 def test_public_kline_history_accessor_returns_bounded_copy():

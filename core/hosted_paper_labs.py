@@ -49,7 +49,8 @@ from trade_manager.shadow_integration import ShadowTradeManagerRuntime
 logger = logging.getLogger("ShadowMain.HostedPaperLabs")
 
 _INTERVALS = ("5m", "15m", "1h", "4h")
-_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+# Cold-start 5m history now matches the structural-stop observer horizon.
+_HISTORY_LIMITS = {"5m": 300, "15m": 150, "1h": 60, "4h": 60}
 _REQUIRED_HISTORY = {"5m": 20, "15m": 100, "1h": 30, "4h": 30}
 _SUPPORTED_VENUES = ("BINANCE", "BYBIT", "OKX")
 _CPU_GUARD_BUDGET_CORES = 0.10

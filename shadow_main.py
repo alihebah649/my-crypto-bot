@@ -74,6 +74,7 @@ from core.paper_blocked_entry_shadow import (
     build_blocked_entry_watch,
 )
 from core.paper_structural_stop_comparison import (
+    DEFAULT_HISTORY_BUFFER_BARS,
     TRIAL_NAME as _PAPER_STRUCTURAL_STOP_COMPARISON_TRIAL_NAME,
     advance_structural_stop_comparison,
     build_structural_stop_comparison_decision,
@@ -2335,7 +2336,7 @@ def _advance_structural_stop_comparison_watches() -> None:
                     )
                 continue
             try:
-                candles = get_history(str(updated.get("symbol") or ""), "5m", 60) or []
+                candles = get_history(str(updated.get("symbol") or ""), "5m", DEFAULT_HISTORY_BUFFER_BARS) or []
                 updated, state_changed = advance_structural_stop_comparison(previous, candles)
             except Exception:
                 _legacy.logger.exception(

@@ -68,6 +68,32 @@ def test_okx_stream_keeps_live_candle_out_of_closed_candle_slot():
     assert stream.get_latest_closed_kline("BTCUSDT", "5m") is None
 
 
+def test_okx_stream_retains_300_seeded_5m_candles_for_structural_stop_backfill():
+    stream = OKXMarketStream(["BTCUSDT"], intervals=("5m",))
+    seeded = stream.seed_kline_history(
+        "BTCUSDT",
+        "5m",
+        [
+            {
+                "open_time": index * 300000,
+                "close_time": index * 300000 + 299999,
+                "open": 3.0,
+                "high": 3.2,
+                "low": 2.9,
+                "close": 3.1,
+                "volume": 30.0,
+                "is_closed": True,
+            }
+            for index in range(1, 351)
+        ],
+    )
+
+    rows = stream.get_kline_history("BTCUSDT", "5m", 300)
+    assert seeded == 350
+    assert len(rows) == 300
+    assert rows[0]["open_time"] == 51 * 300000
+
+
 def test_okx_subscriptions_are_batched_and_use_spot_instrument_ids():
     symbols = [f"COIN{i}USDT" for i in range(22)]
     stream = OKXMarketStream(symbols, intervals=("5m", "15m", "1h", "4h"))

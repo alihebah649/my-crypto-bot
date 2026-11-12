@@ -35,7 +35,8 @@ LIVE_WS_BASE = os.getenv("BINANCE_WS_BASE", "wss://stream.binance.com:9443/strea
 REST_REFRESH_AFTER_SECONDS = max(60.0, float(os.getenv("RELAY_REST_REFRESH_AFTER_SECONDS", "900")))
 EVENT_STALE_AFTER_SECONDS = max(10.0, float(os.getenv("RELAY_EVENT_STALE_AFTER_SECONDS", "45")))
 PERSIST_INTERVAL_SECONDS = max(1.0, float(os.getenv("RELAY_PERSIST_INTERVAL_SECONDS", "3")))
-CLIENT_HISTORY_LIMITS = {"5m": 60, "15m": 150, "1h": 60, "4h": 60}
+# Preserve the full 24-hour structural-stop horizon plus a 1-hour restart buffer.
+CLIENT_HISTORY_LIMITS = {"5m": 300, "15m": 150, "1h": 60, "4h": 60}
 BOOTSTRAP_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60
 
 # Downstream cadence is intentionally slower than Binance's raw event rate.

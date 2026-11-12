@@ -7,13 +7,14 @@ import time
 from market_data_relay.app import (
     CLIENT_HISTORY_LIMITS,
     RelayState,
+    _snapshot_is_valid,
     authorized,
     compact_snapshot,
 )
 from tools.binance_market_data_relay import INTERVALS, SYMBOLS
 
 
-def _snapshot(rows_per_interval: int = 165) -> dict:
+def _snapshot(rows_per_interval: int = 320) -> dict:
     symbols = {}
     generated_ms = int(time.time() * 1000)
     for symbol in SYMBOLS:
@@ -65,12 +66,20 @@ def test_bearer_auth_rejects_missing_wrong_and_short_tokens():
 
 
 def test_compact_snapshot_limits_depth_and_preserves_full_universe():
-    payload = compact_snapshot(_snapshot(rows_per_interval=170))
+    payload = compact_snapshot(_snapshot(rows_per_interval=320))
     assert payload["symbol_count"] == 22
     assert set(payload["symbols"]) == set(SYMBOLS)
     for symbol in SYMBOLS:
         for interval, limit in CLIENT_HISTORY_LIMITS.items():
             assert len(payload["symbols"][symbol]["klines"][interval]) == limit
+
+
+def test_short_legacy_persisted_snapshot_is_rejected_for_full_5m_history():
+    legacy_snapshot = _snapshot(rows_per_interval=299)
+    assert _snapshot_is_valid(legacy_snapshot) is False
+
+    full_snapshot = _snapshot(rows_per_interval=320)
+    assert _snapshot_is_valid(full_snapshot) is True
 
 
 def test_closed_kline_event_updates_history_but_open_kline_does_not():
@@ -133,7 +142,7 @@ def test_rest_refresh_merge_does_not_overwrite_newer_live_candle():
 
 def test_live_candle_update_does_not_reset_rest_refresh_clock():
     state = RelayState(token="r" * 64, snapshot_path="/tmp/nonexistent-relay-cache.json")
-    state._merge_rest_snapshot(_snapshot(rows_per_interval=165))
+    state._merge_rest_snapshot(_snapshot(rows_per_interval=320))
     rest_refresh_time = state.last_rest_refresh_at
     rest_refresh_ms = int(rest_refresh_time * 1000)
 
