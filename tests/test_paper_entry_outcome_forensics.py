@@ -282,6 +282,62 @@ def test_forensics_rejects_unsupported_venue():
 
 
 
+def test_blocked_entry_report_exposes_completed_remaining_and_exclusions(monkeypatch):
+    from types import SimpleNamespace
+    import shadow_main
+
+    class FakeStore:
+        last_error = None
+
+        def read_all(self):
+            return [
+                {
+                    "record_type": "START",
+                    "source_capture_id": "CAP-SELLER-1",
+                    "status": "OBSERVING",
+                },
+                {
+                    "record_type": "FINAL",
+                    "source_capture_id": "CAP-SELLER-1",
+                    "symbol": "BTCUSDT",
+                    "status": "STOP_HIT",
+                    "net_return_percent_after_estimated_fees": -0.7,
+                    "completed_at_utc": "2026-11-11T08:00:00+00:00",
+                },
+                {
+                    "record_type": "START",
+                    "source_capture_id": "CAP-SELLER-2",
+                    "status": "OBSERVING",
+                },
+                {
+                    "record_type": "FINAL",
+                    "source_capture_id": "CAP-SELLER-2",
+                    "symbol": "ETHUSDT",
+                    "status": "AMBIGUOUS_SAME_CANDLE",
+                    "net_return_percent_after_estimated_fees": None,
+                },
+                {
+                    "record_type": "START",
+                    "source_capture_id": "CAP-SELLER-3",
+                    "status": "OBSERVING",
+                },
+            ]
+
+    monkeypatch.setattr(shadow_main, "_paper_blocked_entry_shadow_store", FakeStore())
+    response = shadow_main.app.test_client().get("/paper/blocked-entry-shadow-report")
+
+    assert response.status_code == 200
+    progress = response.get_json()["sample_progress"]
+    assert progress["venue"] == "MAIN"
+    assert progress["trade_mode"] == "SCALP"
+    assert progress["completed"] == 1
+    assert progress["remaining"] == 49
+    assert progress["pending_incomplete_watches"] == 1
+    assert progress["excluded_final_records"] == 1
+    assert progress["exclusion_reasons"] == {"AMBIGUOUS_SAME_CANDLE": 1}
+    assert progress["samples"][0]["source_capture_id"] == "CAP-SELLER-1"
+
+
 def test_shadow_main_forensics_reads_only_captures_referenced_by_closed_outcomes(monkeypatch):
     from types import SimpleNamespace
     import shadow_main
