@@ -50,7 +50,7 @@ def test_default_snapshot_keeps_300_closed_5m_candles_when_rest_includes_open_ba
                 for index in range(300 if interval == "5m" else 100)
             ]
             if interval == "5m":
-                open_time = 1_090_000_000
+                open_time = now_ms - 100_000
                 rows.append(_raw_candle(open_time, open_time + 299_999))
             candles[symbol][interval] = rows
 
