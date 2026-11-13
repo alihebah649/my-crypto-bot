@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.binance_market_data_relay import DEFAULT_LIMITS, RelayError, SYMBOLS, build_snapshot
+from market_data_relay.tools.binance_market_data_relay import DEFAULT_LIMITS, RelayError, SYMBOLS, build_snapshot
 
 
 def _raw_candle(open_time: int, close_time: int, close: str = "100.0") -> list:
