@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.binance_market_data_relay import RelayError, SYMBOLS, build_snapshot
+from tools.binance_market_data_relay import DEFAULT_LIMITS, RelayError, SYMBOLS, build_snapshot
 
 
 def _raw_candle(open_time: int, close_time: int, close: str = "100.0") -> list:
@@ -34,6 +34,37 @@ def test_build_snapshot_covers_22_symbols_and_four_intervals() -> None:
     assert set(snapshot["symbols"]["BTCUSDT"]["klines"]) == {"5m", "15m", "1h", "4h"}
     assert len(snapshot["symbols"]["BTCUSDT"]["klines"]["5m"]) == 100
 
+
+
+def test_default_snapshot_keeps_300_closed_5m_candles_when_rest_includes_open_bar() -> None:
+    assert DEFAULT_LIMITS["5m"] == 301
+
+    ticker_rows = [{"symbol": symbol, "lastPrice": "100.0"} for symbol in SYMBOLS]
+    now_ms = 2_000_000_000
+    candles = {}
+    for symbol in SYMBOLS:
+        candles[symbol] = {}
+        for interval in ("5m", "15m", "1h", "4h"):
+            rows = [
+                _raw_candle(1_000_000_000 + index * 300_000, 1_000_000_299 + index * 300_000)
+                for index in range(300 if interval == "5m" else 100)
+            ]
+            if interval == "5m":
+                open_time = now_ms - 100_000
+                rows.append(_raw_candle(open_time, open_time + 299_999))
+            candles[symbol][interval] = rows
+
+    snapshot = build_snapshot(
+        now_ms=now_ms,
+        ticker_rows=ticker_rows,
+        candles=candles,
+    )
+
+    for symbol in SYMBOLS:
+        closed_5m = snapshot["symbols"][symbol]["klines"]["5m"]
+        assert len(closed_5m) == 300
+        assert all(int(row["close_time"]) < now_ms for row in closed_5m)
+        assert closed_5m[-1]["open_time"] == 1_000_000_000 + 299 * 300_000
 
 def test_build_snapshot_rejects_missing_ticker() -> None:
     ticker_rows = [{"symbol": s, "lastPrice": "100.0"} for s in SYMBOLS[:-1]]
