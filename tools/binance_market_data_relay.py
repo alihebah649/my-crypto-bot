@@ -23,7 +23,9 @@ SYMBOLS = [
     "HBARUSDT", "SUIUSDT", "BCHUSDT", "TRXUSDT",
 ]
 INTERVALS = ("5m", "15m", "1h", "4h")
-DEFAULT_LIMITS = {"5m": 300, "15m": 300, "1h": 200, "4h": 200}
+# Binance includes the currently forming 5m candle in REST limits. Fetch one extra
+# so filtering to closed candles still leaves the relay-required 300-bar history.
+DEFAULT_LIMITS = {"5m": 301, "15m": 300, "1h": 200, "4h": 200}
 
 
 class RelayError(RuntimeError):
